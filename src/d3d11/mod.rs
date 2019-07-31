@@ -34,7 +34,7 @@ impl Default for D3D11Backend {
             window: std::ptr::null_mut(),
             fb_width: 0,
             fb_height: 0,
-            target_feature_level: 0xb100,
+            target_feature_level: 0xb000, // 0xb000 = 11.0 0xb100 = 11.1
             feature_level: 0,
             device: std::ptr::null_mut(),
             context: std::ptr::null_mut(),
@@ -135,6 +135,8 @@ impl D3D11Backend {
     fn create_resources(&mut self) {
         let null_views: *mut dx11::ID3D11RenderTargetView = std::ptr::null_mut();
         unsafe { (*self.context).OMSetRenderTargets(1, &null_views, std::ptr::null_mut()) };
+
+        
     }
 }
 
