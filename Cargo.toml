@@ -1,7 +1,7 @@
 [package]
 name = "lazy_mouse"
 version = "0.1.0"
-authors = ["Patrick Gantner <patrick.gantner@linesofcode.at>"]
+authors = ["Elena Gantner <elena.gantner@linesofcode.at>"]
 edition = "2018"
 
 
