@@ -5,6 +5,7 @@ use winapi::shared::dxgi as dxgi;
 use winapi::um::d3dcommon as dx;
 use winapi::ctypes::c_void as c_void;
 use winapi::shared::winerror::{ S_OK };
+use winapi::um::unknwnbase::{IUnknown};
 
 #[derive(Debug)]
 pub struct D3D11Backend<'a> {
@@ -71,22 +72,17 @@ impl<'a> D3D11Backend<'a> {
             return Err( "Target Feature Level is too high!" )
         }
 
-        // let mut dxgi_factory: dxgi::IDXGIFactory1 = unsafe { std::mem::zeroed() };
-        // let mut dxgi_factory_ptr = &mut dxgi_factory as *mut dxgi::IDXGIFactory1;
-        // TODO: do all calls like this!
-        let mut dxgi_factory: *mut winapi::um::unknwnbase::IUnknown = std::ptr::null_mut();
+        let mut dxgi_factory_ptr: *mut IUnknown = std::ptr::null_mut();
         let factory_uuid = <dxgi::IDXGIFactory1 as winapi::Interface>::uuidof();
         unsafe { 
-            // let res = dxgi::CreateDXGIFactory1(&factory_uuid, (&mut dxgi_factory_ptr as *mut *mut dxgi::IDXGIFactory1) as *mut *mut c_void); 
-            let res = dxgi::CreateDXGIFactory1(&factory_uuid, &mut dxgi_factory as *mut *mut _ as *mut *mut _);
+            let res = dxgi::CreateDXGIFactory1(&factory_uuid, &mut dxgi_factory_ptr as *mut *mut _ as *mut *mut _);
             if res != S_OK {
                 return Err( "Unable to create DXGI Factory" )
             }
         }
 
-        let mut dxgi_adapter: dxgi::IDXGIAdapter1 = unsafe { std::mem::zeroed() };
-        let mut dxgi_adapter_ptr = &mut dxgi_adapter as *mut dxgi::IDXGIAdapter1;
-        let dxgi_factory6 = dxgi_factory as *mut shared::dxgi1_6::IDXGIFactory6;
+        let mut dxgi_adapter_ptr : *mut IUnknown = std::ptr::null_mut();
+        let dxgi_factory6 = dxgi_factory_ptr as *mut shared::dxgi1_6::IDXGIFactory6;
         let factory6_uuid = <shared::dxgi1_6::IDXGIFactory6 as winapi::Interface>::uuidof();
         let mut adapter_idx = 0;
         let mut adapter_found = false;
@@ -97,14 +93,14 @@ impl<'a> D3D11Backend<'a> {
                     adapter_idx,
                     shared::dxgi1_6::DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
                     &factory6_uuid,
-                    (&mut dxgi_adapter_ptr as *mut *mut dxgi::IDXGIAdapter1) as *mut *mut c_void
+                    &mut dxgi_adapter_ptr as *mut *mut _ as *mut *mut c_void
                 );
                 if res < 0 {
                     break;
                 }
                 
                 let mut desc: dxgi::DXGI_ADAPTER_DESC1 = std::mem::zeroed();
-                res = dxgi_adapter.GetDesc1(&mut desc);
+                res = (*(dxgi_adapter_ptr as *mut dxgi::IDXGIAdapter1)).GetDesc1(&mut desc);
                 if res != S_OK {
                     return Err("Unable to get Device Info!");
                 }
@@ -121,15 +117,15 @@ impl<'a> D3D11Backend<'a> {
             adapter_idx = 0;
             unsafe {
             loop {
-                let mut res = (*(dxgi_factory as *mut dxgi::IDXGIFactory1)).EnumAdapters1(
+                let mut res = (*(dxgi_factory_ptr as *mut dxgi::IDXGIFactory1)).EnumAdapters1(
                     adapter_idx,
-                    &mut dxgi_adapter_ptr as *mut *mut dxgi::IDXGIAdapter1
+                    &mut dxgi_adapter_ptr as *mut *mut _ as *mut *mut dxgi::IDXGIAdapter1
                 );
                 if res != S_OK {
                     println!("Enum Adapters returned {}", res);
                 }
                 let mut desc: dxgi::DXGI_ADAPTER_DESC1 = std::mem::zeroed();
-                res = dxgi_adapter.GetDesc1(&mut desc);
+                res = (*(dxgi_adapter_ptr as *mut dxgi::IDXGIAdapter1)).GetDesc1(&mut desc);
                 if res != S_OK {
                     return Err("Unable to get Device Info!");
                 }
@@ -146,7 +142,7 @@ impl<'a> D3D11Backend<'a> {
         if adapter_found {
             unsafe {
             let mut desc: dxgi::DXGI_ADAPTER_DESC1 = std::mem::zeroed();
-            let res = dxgi_adapter.GetDesc1(&mut desc);
+            let res = (*(dxgi_adapter_ptr as *mut dxgi::IDXGIAdapter1)).GetDesc1(&mut desc);
             if res != S_OK {
                 return Err("Unable to get Device Info!");
             }
@@ -164,9 +160,9 @@ impl<'a> D3D11Backend<'a> {
             feature_levels.as_ptr(), 
             fl_count, 
             dx11::D3D11_SDK_VERSION, 
-            &mut self.device, 
-            &mut self.feature_level, 
-            &mut self.context)
+            &mut self.device as *mut *mut _, 
+            &mut self.feature_level as *mut _, 
+            &mut self.context as *mut *mut _)
         };
         if res != S_OK {
             Err( "Unable to create D3D11 Device!" )
