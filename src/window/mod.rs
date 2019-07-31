@@ -1,76 +1,74 @@
-pub mod window {
-    use std::*;
-    use winapi::shared::windef::{HWND};
-    use winapi::um::libloaderapi::*;
-    use winapi::um::winuser::*;
+use std::*;
+use winapi::shared::windef::{HWND};
+use winapi::um::libloaderapi::*;
+use winapi::um::winuser::*;
 
+#[derive(Debug)]
+pub struct Window {
+    handle: HWND,
+    width: u32,
+    height: u32
+}
 
-    pub struct Window {
-        handle: HWND,
-        width: u32,
-        height: u32
-    }
+impl Window {
+    pub fn create_window(width: i32, height: i32, name: &str, title: &str) -> Result<Window, &'static str> {
+        let name = to_wide_str(name);
+        let title = to_wide_str(title);
 
-    impl Window {
-        pub fn create_window(width: i32, height: i32, name: &str, title: &str) -> Result<Window, &'static str> {
-            let name = to_wide_str(name);
-            let title = to_wide_str(title);
+        unsafe {
+            let instance = GetModuleHandleW(ptr::null_mut());
+            let window_class = WNDCLASSW {
+                style: CS_OWNDC | CS_HREDRAW | CS_VREDRAW,
+                lpfnWndProc: Some( DefWindowProcW ),
+                hInstance: instance,
+                lpszClassName: name.as_ptr(),
+                cbClsExtra: 0,
+                cbWndExtra: 0,
+                hIcon: ptr::null_mut(),
+                hCursor: ptr::null_mut(),
+                hbrBackground: ptr::null_mut(),
+                lpszMenuName: ptr::null_mut()
+            };
 
-            unsafe {
-                let instance = GetModuleHandleW(ptr::null_mut());
-                let window_class = WNDCLASSW {
-                    style: CS_OWNDC | CS_HREDRAW | CS_VREDRAW,
-                    lpfnWndProc: Some( DefWindowProcW ),
-                    hInstance: instance,
-                    lpszClassName: name.as_ptr(),
-                    cbClsExtra: 0,
-                    cbWndExtra: 0,
-                    hIcon: ptr::null_mut(),
-                    hCursor: ptr::null_mut(),
-                    hbrBackground: ptr::null_mut(),
-                    lpszMenuName: ptr::null_mut()
-                };
+            RegisterClassW(&window_class);
+            let handle = CreateWindowExW(
+                0,
+                name.as_ptr(), 
+                title.as_ptr(),
+                WS_OVERLAPPEDWINDOW | WS_VISIBLE, 
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                width, 
+                height, 
+                ptr::null_mut(), 
+                ptr::null_mut(), 
+                instance, 
+                ptr::null_mut());
 
-                RegisterClassW(&window_class);
-                let handle = CreateWindowExW(
-                    0,
-                    name.as_ptr(), 
-                    title.as_ptr(),
-                    WS_OVERLAPPEDWINDOW | WS_VISIBLE, 
-                    CW_USEDEFAULT,
-                    CW_USEDEFAULT,
-                    width, 
-                    height, 
-                    ptr::null_mut(), 
-                    ptr::null_mut(), 
-                    instance, 
-                    ptr::null_mut());
-
-                if handle.is_null() {
-                    Err( "Unable to obtain window handle!" )
-                } else {
-                    Ok( Window { handle: handle, width: width as u32, height: height as u32 } )
-                }
+            if handle.is_null() {
+                Err( "Unable to obtain window handle!" )
+            } else {
+                Ok( Window { handle: handle, width: width as u32, height: height as u32 } )
             }
         }
+    }
 
-        pub fn update(&self) -> bool {
-            unsafe {
-                let mut msg : MSG =  mem::uninitialized(); 
-                if GetMessageW(&mut msg, self.handle, 0, 0) > 0 {
-                    TranslateMessage(&msg);
-                    DispatchMessageW(&msg);
+    pub fn update(&self) -> bool {
+        unsafe {
+            let mut msg : MSG =  mem::uninitialized(); 
+            if GetMessageW(&mut msg, self.handle, 0, 0) > 0 {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
 
-                    return true
-                }
+                return true
             }
-            false
         }
+        false
     }
+}
 
 
-    fn to_wide_str(value: &str) -> Vec<u16> {
-        use std::os::windows::ffi::OsStrExt;
-        std::ffi::OsStr::new(value).encode_wide().chain( std::iter::once(0)).collect()
-    }
+fn to_wide_str(value: &str) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    std::ffi::OsStr::new(value).encode_wide().chain( std::iter::once(0)).collect()
 }
