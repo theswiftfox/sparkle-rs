@@ -6,7 +6,7 @@ edition = "2018"
 
 
 [dependencies]
-winapi = { version = "0.3.7", features = ["windef", "winerror", "d3d11", "dxgi", "dxgi1_6"] }
+winapi = { version = "0.3.7", features = ["windef", "winerror", "winuser", "d3d11", "dxgi", "dxgi1_6", "libloaderapi"] }
 
 # From doc.rust-lang.org:
 # The development profile, used for `cargo build`.
