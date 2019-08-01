@@ -1,5 +1,5 @@
 [package]
-name = "lazy_mouse"
+name = "sparkle"
 version = "0.1.0"
 authors = ["Elena Gantner <elena.gantner@linesofcode.at>"]
 edition = "2018"
