@@ -1,23 +1,20 @@
 #![feature(fixed_size_array)]
+
 mod d3d11;
 mod window;
+mod utils;
 
 fn main() -> Result<(), &'static str> {
-    let window = match window::Window::create_window(1280, 720, "main", "sparkle-rs") {
-        Ok(window) => window,
-        Err(e) => return Err(e)
-    };
-    let mut dx_context = match d3d11::D3D11Backend::init(&window) {
-        Ok(ctx) => ctx,
+    let mut renderer = match d3d11::renderer::D3D11Renderer::create(1280, 720, "Sparkle-rs") {
+        Ok(r) => r,
         Err(e) => return Err(e)
     };
     loop {
-        if !window.update() {
+        if !renderer.update()? {
             break;
         }
-        dx_context.present()?;
     }
-    dx_context.cleanup();
+    renderer.cleanup();
 
     Ok(())
 }
