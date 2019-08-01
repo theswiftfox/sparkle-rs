@@ -3,11 +3,10 @@ use winapi::shared::windef::{HWND};
 use winapi::um::libloaderapi::*;
 use winapi::um::winuser::*;
 
-#[derive(Debug)]
 pub struct Window {
-    handle: HWND,
-    width: u32,
-    height: u32
+    pub handle: HWND,
+    pub width: u32,
+    pub height: u32
 }
 
 impl Window {
