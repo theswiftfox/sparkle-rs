@@ -7,6 +7,7 @@ edition = "2018"
 
 [dependencies]
 winapi = { version = "0.3.7", features = ["unknwnbase", "windef", "winerror", "winuser", "d3d11", "d3d11_1", "dxgi", "dxgi1_6", "d3d11sdklayers", "dxgidebug", "libloaderapi", "impl-default"] }
+cgmath = { version = "0.17.0", features = ["swizzle"] }
 
 # From doc.rust-lang.org:
 # The development profile, used for `cargo build`.
