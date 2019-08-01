@@ -7,7 +7,7 @@ fn main() -> Result<(), &'static str> {
         Ok(window) => window,
         Err(e) => return Err(e)
     };
-    let _dx_context = match d3d11::D3D11Backend::init(&window) {
+    let mut dx_context = match d3d11::D3D11Backend::init(&window) {
         Ok(ctx) => ctx,
         Err(e) => return Err(e)
     };
@@ -15,7 +15,9 @@ fn main() -> Result<(), &'static str> {
         if !window.update() {
             break;
         }
+        dx_context.present()?;
     }
+    dx_context.cleanup();
 
     Ok(())
 }
