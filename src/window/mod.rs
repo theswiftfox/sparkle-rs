@@ -2,6 +2,7 @@ use std::*;
 use winapi::shared::windef::{HWND};
 use winapi::um::libloaderapi::*;
 use winapi::um::winuser::*;
+use super::utils as utils;
 
 pub struct Window {
     pub handle: HWND,
@@ -11,8 +12,8 @@ pub struct Window {
 
 impl Window {
     pub fn create_window(width: i32, height: i32, name: &str, title: &str) -> Result<Window, &'static str> {
-        let name = to_wide_str(name);
-        let title = to_wide_str(title);
+        let name = utils::to_wide_str(name);
+        let title = utils::to_wide_str(title);
 
         unsafe {
             let instance = GetModuleHandleW(ptr::null_mut());
@@ -64,10 +65,4 @@ impl Window {
         }
         false
     }
-}
-
-
-fn to_wide_str(value: &str) -> Vec<u16> {
-    use std::os::windows::ffi::OsStrExt;
-    std::ffi::OsStr::new(value).encode_wide().chain( std::iter::once(0)).collect()
 }
