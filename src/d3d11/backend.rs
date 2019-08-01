@@ -37,10 +37,10 @@ pub struct D3D11Backend {
 
     framebuffer_width : u32,
     framebuffer_height : u32,
-    color_view : *mut dx11::ID3D11RenderTargetView,
-    depth_view : *mut dx11::ID3D11DepthStencilView,
-    color_target : *mut dx11::ID3D11Texture2D,
-    depth_target : *mut dx11::ID3D11Texture2D,
+    render_target_view : *mut dx11::ID3D11RenderTargetView,
+    depth_stencil_view : *mut dx11::ID3D11DepthStencilView,
+    render_target : *mut dx11::ID3D11Texture2D,
+    depth_stencil : *mut dx11::ID3D11Texture2D,
     viewport : dx11::D3D11_VIEWPORT,
 
     initialized : bool
@@ -67,10 +67,10 @@ impl Default for D3D11Backend {
             swap_chain: ptr::null_mut(),
             framebuffer_height: 0,
             framebuffer_width: 0,
-            color_view: ptr::null_mut(),
-            color_target: ptr::null_mut(),
-            depth_view: ptr::null_mut(),
-            depth_target: ptr::null_mut(),
+            render_target_view: ptr::null_mut(),
+            render_target: ptr::null_mut(),
+            depth_stencil_view: ptr::null_mut(),
+            depth_stencil: ptr::null_mut(),
             viewport: Default::default(),
             backbuffer_format: dxgifmt::DXGI_FORMAT_B8G8R8A8_UNORM,
             backbuffer_count: 2,
@@ -81,6 +81,22 @@ impl Default for D3D11Backend {
 }
 
 impl D3D11Backend {
+    pub fn get_context(&self) -> *mut dx11_1::ID3D11DeviceContext1 {
+        self.context
+    }
+    pub fn get_device(&self) -> *mut dx11_1::ID3D11Device1 {
+        self.device
+    }
+    pub fn get_render_target_view(&self) -> *mut dx11::ID3D11RenderTargetView {
+        self.render_target_view
+    }
+    pub fn get_depth_stencil_view(&self) -> *mut dx11::ID3D11DepthStencilView {
+        self.depth_stencil_view
+    }
+    pub fn get_viewport(&self) -> &dx11::D3D11_VIEWPORT {
+        &self.viewport
+    }
+
     pub fn init(window: &super::super::window::Window) -> Result<D3D11Backend, &'static str> {
         let mut backend = D3D11Backend::default();
         backend.window_handle = window.handle;
@@ -93,10 +109,10 @@ impl D3D11Backend {
         Ok( backend )
     }
     pub fn cleanup(&mut self) {
-        self.depth_view = ptr::null_mut();
-        self.color_view = ptr::null_mut();
-        self.depth_target = ptr::null_mut();
-        self.color_target = ptr::null_mut();
+        self.depth_stencil_view = ptr::null_mut();
+        self.render_target_view = ptr::null_mut();
+        self.depth_stencil = ptr::null_mut();
+        self.render_target = ptr::null_mut();
         self.swap_chain = ptr::null_mut();
         self.context = ptr::null_mut();
 
@@ -349,10 +365,10 @@ impl D3D11Backend {
         let null_views: *mut dx11::ID3D11RenderTargetView = ptr::null_mut();
         unsafe { (*self.context).OMSetRenderTargets(1, &null_views, ptr::null_mut()) };
 
-        self.color_target = ptr::null_mut();
-        self.depth_target = ptr::null_mut();
-        self.color_view = ptr::null_mut();
-        self.depth_view = ptr::null_mut();
+        self.render_target = ptr::null_mut();
+        self.depth_stencil = ptr::null_mut();
+        self.render_target_view = ptr::null_mut();
+        self.depth_stencil_view = ptr::null_mut();
 
         unsafe {
             (*self.context).Flush();
@@ -406,7 +422,7 @@ impl D3D11Backend {
             }
 
             let swapchain_uuid = <dx11::ID3D11Texture2D as winapi::Interface>::uuidof();
-            res = unsafe { (*self.swap_chain).GetBuffer(0, &swapchain_uuid, &mut self.color_target as *mut *mut _ as *mut *mut _) };
+            res = unsafe { (*self.swap_chain).GetBuffer(0, &swapchain_uuid, &mut self.render_target as *mut *mut _ as *mut *mut _) };
             if res < S_OK {
                 println!("GetBuffer error: {}", res);
                 return Err("Unable to create render target!");
@@ -415,9 +431,9 @@ impl D3D11Backend {
             render_target_view_desc.Format = self.backbuffer_format;
             render_target_view_desc.ViewDimension = dx11::D3D11_RTV_DIMENSION_TEXTURE2D;
             res = unsafe { (*self.device).CreateRenderTargetView(
-                self.color_target as *mut _,
+                self.render_target as *mut _,
                 &render_target_view_desc,
-                &mut self.color_view as *mut *mut _
+                &mut self.render_target_view as *mut *mut _
             )};
             if res < S_OK {
                 println!("CreateRenderTargetView error: {}", res);
@@ -435,7 +451,7 @@ impl D3D11Backend {
             res = unsafe { (*self.device).CreateTexture2D(
                 &depth_stencil_desc,
                 ptr::null_mut(),
-                &mut self.depth_target as *mut *mut _
+                &mut self.depth_stencil as *mut *mut _
             ) };
             if res < S_OK {
                 println!("CreateTexture2D error: {}", res);
@@ -445,9 +461,9 @@ impl D3D11Backend {
             let mut depth_stencil_view_desc : dx11::D3D11_DEPTH_STENCIL_VIEW_DESC = Default::default();
             depth_stencil_view_desc.ViewDimension = dx11::D3D11_DSV_DIMENSION_TEXTURE2D;
             res = unsafe { (*self.device).CreateDepthStencilView(
-                self.depth_target as *mut _,
+                self.depth_stencil as *mut _,
                 &depth_stencil_view_desc,
-                &mut self.depth_view as *mut *mut _
+                &mut self.depth_stencil_view as *mut *mut _
             )};
             if res < S_OK {
                 println!("Create Depth-Stencil view error: {}", res);
@@ -471,8 +487,8 @@ impl D3D11Backend {
     pub fn present(&mut self) -> Result<(), &'static str> {
         let res = unsafe { (*self.swap_chain).Present(1, 0) };
         unsafe {
-            (*self.context).DiscardView(self.color_view as *mut _);            
-            (*self.context).DiscardView(self.depth_view as *mut _);
+            (*self.context).DiscardView(self.render_target_view as *mut _);            
+            (*self.context).DiscardView(self.depth_stencil_view as *mut _);
         }
         if res == DXGI_ERROR_DEVICE_REMOVED || res == DXGI_ERROR_DEVICE_RESET {
             #[cfg(debug_assertions)]
