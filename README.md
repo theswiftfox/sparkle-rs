@@ -1,2 +1,3 @@
-# didactic-pancake
-Learning D3D11 using rust
+# sparkle-rs  
+
+D3D11 Rendering Engine written in rust as I am learning D3D11 and rust
