@@ -3,6 +3,7 @@ name = "sparkle"
 version = "0.1.0"
 authors = ["Elena Gantner <elena.gantner@linesofcode.at>"]
 edition = "2018"
+build = "build.rs"
 
 
 [dependencies]
