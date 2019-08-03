@@ -3,7 +3,7 @@ use std::process::Command;
 use std::error::Error;
 
 fn main()-> Result<(), Box<dyn Error>> {
-    //println!("cargo:rerun-if-changed=src/shaders");
+    println!("cargo:rerun-if-changed=src/shaders");
     let _out_dir = "target/release/shaders";
     #[cfg(debug_assertions)]
     let _out_dir = "target/debug/shaders";

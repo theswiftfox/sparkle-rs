@@ -1,8 +1,12 @@
 use std::*;
-use super::super::{window};
+use super::super::{window, utils};
 use super::{backend};
 use cgmath::conv::*;
 use winapi::um::d3d11 as dx11;
+#[cfg(debug_assertions)]
+use winapi::um::d3dcommon as dx;
+#[cfg(debug_assertions)]
+use winapi::um::d3dcompiler as d3dcomp;
 
 #[allow(dead_code)] // we don't want warnings if some color is not used..
 mod colors_linear {
@@ -78,6 +82,39 @@ impl D3D11Renderer {
         self.backend.pix_end_event();
 
         self.backend.present()?;
+
+        Ok(())
+    }
+
+    fn setupShaders(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let mut release = true;
+        #[cfg(debug_assertions)]
+        {
+            let entry = utils::to_lpc_str("main");
+            let mut vertex_shader_data : *mut dx::ID3DBlob = ptr::null_mut();
+            let mut vertex_shader_error : *mut dx::ID3DBlob = ptr::null_mut();
+            let flags : u32 = d3dcomp::D3DCOMPILE_ENABLE_STRICTNESS | d3dcomp::D3DCOMPILE_DEBUG;
+
+            let vtx_shader_file = utils::to_wide_str("shaders/vertex.hlsl");
+            let target = utils::to_lpc_str("vs_5_0");
+            let result = unsafe { d3dcomp::D3DCompileFromFile(
+                vtx_shader_file.as_ptr(), 
+                ptr::null(), 
+                ptr::null_mut(), 
+                entry.as_ptr(), 
+                target.as_ptr(),
+                flags,
+                0, 
+                &mut vertex_shader_data,
+                &mut vertex_shader_error
+            )};      
+
+            release = false;
+        }
+        if (release) {
+            // todo: load from precompiled file
+        }
+
 
         Ok(())
     }
