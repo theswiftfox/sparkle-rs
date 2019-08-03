@@ -72,8 +72,8 @@ impl D3D11Renderer {
 
         self.backend.pix_begin_event("Render");
 
-       // let ctx = self.backend.get_context();
-      //  unsafe { (*ctx).IASetInputLayout() };
+		// let ctx = self.backend.get_context();
+		// unsafe { (*ctx).IASetInputLayout() };
 
         self.backend.pix_end_event();
 
