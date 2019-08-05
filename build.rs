@@ -1,5 +1,6 @@
+#![allow(unused_assignments)]
+
 use std::process::Command;
-// use std::env;
 use std::error::Error;
 
 fn main()-> Result<(), Box<dyn Error>> {
@@ -42,7 +43,7 @@ fn main()-> Result<(), Box<dyn Error>> {
                     }
                 }
             } else {
-                std::fs::copy(p.to_str().unwrap(), format!("{}/{}", _out_dir, p.file_name().unwrap().to_str().unwrap()));
+                std::fs::copy(p.to_str().unwrap(), format!("{}/{}", _out_dir, p.file_name().unwrap().to_str().unwrap()))?;
             }
         }
     }
