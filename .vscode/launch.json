@@ -8,7 +8,7 @@
             "name": "Debug",
             "type": "cppvsdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/target/debug/lazy_mouse.exe",
+            "program": "${workspaceFolder}/target/debug/sparkle.exe",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
