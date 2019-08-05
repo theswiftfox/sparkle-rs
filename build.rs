@@ -10,6 +10,12 @@ fn main()-> Result<(), Box<dyn Error>> {
     // Create destination path if necessary
     std::fs::create_dir_all(_out_dir)?;
 
+    let mut release = true;
+    #[cfg(debug_assertions)]
+    {
+        release = false;
+    }
+
     for entry in std::fs::read_dir("src/shaders")? {
         let entry = entry?;
 
@@ -17,21 +23,26 @@ fn main()-> Result<(), Box<dyn Error>> {
             let p = entry.path();
             let name = p.file_stem().unwrap().to_string_lossy();
 
-            let shader = match name.as_ref() {
-                    "vertex" => Some("vs_5_0"),
-                    "pixel" => Some("ps_5_0"),
-                    _ => None
-                };
-            if shader != None {
-                // compile shaders
-                let cmd = Command::new("fxc").args(&["/T", &shader.unwrap(), "/Fo"])
-                       .arg(&format!("{}/{}.cso", _out_dir, name))
-                       .arg(p.to_str().unwrap())
-                       .spawn().unwrap();
-                let output = cmd.wait_with_output().unwrap();
-                if !output.status.success() {
-                    panic!(format!("Shader compile failed for: {}", p.file_name().unwrap().to_string_lossy()));
+            if release {
+
+                let shader = match name.as_ref() {
+                        "vertex" => Some("vs_5_0"),
+                        "pixel" => Some("ps_5_0"),
+                        _ => None
+                    };
+                if shader != None {
+                    // compile shaders
+                    let cmd = Command::new("fxc").args(&["/T", &shader.unwrap(), "/Fo"])
+                        .arg(&format!("{}/{}.cso", _out_dir, name))
+                        .arg(p.to_str().unwrap())
+                        .spawn().unwrap();
+                    let output = cmd.wait_with_output().unwrap();
+                    if !output.status.success() {
+                        panic!(format!("Shader compile failed for: {}", p.file_name().unwrap().to_string_lossy()));
+                    }
                 }
+            } else {
+                std::fs::copy(p.to_str().unwrap(), format!("{}/{}", _out_dir, p.file_name().unwrap().to_str().unwrap()));
             }
         }
     }

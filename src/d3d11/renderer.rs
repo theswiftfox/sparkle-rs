@@ -1,12 +1,11 @@
 use std::*;
-use super::super::{window, utils};
+use super::super::{window};
 use super::{backend};
 use cgmath::conv::*;
 use winapi::um::d3d11 as dx11;
 #[cfg(debug_assertions)]
 use winapi::um::d3dcommon as dx;
-#[cfg(debug_assertions)]
-use winapi::um::d3dcompiler as d3dcomp;
+use winapi::shared::winerror::{S_OK};
 
 #[allow(dead_code)] // we don't want warnings if some color is not used..
 mod colors_linear {
@@ -19,17 +18,24 @@ mod colors_linear {
 
 pub struct D3D11Renderer {
     backend : backend::D3D11Backend,
-    window : window::Window
+    window : window::Window,
+
+    vertex_shader : *mut dx11::ID3D11VertexShader,
+    pixel_shader : *mut dx11::ID3D11PixelShader
 }
 
 impl D3D11Renderer {
     pub fn create(width: i32, height: i32, title: &str) -> Result<D3D11Renderer, &'static str> {
         let window = window::Window::create_window(width, height, "main", title)?;
         let backend = backend::D3D11Backend::init(&window)?;
-        let renderer = D3D11Renderer {
+        let mut renderer = D3D11Renderer {
             backend: backend,
-            window: window
+            window: window,
+            vertex_shader: ptr::null_mut(),
+            pixel_shader: ptr::null_mut()
         };
+
+        renderer.setup_shaders()?;
         
         Ok(renderer)
     }
@@ -86,32 +92,52 @@ impl D3D11Renderer {
         Ok(())
     }
 
-    fn setupShaders(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    fn setup_shaders(&mut self) -> Result<(), &'static str> {
         let mut release = true;
         #[cfg(debug_assertions)]
         {
-            let entry = utils::to_lpc_str("main");
             let mut vertex_shader_data : *mut dx::ID3DBlob = ptr::null_mut();
-            let mut vertex_shader_error : *mut dx::ID3DBlob = ptr::null_mut();
-            let flags : u32 = d3dcomp::D3DCOMPILE_ENABLE_STRICTNESS | d3dcomp::D3DCOMPILE_DEBUG;
+            let mut shader_dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+            shader_dir.push("shaders");
+            let mut vtx_shader_file = std::path::PathBuf::from(shader_dir.to_str().unwrap());
+            vtx_shader_file.push("vertex.hlsl");
+            let target = "vs_5_0";
+            backend::D3D11Backend::compile_shader(&mut vertex_shader_data as *mut *mut _, vtx_shader_file.as_path().to_str().unwrap(), target)?;
 
-            let vtx_shader_file = utils::to_wide_str("shaders/vertex.hlsl");
-            let target = utils::to_lpc_str("vs_5_0");
-            let result = unsafe { d3dcomp::D3DCompileFromFile(
-                vtx_shader_file.as_ptr(), 
-                ptr::null(), 
-                ptr::null_mut(), 
-                entry.as_ptr(), 
-                target.as_ptr(),
-                flags,
-                0, 
-                &mut vertex_shader_data,
-                &mut vertex_shader_error
-            )};      
+            let vtx_buffer_ptr = unsafe { (*vertex_shader_data).GetBufferPointer() };
+            let vtx_buffer_size = unsafe { (*vertex_shader_data).GetBufferSize() };
+            let res = unsafe {(*self.backend.get_device()).CreateVertexShader(
+                vtx_buffer_ptr as *const _,
+                vtx_buffer_size,
+                ptr::null_mut(),
+                &mut self.vertex_shader as *mut *mut _
+            )};
+
+            if res < S_OK {
+                return Err("Failed to create Vertex Shader!");
+            }
+
+            let mut pixel_shader_data : *mut dx::ID3DBlob = ptr::null_mut();
+            let mut px_shader_file = std::path::PathBuf::from(shader_dir.to_str().unwrap());
+            px_shader_file.push("pixel.hlsl");
+            let target = "ps_5_0";
+            backend::D3D11Backend::compile_shader(&mut pixel_shader_data as *mut *mut _, px_shader_file.as_path().to_str().unwrap(), target)?;
+
+            let pix_buffer_ptr = unsafe { (*pixel_shader_data).GetBufferPointer() };
+            let pix_buffer_size = unsafe { (*pixel_shader_data).GetBufferSize() };
+            let res = unsafe { (*self.backend.get_device()).CreatePixelShader(
+                pix_buffer_ptr as *const _,
+                pix_buffer_size,
+                ptr::null_mut(),
+                &mut self.pixel_shader as *mut *mut _
+            )};
+            if res < S_OK {
+                return Err("Failed to create Pixel Shader!");
+            }
 
             release = false;
         }
-        if (release) {
+        if release {
             // todo: load from precompiled file
         }
 
