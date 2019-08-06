@@ -1,5 +1,6 @@
 use std::{ptr};
 use super::super::{utils};
+use super::geometry::{Vertex};
 
 use winapi::shared::winerror::{S_OK};
 
@@ -12,6 +13,7 @@ use winapi::shared::dxgiformat as dxgifmt;
 pub struct ShaderProgram {
     vertex_shader : *mut dx11::ID3D11VertexShader,
     pixel_shader : *mut dx11::ID3D11PixelShader,
+    input_layout : *mut dx11::ID3D11InputLayout,
 }
 
 impl Default for ShaderProgram {
@@ -19,6 +21,7 @@ impl Default for ShaderProgram {
         ShaderProgram {
             vertex_shader : ptr::null_mut(),
             pixel_shader : ptr::null_mut(),
+            input_layout : ptr::null_mut(),
         }
     }
 }
@@ -66,8 +69,12 @@ impl ShaderProgram {
         Ok(())
     }
 
+    #[allow(unused_mut)]
     pub fn setup_shaders(&mut self, device : *mut dx11_1::ID3D11Device1) -> Result<(), &'static str> {
         let mut release = true;
+        let mut vertex_shader_data : *mut dx::ID3DBlob = ptr::null_mut();
+        let mut pixel_shader_data : *mut dx::ID3DBlob = ptr::null_mut();
+
         #[cfg(debug_assertions)]
         {
             let mut vertex_shader_data : *mut dx::ID3DBlob = ptr::null_mut();
@@ -88,10 +95,9 @@ impl ShaderProgram {
             )};
 
             if res < S_OK {
-                return Err("Failed to create Vertex Shader!");
+                return Err("Vertex Shader creation failed!");
             }
 
-            let mut pixel_shader_data : *mut dx::ID3DBlob = ptr::null_mut();
             let mut px_shader_file = std::path::PathBuf::from(shader_dir.to_str().unwrap());
             px_shader_file.push("pixel.hlsl");
             let target = "ps_5_0";
@@ -106,7 +112,7 @@ impl ShaderProgram {
                 &mut self.pixel_shader as *mut *mut _
             )};
             if res < S_OK {
-                return Err("Failed to create Pixel Shader!");
+                return Err("Pixel Shader creation failed!");
             }
 
             release = false;
@@ -136,7 +142,24 @@ impl ShaderProgram {
             },
         ];
 
-        
+        let res = unsafe { (*device).CreateInputLayout(
+            input_element_description.as_ptr(),
+            input_element_description.len() as u32,
+            (*vertex_shader_data).GetBufferPointer(),
+            (*vertex_shader_data).GetBufferSize(),
+            &mut self.input_layout as *mut *mut _
+        )};
+        if res < S_OK {
+            return Err("Input Layout creation failed!");
+        }
+
+        let vertex_buffer_data : [Vertex; 3] = [
+            Vertex::new_from_f32(0.0f32, 0.5f32, 0.5f32, 1.0f32, 1.0f32, 0.0f32, 0.0f32, 1.0f32),
+            Vertex::new_from_f32(0.5f32, -0.5f32, 0.5f32, 1.0f32, 0.0f32, 1.0f32, 0.0f32, 1.0f32),
+            Vertex::new_from_f32(-0.5f32, -0.5f32, 0.5f32, 1.0f32, 0.0f32, 0.0f32, 1.0f32, 1.0f32),
+        ];
+
+        // todo: creat vtx buff
 
         Ok(())
     }
