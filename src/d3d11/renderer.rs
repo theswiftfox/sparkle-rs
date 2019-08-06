@@ -3,9 +3,6 @@ use super::super::{window};
 use super::{backend};
 use cgmath::conv::*;
 use winapi::um::d3d11 as dx11;
-#[cfg(debug_assertions)]
-use winapi::um::d3dcommon as dx;
-use winapi::shared::winerror::{S_OK};
 
 #[allow(dead_code)] // we don't want warnings if some color is not used..
 mod colors_linear {
