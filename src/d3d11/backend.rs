@@ -10,11 +10,12 @@ use winapi::shared::dxgi1_2 as dxgi2;
 use winapi::shared::dxgi1_3 as dxgi3;
 use winapi::shared::dxgiformat as dxgifmt;
 use winapi::um::d3dcommon as dx;
-use winapi::um::d3dcompiler as d3dcomp;
 use winapi::ctypes::c_void as c_void;
 use winapi::shared::winerror::*;
 use winapi::um::unknwnbase::{IUnknown};
 use super::super::*;
+
+use d3d11::shaders::{ShaderProgram};
 
 #[cfg(debug_assertions)]
 use winapi::um::d3d11sdklayers as sdklayers;
@@ -43,6 +44,8 @@ pub struct D3D11Backend {
     render_target : *mut dx11::ID3D11Texture2D,
     depth_stencil : *mut dx11::ID3D11Texture2D,
     viewport : dx11::D3D11_VIEWPORT,
+    
+    shader_program : ShaderProgram,
 
     initialized : bool
 }
@@ -76,6 +79,7 @@ impl Default for D3D11Backend {
             backbuffer_format: dxgifmt::DXGI_FORMAT_B8G8R8A8_UNORM,
             backbuffer_count: 2,
             depthbuffer_format: dxgifmt::DXGI_FORMAT_D32_FLOAT,
+            shader_program: Default::default(),
             initialized: false
         }
     }
@@ -534,6 +538,10 @@ impl D3D11Backend {
         }
     }
 
+    pub fn load_shader_program(&mut self) -> Result<(), &'static str> {
+        self.shader_program.setup_shaders(self.device)
+    }
+
     /**
      * PIX Events
      */
@@ -547,40 +555,5 @@ impl D3D11Backend {
     pub fn pix_set_marker(&self, name: &str) {
         let msg_wstr = utils::to_wide_str(name);
         unsafe { (*self.annotation).SetMarker(msg_wstr.as_ptr()) };
-    }
-
-    pub fn compile_shader(mut shader_data : *mut *mut dx::ID3DBlob, shader_file : &str, target : &str) -> Result<(), &'static str> {
-        #[cfg(debug_assertions)]
-        println!("Compiling shader file: {}", shader_file);
-        let entry = utils::to_lpc_str("main");
-        let flags : u32 = d3dcomp::D3DCOMPILE_ENABLE_STRICTNESS | d3dcomp::D3DCOMPILE_DEBUG;
-
-        let shader_file_cstr = utils::to_wide_str(shader_file);
-        let target_cstr = utils::to_lpc_str(target);
-
-        let mut shader_comp_err : *mut dx::ID3DBlob = ptr::null_mut();
-            
-        let result = unsafe { d3dcomp::D3DCompileFromFile(
-                shader_file_cstr.as_ptr(), 
-                ptr::null(), 
-                ptr::null_mut(), 
-                entry.as_ptr(), 
-                target_cstr.as_ptr(),
-                flags,
-                0, 
-                shader_data as *mut *mut _,
-                &mut shader_comp_err as *mut *mut _
-        )};    
-        if result < S_OK {
-            shader_data = ptr::null_mut();
-            if shader_comp_err != ptr::null_mut() {
-                let buffer_ptr = unsafe { (*shader_comp_err).GetBufferPointer() };
-                let message_cstr = unsafe { std::ffi::CStr::from_ptr(buffer_ptr as *const i8) };
-                return Err(message_cstr.to_str().unwrap());
-            }
-            return Err("Shader compilation failed!");
-        } 
-
-        Ok(())
-    }
+    }    
 }
