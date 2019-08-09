@@ -1,7 +1,7 @@
 #![feature(fixed_size_array)]
 #![feature(stmt_expr_attributes)]
 #![allow(unused_assignments)]
-
+#[macro_use] extern crate const_cstr;
 
 mod d3d11;
 mod window;

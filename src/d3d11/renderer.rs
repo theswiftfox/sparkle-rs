@@ -27,7 +27,7 @@ impl D3D11Renderer {
             window: window,
         };
 
-        renderer.setup_shaders()?;
+        renderer.init_draw_program()?;
         
         Ok(renderer)
     }
@@ -74,8 +74,8 @@ impl D3D11Renderer {
 
         self.backend.pix_begin_event("Render");
 
-		// let ctx = self.backend.get_context();
-		// unsafe { (*ctx).IASetInputLayout() };
+		let ctx = self.backend.get_context();
+        unsafe { (*ctx).Draw(3, 0) };
 
         self.backend.pix_end_event();
 
@@ -84,8 +84,8 @@ impl D3D11Renderer {
         Ok(())
     }
 
-    fn setup_shaders(&mut self) -> Result<(), &'static str> {
-        self.backend.load_shader_program()?;
+    fn init_draw_program(&mut self) -> Result<(), &'static str> {
+        self.backend.initialize_shader_program()?;
 
         Ok(())
     }
