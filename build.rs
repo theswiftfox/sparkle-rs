@@ -1,9 +1,9 @@
 #![allow(unused_assignments)]
 
-use std::process::Command;
 use std::error::Error;
+use std::process::Command;
 
-fn main()-> Result<(), Box<dyn Error>> {
+fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo:rerun-if-changed=src/shaders");
     let _out_dir = "target/release/shaders";
     #[cfg(debug_assertions)]
@@ -25,25 +25,32 @@ fn main()-> Result<(), Box<dyn Error>> {
             let name = p.file_stem().unwrap().to_string_lossy();
 
             if release {
-
                 let shader = match name.as_ref() {
-                        "vertex" => Some("vs_5_0"),
-                        "pixel" => Some("ps_5_0"),
-                        _ => None
-                    };
+                    "vertex" => Some("vs_5_0"),
+                    "pixel" => Some("ps_5_0"),
+                    _ => None,
+                };
                 if shader != None {
                     // compile shaders
-                    let cmd = Command::new("fxc").args(&["/T", &shader.unwrap(), "/Fo"])
+                    let cmd = Command::new("fxc")
+                        .args(&["/T", &shader.unwrap(), "/Fo"])
                         .arg(&format!("{}/{}.cso", _out_dir, name))
                         .arg(p.to_str().unwrap())
-                        .spawn().unwrap();
+                        .spawn()
+                        .unwrap();
                     let output = cmd.wait_with_output().unwrap();
                     if !output.status.success() {
-                        panic!(format!("Shader compile failed for: {}", p.file_name().unwrap().to_string_lossy()));
+                        panic!(format!(
+                            "Shader compile failed for: {}",
+                            p.file_name().unwrap().to_string_lossy()
+                        ));
                     }
                 }
             } else {
-                std::fs::copy(p.to_str().unwrap(), format!("{}/{}", _out_dir, p.file_name().unwrap().to_str().unwrap()))?;
+                std::fs::copy(
+                    p.to_str().unwrap(),
+                    format!("{}/{}", _out_dir, p.file_name().unwrap().to_str().unwrap()),
+                )?;
             }
         }
     }
