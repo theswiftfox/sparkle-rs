@@ -14,6 +14,7 @@ winapi = { version = "0.3.7", features = [
     "libloaderapi", "impl-default"
     ] }
 cgmath = { version = "0.17.0", features = ["swizzle"] }
+const-cstr = "0.1"
 
 # From doc.rust-lang.org:
 # The development profile, used for `cargo build`.
