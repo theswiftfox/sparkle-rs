@@ -14,6 +14,7 @@ use winapi::ctypes::c_void as c_void;
 use winapi::shared::winerror::*;
 use winapi::um::unknwnbase::{IUnknown};
 use super::super::*;
+use super::geometry::{Vertex};
 
 use d3d11::shaders::{ShaderProgram};
 
@@ -46,6 +47,9 @@ pub struct D3D11Backend {
     viewport : dx11::D3D11_VIEWPORT,
     
     shader_program : ShaderProgram,
+    
+    input_layout : *mut dx11::ID3D11InputLayout,
+    vertex_buffer : *mut dx11::ID3D11Buffer,
 
     initialized : bool
 }
@@ -80,17 +84,17 @@ impl Default for D3D11Backend {
             backbuffer_count: 2,
             depthbuffer_format: dxgifmt::DXGI_FORMAT_D32_FLOAT,
             shader_program: Default::default(),
+            input_layout : ptr::null_mut(),
+            vertex_buffer : ptr::null_mut(),
             initialized: false
         }
     }
 }
 
+#[allow(dead_code)]
 impl D3D11Backend {
     pub fn get_context(&self) -> *mut dx11_1::ID3D11DeviceContext1 {
         self.context
-    }
-    pub fn get_device(&self) -> *mut dx11_1::ID3D11Device1 {
-        self.device
     }
     pub fn get_render_target_view(&self) -> *mut dx11::ID3D11RenderTargetView {
         self.render_target_view
@@ -538,8 +542,85 @@ impl D3D11Backend {
         }
     }
 
-    pub fn load_shader_program(&mut self) -> Result<(), &'static str> {
-        self.shader_program.setup_shaders(self.device)
+    pub fn initialize_shader_program(&mut self) -> Result<(), &'static str> {
+        self.shader_program.setup_shaders(self.device)?;
+
+        let pos_name : &'static std::ffi::CStr =  const_cstr!("SV_Position").as_cstr();
+        let color_name : &'static std::ffi::CStr =  const_cstr!("COLOR").as_cstr();
+        let input_element_description : [dx11::D3D11_INPUT_ELEMENT_DESC; 2] = [
+            dx11::D3D11_INPUT_ELEMENT_DESC { 
+                SemanticName: pos_name.as_ptr() as *const _,
+                SemanticIndex: 0,
+                Format: dxgifmt::DXGI_FORMAT_R32G32B32A32_FLOAT,
+                InputSlot: 0,
+                AlignedByteOffset: 0,
+                InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
+                InstanceDataStepRate: 0 
+            },
+            dx11::D3D11_INPUT_ELEMENT_DESC { 
+                SemanticName: color_name.as_ptr() as *const _,
+                SemanticIndex: 0,
+                Format: dxgifmt::DXGI_FORMAT_R32G32B32A32_FLOAT,
+                InputSlot: 0,
+                AlignedByteOffset: 16,
+                InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
+                InstanceDataStepRate: 0 
+            },
+        ];
+
+        let vertex_shader = self.shader_program.get_vertex_shader_byte_code();
+
+        let res = unsafe { (*self.device).CreateInputLayout(
+            input_element_description.as_ptr(),
+            input_element_description.len() as u32,
+            (*vertex_shader).GetBufferPointer(),
+            (*vertex_shader).GetBufferSize(),
+            &mut self.input_layout as *mut *mut _
+        )};
+        if res < S_OK {
+            return Err("Input Layout creation failed!");
+        }
+
+        let vertex_buffer_data : [Vertex; 3] = [
+            Vertex::new_from_f32(0.0f32, 0.5f32, 0.5f32, 1.0f32, 1.0f32, 0.0f32, 0.0f32, 1.0f32),
+            Vertex::new_from_f32(0.5f32, -0.5f32, 0.5f32, 1.0f32, 0.0f32, 1.0f32, 0.0f32, 1.0f32),
+            Vertex::new_from_f32(-0.5f32, -0.5f32, 0.5f32, 1.0f32, 0.0f32, 0.0f32, 1.0f32, 1.0f32),
+        ];
+
+        let mut initial_data : dx11::D3D11_SUBRESOURCE_DATA = Default::default();
+        initial_data.pSysMem = vertex_buffer_data.as_ptr() as *const _;
+
+        let stride = std::mem::size_of::<Vertex>() as u32;
+        let offset : u32 = 0;
+
+        let mut buffer_desc : dx11::D3D11_BUFFER_DESC = Default::default();
+        buffer_desc.ByteWidth = stride * vertex_buffer_data.len() as u32;
+        buffer_desc.Usage = dx11::D3D11_USAGE_IMMUTABLE;
+        buffer_desc.BindFlags = dx11::D3D11_BIND_VERTEX_BUFFER;
+        buffer_desc.StructureByteStride = stride;
+
+        let res = unsafe { (*self.device).CreateBuffer(
+            &buffer_desc, 
+            &initial_data,
+            &mut self.vertex_buffer as *mut *mut _
+        )};
+
+        if res < S_OK {
+            return Err("Vertex Buffer creation failed!");
+        }
+
+        // update context
+        unsafe { 
+            (*self.context).IASetInputLayout(self.input_layout); 
+            (*self.context).IASetPrimitiveTopology(dx::D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            (*self.context).IASetVertexBuffers(0, 1, &self.vertex_buffer as *const *mut _, &stride, &offset);
+
+            (*self.context).VSSetShader(self.shader_program.get_vertex_shader(), ptr::null(), 0);
+            (*self.context).GSSetShader(ptr::null_mut(), ptr::null(), 0);
+            (*self.context).PSSetShader(self.shader_program.get_pixel_shader(), ptr::null(), 0);  
+        }
+
+        Ok(())
     }
 
     /**

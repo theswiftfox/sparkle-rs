@@ -1,6 +1,5 @@
 use std::{ptr};
 use super::super::{utils};
-use super::geometry::{Vertex};
 
 use winapi::shared::winerror::{S_OK};
 
@@ -8,31 +7,40 @@ use winapi::um::d3d11 as dx11;
 use winapi::um::d3d11_1 as dx11_1;
 use winapi::um::d3dcommon as dx;
 use winapi::um::d3dcompiler as d3dcomp;
-use winapi::shared::dxgiformat as dxgifmt;
 
 pub struct ShaderProgram {
     vertex_shader : *mut dx11::ID3D11VertexShader,
+    vertex_shader_byte_code : *mut dx::ID3DBlob,
     pixel_shader : *mut dx11::ID3D11PixelShader,
-    input_layout : *mut dx11::ID3D11InputLayout,
+    pixel_shader_byte_code : *mut dx::ID3DBlob,
 }
 
 impl Default for ShaderProgram {
     fn default() -> ShaderProgram {
         ShaderProgram {
             vertex_shader : ptr::null_mut(),
+            vertex_shader_byte_code : ptr::null_mut(),
             pixel_shader : ptr::null_mut(),
-            input_layout : ptr::null_mut(),
+            pixel_shader_byte_code : ptr::null_mut(),
         }
     }
 }
 
+#[allow(dead_code)]
 impl ShaderProgram {
     pub fn get_vertex_shader(&self) -> *mut dx11::ID3D11VertexShader {
         self.vertex_shader
+    }   
+     pub fn get_vertex_shader_byte_code(&self) -> *mut dx::ID3DBlob {
+        self.vertex_shader_byte_code
     }
     pub fn get_pixel_shader(&self) -> *mut dx11::ID3D11PixelShader {
         self.pixel_shader
     }
+    pub fn get_pixel_shader_byte_code(&self) -> *mut dx::ID3DBlob {
+        self.pixel_shader_byte_code
+    }
+    
 
     pub fn compile_shader(mut shader_data : *mut *mut dx::ID3DBlob, shader_file : &str, target : &str) -> Result<(), &'static str> {
         #[cfg(debug_assertions)]
@@ -72,21 +80,18 @@ impl ShaderProgram {
     #[allow(unused_mut)]
     pub fn setup_shaders(&mut self, device : *mut dx11_1::ID3D11Device1) -> Result<(), &'static str> {
         let mut release = true;
-        let mut vertex_shader_data : *mut dx::ID3DBlob = ptr::null_mut();
-        let mut pixel_shader_data : *mut dx::ID3DBlob = ptr::null_mut();
 
         #[cfg(debug_assertions)]
         {
-            let mut vertex_shader_data : *mut dx::ID3DBlob = ptr::null_mut();
             let mut shader_dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
             shader_dir.push("shaders");
             let mut vtx_shader_file = std::path::PathBuf::from(shader_dir.to_str().unwrap());
             vtx_shader_file.push("vertex.hlsl");
             let target = "vs_5_0";
-            ShaderProgram::compile_shader(&mut vertex_shader_data as *mut *mut _, vtx_shader_file.as_path().to_str().unwrap(), target)?;
+            ShaderProgram::compile_shader(&mut self.vertex_shader_byte_code as *mut *mut _, vtx_shader_file.as_path().to_str().unwrap(), target)?;
 
-            let vtx_buffer_ptr = unsafe { (*vertex_shader_data).GetBufferPointer() };
-            let vtx_buffer_size = unsafe { (*vertex_shader_data).GetBufferSize() };
+            let vtx_buffer_ptr = unsafe { (*self.vertex_shader_byte_code).GetBufferPointer() };
+            let vtx_buffer_size = unsafe { (*self.vertex_shader_byte_code).GetBufferSize() };
             let res = unsafe {(*device).CreateVertexShader(
                 vtx_buffer_ptr as *const _,
                 vtx_buffer_size,
@@ -101,10 +106,10 @@ impl ShaderProgram {
             let mut px_shader_file = std::path::PathBuf::from(shader_dir.to_str().unwrap());
             px_shader_file.push("pixel.hlsl");
             let target = "ps_5_0";
-            ShaderProgram::compile_shader(&mut pixel_shader_data as *mut *mut _, px_shader_file.as_path().to_str().unwrap(), target)?;
+            ShaderProgram::compile_shader(&mut self.pixel_shader_byte_code as *mut *mut _, px_shader_file.as_path().to_str().unwrap(), target)?;
 
-            let pix_buffer_ptr = unsafe { (*pixel_shader_data).GetBufferPointer() };
-            let pix_buffer_size = unsafe { (*pixel_shader_data).GetBufferSize() };
+            let pix_buffer_ptr = unsafe { (*self.pixel_shader_byte_code).GetBufferPointer() };
+            let pix_buffer_size = unsafe { (*self.pixel_shader_byte_code).GetBufferSize() };
             let res = unsafe { (*device).CreatePixelShader(
                 pix_buffer_ptr as *const _,
                 pix_buffer_size,
@@ -120,46 +125,6 @@ impl ShaderProgram {
         if release {
             // todo: load from precompiled file
         }
-
-        let input_element_description : [dx11::D3D11_INPUT_ELEMENT_DESC; 2] = [
-            dx11::D3D11_INPUT_ELEMENT_DESC { 
-                SemanticName: utils::to_lpc_str("SV_Position").as_ptr(),
-                SemanticIndex: 0,
-                Format: dxgifmt::DXGI_FORMAT_R32G32B32A32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: 0,
-                InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0 
-            },
-            dx11::D3D11_INPUT_ELEMENT_DESC { 
-                SemanticName: utils::to_lpc_str("COLOR").as_ptr(),
-                SemanticIndex: 0,
-                Format: dxgifmt::DXGI_FORMAT_R32G32B32A32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: 16,
-                InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0 
-            },
-        ];
-
-        let res = unsafe { (*device).CreateInputLayout(
-            input_element_description.as_ptr(),
-            input_element_description.len() as u32,
-            (*vertex_shader_data).GetBufferPointer(),
-            (*vertex_shader_data).GetBufferSize(),
-            &mut self.input_layout as *mut *mut _
-        )};
-        if res < S_OK {
-            return Err("Input Layout creation failed!");
-        }
-
-        let vertex_buffer_data : [Vertex; 3] = [
-            Vertex::new_from_f32(0.0f32, 0.5f32, 0.5f32, 1.0f32, 1.0f32, 0.0f32, 0.0f32, 1.0f32),
-            Vertex::new_from_f32(0.5f32, -0.5f32, 0.5f32, 1.0f32, 0.0f32, 1.0f32, 0.0f32, 1.0f32),
-            Vertex::new_from_f32(-0.5f32, -0.5f32, 0.5f32, 1.0f32, 0.0f32, 0.0f32, 1.0f32, 1.0f32),
-        ];
-
-        // todo: creat vtx buff
 
         Ok(())
     }
