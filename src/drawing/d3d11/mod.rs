@@ -1,5 +1,4 @@
 use crate::window::Window;
-use crate::drawing::d3d11::backend;
 use crate::drawing::Renderer;
 use cgmath::conv::*;
 use std::*;
@@ -8,15 +7,18 @@ use winapi::um::d3d11 as dx11;
 mod backend;
 mod shaders;
 
-pub struct D3D11Renderer<W : Window> {
+pub struct D3D11Renderer<W> {
     backend: backend::D3D11Backend,
-    window: Window,
+    window: W,
 }
 
 impl<W> Renderer for D3D11Renderer<W> where W : Window {
-    pub fn create(width: i32, height: i32, title: &str) -> D3D11Renderer {
-        let window = W::create_window(width, height, "main", title)?;
-        let backend = backend::D3D11Backend::init(&window)?;
+    fn create(width: i32, height: i32, title: &str) -> D3D11Renderer<W> {
+        let window = W::create_window(width, height, "main", title);
+        let backend = match backend::D3D11Backend::init(&window) {
+            Ok(b) => b,
+            Err(e) => panic!(e)
+        };
         let mut renderer = D3D11Renderer {
             backend: backend,
             window: window,
@@ -28,11 +30,11 @@ impl<W> Renderer for D3D11Renderer<W> where W : Window {
         }
     }
 
-    pub fn cleanup(&mut self) {
+    fn cleanup(&mut self) {
         self.backend.cleanup();
     }
 
-    pub fn update(&mut self) -> Result<bool, &'static str> {
+    fn update(&mut self) -> Result<bool, &'static str> {
         let ok = self.window.update();
 
         if ok {
@@ -42,7 +44,7 @@ impl<W> Renderer for D3D11Renderer<W> where W : Window {
         Ok(ok)
     }
 }
-impl D3D11Renderer {
+impl<W> D3D11Renderer<W> {
     /**
      * Section: Render funcs
      */
@@ -53,7 +55,7 @@ impl D3D11Renderer {
         let render_target = self.backend.get_render_target_view();
         let depth_stencil = self.backend.get_depth_stencil_view();
 
-        let color = array4(colors_linear::BACKGROUND);
+        let color = array4(crate::drawing::colors_linear::BACKGROUND);
         unsafe {
             (*ctx).ClearRenderTargetView(render_target, &color);
             (*ctx).ClearDepthStencilView(

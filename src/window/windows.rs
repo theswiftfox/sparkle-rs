@@ -12,6 +12,17 @@ pub struct WindowWin {
 }
 
 impl Window for WindowWin{
+    fn get_width(&self) -> u32 {
+        self.width
+    }
+    fn get_height(&self) -> u32 {
+        self.height
+    }
+    
+    fn get_handle(&self) -> winapi::shared::windef::HWND {
+        self.handle
+    }
+
     fn create_window(
         width: i32,
         height: i32,
@@ -55,7 +66,7 @@ impl Window for WindowWin{
             if handle.is_null() {
                 panic!("Unable to obtain window handle!")
             } else {
-                Window {
+                WindowWin {
                     handle: handle,
                     width: width as u32,
                     height: height as u32,
