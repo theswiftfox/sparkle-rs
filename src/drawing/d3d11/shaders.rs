@@ -1,8 +1,7 @@
-use super::super::utils;
+use crate::utils;
+use cgmath::*;
 use std::ptr;
-
 use winapi::shared::winerror::S_OK;
-
 use winapi::um::d3d11 as dx11;
 use winapi::um::d3d11_1 as dx11_1;
 use winapi::um::d3dcommon as dx;
@@ -13,6 +12,14 @@ pub struct ShaderProgram {
     vertex_shader_byte_code: *mut dx::ID3DBlob,
     pixel_shader: *mut dx11::ID3D11PixelShader,
     pixel_shader_byte_code: *mut dx::ID3DBlob,
+}
+
+pub struct ConstantBuffer {
+    pub view_matrix: Matrix4<f32>,
+    pub projection_matrix: Matrix4<f32>,
+    pub lights: [super::geometry::Light; 2],
+    _pad_1: Vector4<f32>,
+    _pad_2: Vector4<f32>,
 }
 
 impl Default for ShaderProgram {

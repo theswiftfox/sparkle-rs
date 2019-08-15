@@ -31,19 +31,29 @@ fn main() -> Result<(), Box<dyn Error>> {
                     _ => None,
                 };
                 if shader != None {
-                    // compile shaders
-                    let cmd = Command::new("fxc")
-                        .args(&["/T", &shader.unwrap(), "/Fo"])
-                        .arg(&format!("{}/{}.cso", _out_dir, name))
-                        .arg(p.to_str().unwrap())
-                        .spawn()
-                        .unwrap();
-                    let output = cmd.wait_with_output().unwrap();
-                    if !output.status.success() {
-                        panic!(format!(
-                            "Shader compile failed for: {}",
-                            p.file_name().unwrap().to_string_lossy()
-                        ));
+                    #[cfg(target_os = "windows")]
+                    {
+                        if (p.file_stem().unwrap() != "hlsl") {
+                            continue;
+                        }
+                        // compile shaders windows
+                        let cmd = Command::new("fxc")
+                            .args(&["/T", &shader.unwrap(), "/Fo"])
+                            .arg(&format!("{}/{}.cso", _out_dir, name))
+                            .arg(p.to_str().unwrap())
+                            .spawn()
+                            .unwrap();
+                        let output = cmd.wait_with_output().unwrap();
+                        if !output.status.success() {
+                            panic!(format!(
+                                "Shader compile failed for: {}",
+                                p.file_name().unwrap().to_string_lossy()
+                            ));
+                        }
+                    }
+                    #[cfg(target_os = "linux")]
+                    {
+                        // compile shaders linux
                     }
                 }
             } else {
@@ -54,6 +64,5 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
     }
-
     Ok(())
 }

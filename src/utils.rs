@@ -2,6 +2,7 @@
  *  Different Helper Functions
  */
 
+#[cfg(target_os = "windows")]
 pub fn to_wide_str(value: &str) -> Vec<u16> {
     use std::os::windows::ffi::OsStrExt;
     std::ffi::OsStr::new(value)
