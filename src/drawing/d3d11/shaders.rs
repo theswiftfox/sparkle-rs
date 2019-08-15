@@ -17,7 +17,7 @@ pub struct ShaderProgram {
 pub struct ConstantBuffer {
     pub view_matrix: Matrix4<f32>,
     pub projection_matrix: Matrix4<f32>,
-    pub lights: [super::geometry::Light; 2],
+    pub lights: [crate::drawing::geometry::Light; 2],
     _pad_1: Vector4<f32>,
     _pad_2: Vector4<f32>,
 }

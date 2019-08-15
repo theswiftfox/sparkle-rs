@@ -12,7 +12,7 @@ pub trait Renderer {
 }
 
 #[allow(dead_code)] // we don't want warnings if some color is not used..
-mod colors_linear {
+pub mod colors_linear {
     pub const BACKGROUND: cgmath::Vector4<f32> = cgmath::Vector4 {
         x: 0.052860655f32,
         y: 0.052860655f32,
