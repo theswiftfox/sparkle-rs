@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 if shader != None {
                     #[cfg(target_os = "windows")]
                     {
-                        if (p.file_stem().unwrap() != "hlsl") {
+                        if p.file_stem().unwrap() != "hlsl" {
                             continue;
                         }
                         // compile shaders windows

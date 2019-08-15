@@ -1,6 +1,6 @@
-use super::super::*;
-use super::geometry::Vertex;
-use d3d11::shaders::ShaderProgram;
+use crate::utils;
+use crate::drawing::geometry::Vertex;
+use crate::drawing::d3d11::shaders::ShaderProgram;
 use std::array::FixedSizeArray;
 use std::*;
 use winapi::ctypes::c_void;
@@ -105,11 +105,11 @@ impl D3D11Backend {
         &self.viewport
     }
 
-    pub fn init(window: &super::super::window::Window) -> Result<D3D11Backend, &'static str> {
+    pub fn init<T: crate::window::Window>(window: &T) -> Result<D3D11Backend, &'static str> {
         let mut backend = D3D11Backend::default();
-        backend.window_handle = window.handle;
-        backend.framebuffer_width = window.width;
-        backend.framebuffer_height = window.height;
+        backend.window_handle = window.get_handle();
+        backend.framebuffer_width = window.get_width();
+        backend.framebuffer_height = window.get_height();
 
         backend.create_device_resources()?;
 
