@@ -4,15 +4,14 @@
 #[macro_use]
 extern crate const_cstr;
 
-mod d3d11;
+mod drawing;
 mod utils;
 mod window;
 
+use drawing::Renderer;
+
 fn main() -> Result<(), &'static str> {
-    let mut renderer = match d3d11::renderer::D3D11Renderer::create(1280, 720, "Sparkle-rs") {
-        Ok(r) => r,
-        Err(e) => return Err(e),
-    };
+    let mut renderer = drawing::create_backend(1280, 720, "Sparkle-rs");
     loop {
         if !renderer.update()? {
             break;
