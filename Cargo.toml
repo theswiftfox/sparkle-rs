@@ -27,7 +27,7 @@ winapi = { version = "0.3.7", features = [
     "impl-default",
 ] }
 
-[target.'cfg(linux)'.dependencies]
+[target.'cfg(unix)'.dependencies]
 glium = "*"
 
 # From doc.rust-lang.org:
