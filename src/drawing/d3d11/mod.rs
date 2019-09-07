@@ -1,7 +1,6 @@
-use crate::window::Window;
 use crate::drawing::Renderer;
+use crate::window::Window;
 use cgmath::conv::*;
-use std::*;
 use winapi::um::d3d11 as dx11;
 
 mod backend;
@@ -12,12 +11,15 @@ pub struct D3D11Renderer<W> {
     window: W,
 }
 
-impl<W> Renderer for D3D11Renderer<W> where W : Window {
+impl<W> Renderer for D3D11Renderer<W>
+where
+    W: Window,
+{
     fn create(width: i32, height: i32, title: &str) -> D3D11Renderer<W> {
         let window = W::create_window(width, height, "main", title);
         let backend = match backend::D3D11Backend::init(&window) {
             Ok(b) => b,
-            Err(e) => panic!(e)
+            Err(e) => panic!(e),
         };
         let mut renderer = D3D11Renderer {
             backend: backend,
@@ -25,8 +27,8 @@ impl<W> Renderer for D3D11Renderer<W> where W : Window {
         };
 
         match renderer.init_draw_program() {
-            Ok(r) => renderer,
-            Err(e) => panic!(e)
+            Ok(_) => renderer,
+            Err(e) => panic!(e),
         }
     }
 
