@@ -1,4 +1,5 @@
 pub mod geometry;
+pub mod scenegraph;
 
 #[cfg(target_os = "windows")]
 mod d3d11;
@@ -47,11 +48,19 @@ pub mod colors_linear {
 
 use crate::window::*;
 #[cfg(target_os = "linux")]
-pub fn create_backend(width: i32, height: i32, title: &str) -> opengl::OpenGLRenderer<linux::WindowNix> {
+pub fn create_backend(
+    width: i32,
+    height: i32,
+    title: &str,
+) -> opengl::OpenGLRenderer<linux::WindowNix> {
     opengl::OpenGLRenderer::create(width, height, title)
 }
 
 #[cfg(target_os = "windows")]
-pub fn create_backend(width: i32, height: i32, title: &str) -> d3d11::D3D11Renderer<windows::WindowWin> {
+pub fn create_backend(
+    width: i32,
+    height: i32,
+    title: &str,
+) -> d3d11::D3D11Renderer<windows::WindowWin> {
     d3d11::D3D11Renderer::create(width, height, title)
 }
