@@ -1,6 +1,7 @@
 #![feature(fixed_size_array)]
 #![feature(stmt_expr_attributes)]
 #![allow(unused_assignments)]
+#![allow(dead_code)]
 #[macro_use]
 extern crate const_cstr;
 
