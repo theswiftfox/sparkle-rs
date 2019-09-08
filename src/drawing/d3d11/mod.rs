@@ -14,7 +14,7 @@ pub struct D3D11Renderer<W> {
     backend: backend::D3D11Backend,
     draw_program: Option<shaders::ShaderProgram>,
     scene: Scenegraph,
-    window: W,
+    window: std::rc::Rc<std::cell::RefCell<W>>,
 }
 
 impl<W> Renderer for D3D11Renderer<W>
@@ -23,7 +23,7 @@ where
 {
     fn create(width: i32, height: i32, title: &str) -> D3D11Renderer<W> {
         let window = W::create_window(width, height, "main", title);
-        let backend = match backend::D3D11Backend::init(&window) {
+        let backend = match backend::D3D11Backend::init(window.clone()) {
             Ok(b) => b,
             Err(e) => panic!(e),
         };
@@ -75,7 +75,7 @@ where
     }
 
     fn update(&mut self) -> Result<bool, Box<dyn std::error::Error>> {
-        let ok = self.window.update();
+        let ok = self.window.borrow().update();
 
         if ok {
             self.render()?;
