@@ -9,17 +9,17 @@ pub struct WindowNix {
 }
 
 impl Window for WindowNix {
-    fn create_window(width: i32, height: i32, _name: &str, title: &str) -> WindowNix {
+    fn create_window(width: i32, height: i32, _name: &str, title: &str) -> std::rc::Rc<std::cell::RefCell<WindowNix>> {
         let event_loop = glutin::EventsLoop::new();
         let wb = glutin::WindowBuilder::new().with_dimensions(glium::glutin::dpi::LogicalSize{width: width.into(), height: height.into()}).with_title(title);
         let cb = glutin::ContextBuilder::new();
         let display = glium::Display::new(wb, cb, &event_loop).unwrap();
-        WindowNix { 
+        std::rc::Rc::new(std::cell::RefCell::new(WindowNix { 
             width: width as u32, 
             height: height as u32,
             event_loop: event_loop,
             display: display
-        }
+        }))
     }
     fn update(&mut self) -> bool {
         let mut should_close = false;
