@@ -1,6 +1,5 @@
-use crate::utils;
-use crate::drawing::geometry::Vertex;
 use crate::drawing::d3d11::shaders::ShaderProgram;
+use crate::utils;
 use std::array::FixedSizeArray;
 use std::*;
 use winapi::ctypes::c_void;
@@ -44,12 +43,6 @@ pub struct D3D11Backend {
     render_target: *mut dx11::ID3D11Texture2D,
     depth_stencil: *mut dx11::ID3D11Texture2D,
     viewport: dx11::D3D11_VIEWPORT,
-
-    shader_program: ShaderProgram,
-
-    input_layout: *mut dx11::ID3D11InputLayout,
-    vertex_buffer: *mut dx11::ID3D11Buffer,
-
     initialized: bool,
 }
 
@@ -82,9 +75,6 @@ impl Default for D3D11Backend {
             backbuffer_format: dxgifmt::DXGI_FORMAT_B8G8R8A8_UNORM,
             backbuffer_count: 2,
             depthbuffer_format: dxgifmt::DXGI_FORMAT_D32_FLOAT,
-            shader_program: Default::default(),
-            input_layout: ptr::null_mut(),
-            vertex_buffer: ptr::null_mut(),
             initialized: false,
         }
     }
@@ -92,6 +82,9 @@ impl Default for D3D11Backend {
 
 #[allow(dead_code)]
 impl D3D11Backend {
+    pub fn get_device(&self) -> *mut dx11_1::ID3D11Device1 {
+        self.device
+    }
     pub fn get_context(&self) -> *mut dx11_1::ID3D11DeviceContext1 {
         self.context
     }
@@ -105,7 +98,7 @@ impl D3D11Backend {
         &self.viewport
     }
 
-    pub fn init<T: crate::window::Window>(window: &T) -> Result<D3D11Backend, &'static str> {
+    pub fn init<T: crate::window::Window>(window: &T) -> Result<D3D11Backend, DxError> {
         let mut backend = D3D11Backend::default();
         backend.window_handle = window.get_handle();
         backend.framebuffer_width = window.get_width();
@@ -144,7 +137,7 @@ impl D3D11Backend {
         self.initialized = false;
     }
 
-    fn create_device_resources(&mut self) -> Result<(), &'static str> {
+    fn create_device_resources(&mut self) -> Result<(), DxError> {
         self.create_factory()?;
         self.create_device()?;
         self.create_resources()?;
@@ -170,7 +163,7 @@ impl D3D11Backend {
         (res == S_OK || res == S_FALSE) // S_FALSE indicates nonstandard completion..
     }
 
-    fn create_factory(&mut self) -> Result<(), &'static str> {
+    fn create_factory(&mut self) -> Result<(), DxError> {
         let factory_uuid = <dxgi2::IDXGIFactory2 as winapi::Interface>::uuidof();
 
         let mut debug_dxgi = false;
@@ -196,7 +189,10 @@ impl D3D11Backend {
                     )
                 };
                 if res < S_OK {
-                    return Err("Unable to create DXGI Factory");
+                    return Err(DxError::new(
+                        "Unable to create DXGI Factory",
+                        DxErrorType::ResourceCreation,
+                    ));
                 }
                 unsafe {
                     (*info_queue).SetBreakOnSeverity(
@@ -228,13 +224,16 @@ impl D3D11Backend {
                 )
             };
             if res < S_OK {
-                return Err("Unable to create DXGI Factory");
+                return Err(DxError::new(
+                    "Unable to create DXGI Factory",
+                    DxErrorType::ResourceCreation,
+                ));
             }
         }
         Ok(())
     }
 
-    fn create_device(&mut self) -> Result<(), &'static str> {
+    fn create_device(&mut self) -> Result<(), DxError> {
         let feature_levels: [dx::D3D_FEATURE_LEVEL; 2] = [
             dx::D3D_FEATURE_LEVEL_11_1 as u32,
             dx::D3D_FEATURE_LEVEL_11_0 as u32,
@@ -249,7 +248,10 @@ impl D3D11Backend {
         }
 
         if fl_count == 0 {
-            return Err("Target Feature Level is too high!");
+            return Err(DxError::new(
+                "Target Feature Level is too high!",
+                DxErrorType::Generic,
+            ));
         }
 
         let mut dxgi_adapter_ptr: *mut IUnknown = ptr::null_mut();
@@ -278,7 +280,10 @@ impl D3D11Backend {
                     let mut desc: dxgi::DXGI_ADAPTER_DESC1 = mem::zeroed();
                     res = (*(dxgi_adapter_ptr as *mut dxgi::IDXGIAdapter1)).GetDesc1(&mut desc);
                     if res != S_OK {
-                        return Err("Unable to get Device Info!");
+                        return Err(DxError::new(
+                            "Unable to get Device Info!",
+                            DxErrorType::Device,
+                        ));
                     }
                     if desc.Flags & dxgi::DXGI_ADAPTER_FLAG_SOFTWARE != 0 {
                         adapter_idx += 1;
@@ -303,7 +308,10 @@ impl D3D11Backend {
                     let mut desc: dxgi::DXGI_ADAPTER_DESC1 = mem::zeroed();
                     res = (*(dxgi_adapter_ptr as *mut dxgi::IDXGIAdapter1)).GetDesc1(&mut desc);
                     if res != S_OK {
-                        return Err("Unable to get Device Info!");
+                        return Err(DxError::new(
+                            "Unable to get Device Info!",
+                            DxErrorType::Device,
+                        ));
                     }
                     if desc.Flags & dxgi::DXGI_ADAPTER_FLAG_SOFTWARE != 0 {
                         adapter_idx += 1;
@@ -320,7 +328,10 @@ impl D3D11Backend {
                 let mut desc: dxgi::DXGI_ADAPTER_DESC1 = mem::zeroed();
                 let res = (*(dxgi_adapter_ptr as *mut dxgi::IDXGIAdapter1)).GetDesc1(&mut desc);
                 if res != S_OK {
-                    return Err("Unable to get Device Info!");
+                    return Err(DxError::new(
+                        "Unable to get Device Info!",
+                        DxErrorType::Device,
+                    ));
                 }
                 let desc_str = String::from_utf16_lossy(desc.Description.as_slice());
                 println!(
@@ -358,7 +369,10 @@ impl D3D11Backend {
         };
 
         if res < S_OK {
-            return Err("Unable to create D3D11 Device!");
+            return Err(DxError::new(
+                "Unable to create D3D11 Device!",
+                DxErrorType::Device,
+            ));
         }
 
         #[cfg(debug_assertions)]
@@ -405,7 +419,10 @@ impl D3D11Backend {
             (*device).QueryInterface(&device_uuid, &mut self.device as *mut *mut _ as *mut *mut _)
         };
         if res < S_OK {
-            return Err("Unable to get device interface!");
+            return Err(DxError::new(
+                "Unable to get device interface!",
+                DxErrorType::Generic,
+            ));
         }
         let res = unsafe {
             (*context).QueryInterface(
@@ -414,7 +431,10 @@ impl D3D11Backend {
             )
         };
         if res < S_OK {
-            return Err("Unable to get context interface!");
+            return Err(DxError::new(
+                "Unable to get context interface!",
+                DxErrorType::Generic,
+            ));
         }
         let res = unsafe {
             (*context).QueryInterface(
@@ -423,12 +443,15 @@ impl D3D11Backend {
             )
         };
         if res < S_OK {
-            return Err("Unable to get annotation interface!");
+            return Err(DxError::new(
+                "Unable to get annotation interface!",
+                DxErrorType::Generic,
+            ));
         }
         Ok(())
     }
 
-    fn create_resources(&mut self) -> Result<(), &'static str> {
+    fn create_resources(&mut self) -> Result<(), DxError> {
         let null_views: *mut dx11::ID3D11RenderTargetView = ptr::null_mut();
         unsafe { (*self.context).OMSetRenderTargets(1, &null_views, ptr::null_mut()) };
 
@@ -452,7 +475,10 @@ impl D3D11Backend {
                 )
             };
             if res != S_OK {
-                return Err("SwapChain resize failed!");
+                return Err(DxError::new(
+                    "SwapChain resize failed!",
+                    DxErrorType::Generic,
+                ));
             }
         } else {
             let mut swapchain_desc: dxgi2::DXGI_SWAP_CHAIN_DESC1 = Default::default();
@@ -483,13 +509,19 @@ impl D3D11Backend {
             };
             if res < S_OK {
                 println!("SwapChain error: {}", res);
-                return Err("SwapChain creation failed!");
+                return Err(DxError::new(
+                    "SwapChain creation failed!",
+                    DxErrorType::ResourceCreation,
+                ));
             }
 
             res = unsafe { (*self.dxgi_factory).MakeWindowAssociation(self.window_handle, 2) }; // DXGI_MWA_NO_ALT_ENTER = 1 << 1
             if res < S_OK {
                 println!("Window Association error: {}", res);
-                return Err("Window Association failed!");
+                return Err(DxError::new(
+                    "Window Association failed!",
+                    DxErrorType::Generic,
+                ));
             }
 
             let swapchain_uuid = <dx11::ID3D11Texture2D as winapi::Interface>::uuidof();
@@ -502,7 +534,10 @@ impl D3D11Backend {
             };
             if res < S_OK {
                 println!("GetBuffer error: {}", res);
-                return Err("Unable to create render target!");
+                return Err(DxError::new(
+                    "Unable to create render target!",
+                    DxErrorType::ResourceCreation,
+                ));
             }
             let mut render_target_view_desc: dx11::D3D11_RENDER_TARGET_VIEW_DESC =
                 Default::default();
@@ -517,7 +552,10 @@ impl D3D11Backend {
             };
             if res < S_OK {
                 println!("CreateRenderTargetView error: {}", res);
-                return Err("Unable to create render target view!");
+                return Err(DxError::new(
+                    "Unable to create render target view!",
+                    DxErrorType::ResourceCreation,
+                ));
             }
             let mut depth_stencil_desc: dx11::D3D11_TEXTURE2D_DESC = Default::default();
             depth_stencil_desc.Format = self.depthbuffer_format;
@@ -537,7 +575,10 @@ impl D3D11Backend {
             };
             if res < S_OK {
                 println!("CreateTexture2D error: {}", res);
-                return Err("Unable to create Depth Stencil attachment!");
+                return Err(DxError::new(
+                    "Unable to create Depth Stencil attachment!",
+                    DxErrorType::ResourceCreation,
+                ));
             }
 
             let mut depth_stencil_view_desc: dx11::D3D11_DEPTH_STENCIL_VIEW_DESC =
@@ -552,7 +593,10 @@ impl D3D11Backend {
             };
             if res < S_OK {
                 println!("Create Depth-Stencil view error: {}", res);
-                return Err("Unable to create Depth-Stencil view!");
+                return Err(DxError::new(
+                    "Unable to create Depth-Stencil view!",
+                    DxErrorType::ResourceCreation,
+                ));
             }
 
             self.viewport = dx11::D3D11_VIEWPORT {
@@ -565,10 +609,15 @@ impl D3D11Backend {
             };
         }
 
+        // update context
+        unsafe {
+            (*self.context).IASetPrimitiveTopology(dx::D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        }
+
         Ok(())
     }
 
-    pub fn present(&mut self) -> Result<(), &'static str> {
+    pub fn present(&mut self) -> Result<(), DxError> {
         let res = unsafe { (*self.swap_chain).Present(1, 0) };
         unsafe {
             (*self.context).DiscardView(self.render_target_view as *mut _);
@@ -588,7 +637,7 @@ impl D3D11Backend {
         } else {
             if res < S_OK {
                 println!("Error during present: {}", res);
-                return Err("Present failed");
+                return Err(DxError::new("Present failed", DxErrorType::Draw));
             }
 
             if unsafe { (*self.dxgi_factory).IsCurrent() } == 0 {
@@ -598,7 +647,7 @@ impl D3D11Backend {
         Ok(())
     }
 
-    fn on_device_lost(&mut self) -> Result<(), &'static str> {
+    fn on_device_lost(&mut self) -> Result<(), DxError> {
         if self.initialized {
             self.cleanup();
         }
@@ -606,7 +655,7 @@ impl D3D11Backend {
         Ok(())
     }
 
-    pub fn update_window_size(&mut self, width: u32, height: u32) -> Result<bool, &'static str> {
+    pub fn update_window_size(&mut self, width: u32, height: u32) -> Result<bool, DxError> {
         if width == self.framebuffer_width && height == self.framebuffer_height {
             Ok(false)
         } else {
@@ -617,101 +666,8 @@ impl D3D11Backend {
         }
     }
 
-    pub fn initialize_shader_program(&mut self) -> Result<(), &'static str> {
-        self.shader_program.setup_shaders(self.device)?;
-
-        let pos_name: &'static std::ffi::CStr = const_cstr!("SV_Position").as_cstr();
-        let color_name: &'static std::ffi::CStr = const_cstr!("COLOR").as_cstr();
-        let input_element_description: [dx11::D3D11_INPUT_ELEMENT_DESC; 2] = [
-            dx11::D3D11_INPUT_ELEMENT_DESC {
-                SemanticName: pos_name.as_ptr() as *const _,
-                SemanticIndex: 0,
-                Format: dxgifmt::DXGI_FORMAT_R32G32B32A32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: 0,
-                InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-            dx11::D3D11_INPUT_ELEMENT_DESC {
-                SemanticName: color_name.as_ptr() as *const _,
-                SemanticIndex: 0,
-                Format: dxgifmt::DXGI_FORMAT_R32G32B32A32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: 16,
-                InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-        ];
-
-        let vertex_shader = self.shader_program.get_vertex_shader_byte_code();
-
-        let res = unsafe {
-            (*self.device).CreateInputLayout(
-                input_element_description.as_ptr(),
-                input_element_description.len() as u32,
-                (*vertex_shader).GetBufferPointer(),
-                (*vertex_shader).GetBufferSize(),
-                &mut self.input_layout as *mut *mut _,
-            )
-        };
-        if res < S_OK {
-            return Err("Input Layout creation failed!");
-        }
-
-        let vertex_buffer_data: [Vertex; 3] = [
-            Vertex::new_from_f32(
-                0.0f32, 0.5f32, 0.5f32, 1.0f32, 1.0f32, 0.0f32, 0.0f32, 1.0f32,
-            ),
-            Vertex::new_from_f32(
-                0.5f32, -0.5f32, 0.5f32, 1.0f32, 0.0f32, 1.0f32, 0.0f32, 1.0f32,
-            ),
-            Vertex::new_from_f32(
-                -0.5f32, -0.5f32, 0.5f32, 1.0f32, 0.0f32, 0.0f32, 1.0f32, 1.0f32,
-            ),
-        ];
-
-        let mut initial_data: dx11::D3D11_SUBRESOURCE_DATA = Default::default();
-        initial_data.pSysMem = vertex_buffer_data.as_ptr() as *const _;
-
-        let stride = std::mem::size_of::<Vertex>() as u32;
-        let offset: u32 = 0;
-
-        let mut buffer_desc: dx11::D3D11_BUFFER_DESC = Default::default();
-        buffer_desc.ByteWidth = stride * vertex_buffer_data.len() as u32;
-        buffer_desc.Usage = dx11::D3D11_USAGE_IMMUTABLE;
-        buffer_desc.BindFlags = dx11::D3D11_BIND_VERTEX_BUFFER;
-        buffer_desc.StructureByteStride = stride;
-
-        let res = unsafe {
-            (*self.device).CreateBuffer(
-                &buffer_desc,
-                &initial_data,
-                &mut self.vertex_buffer as *mut *mut _,
-            )
-        };
-
-        if res < S_OK {
-            return Err("Vertex Buffer creation failed!");
-        }
-
-        // update context
-        unsafe {
-            (*self.context).IASetInputLayout(self.input_layout);
-            (*self.context).IASetPrimitiveTopology(dx::D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-            (*self.context).IASetVertexBuffers(
-                0,
-                1,
-                &self.vertex_buffer as *const *mut _,
-                &stride,
-                &offset,
-            );
-
-            (*self.context).VSSetShader(self.shader_program.get_vertex_shader(), ptr::null(), 0);
-            (*self.context).GSSetShader(ptr::null_mut(), ptr::null(), 0);
-            (*self.context).PSSetShader(self.shader_program.get_pixel_shader(), ptr::null(), 0);
-        }
-
-        Ok(())
+    pub fn create_shader_program(&self) -> Result<ShaderProgram, DxError> {
+        ShaderProgram::create(self.device, self.context)
     }
 
     /**
@@ -727,5 +683,56 @@ impl D3D11Backend {
     pub fn pix_set_marker(&self, name: &str) {
         let msg_wstr = utils::to_wide_str(name);
         unsafe { (*self.annotation).SetMarker(msg_wstr.as_ptr()) };
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum DxErrorType {
+    Draw,
+    Device,
+    Generic,
+    ShaderCreate,
+    ShaderCompile,
+    ResourceCreation,
+}
+
+#[derive(Debug, Clone)]
+pub struct DxError {
+    message: String,
+    err_type: DxErrorType,
+}
+
+impl DxError {
+    pub fn new(msg: &str, err_type: DxErrorType) -> DxError {
+        DxError {
+            message: msg.to_string(),
+            err_type: err_type,
+        }
+    }
+}
+
+impl std::fmt::Display for DxErrorType {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let msg = match *self {
+            DxErrorType::Draw => "Draw Error",
+            DxErrorType::Generic => "Unknown",
+            DxErrorType::Device => "Device Error",
+            DxErrorType::ShaderCreate => "Shader Create Error",
+            DxErrorType::ShaderCompile => "Shader Compile Error",
+            DxErrorType::ResourceCreation => "Resource Creation",
+        };
+        write!(f, "{}", msg)
+    }
+}
+
+impl std::fmt::Display for DxError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "[DX Error] - {}: {}", self.err_type, self.message)
+    }
+}
+
+impl std::error::Error for DxError {
+    fn description(&self) -> &str {
+        &self.message
     }
 }

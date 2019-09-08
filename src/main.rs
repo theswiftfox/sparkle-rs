@@ -11,7 +11,7 @@ mod window;
 
 use drawing::Renderer;
 
-fn main() -> Result<(), &'static str> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut renderer = drawing::create_backend(1280, 720, "Sparkle-rs");
     loop {
         if !renderer.update()? {
