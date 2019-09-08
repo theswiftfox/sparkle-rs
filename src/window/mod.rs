@@ -5,7 +5,7 @@ pub mod windows;
 pub mod linux;
 
 pub trait Window {
-    fn create_window(width: i32, height: i32, name: &str, title: &str) -> Self;
+    fn create_window(width: i32, height: i32, name: &str, title: &str) -> std::rc::Rc<std::cell::RefCell<Self>>;
     #[cfg(target_os = "windows")]
     fn update(&self) -> bool;
     #[cfg(target_os = "linux")]

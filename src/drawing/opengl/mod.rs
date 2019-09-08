@@ -4,7 +4,7 @@ use crate::window::Window;
 use glium::Surface;
 
 pub struct OpenGLRenderer<W : Window> {
-    window : W,
+    window : std::rc::Rc<std::cell::RefCell<W>>,
     target: Option<glium::Frame>,
 }
 
@@ -19,11 +19,11 @@ impl<W> Renderer for OpenGLRenderer<W> where W: Window {
 
     }
     fn update(&mut self) -> Result<bool, &'static str> {
-        let should_close = self.window.update();
+        let should_close = self.window.borrow_mut().update();
         if should_close {
             return Ok(false);
         }
-        self.target = Some(self.window.get_handle().draw());
+        self.target = Some(self.window.borrow().get_handle().draw());
         self.clear();
         
         match self.target.take().unwrap().finish() {
