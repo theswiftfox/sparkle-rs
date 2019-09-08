@@ -9,7 +9,7 @@ mod opengl;
 pub trait Renderer {
     fn create(width: i32, height: i32, title: &str) -> Self;
     fn cleanup(&mut self);
-    fn update(&mut self) -> Result<bool, &'static str>;
+    fn update(&mut self) -> Result<bool, Box<dyn std::error::Error>>;
 }
 
 #[allow(dead_code)] // we don't want warnings if some color is not used..
