@@ -1,4 +1,5 @@
 use crate::input::input_handler::InputHandler;
+use crate::input::Camera;
 
 pub mod geometry;
 pub mod scenegraph;
@@ -12,6 +13,7 @@ pub trait Renderer {
     fn create(width: i32, height: i32, title: &str) -> Self;
     fn cleanup(&mut self);
     fn update(&mut self) -> Result<bool, Box<dyn std::error::Error>>;
+    fn change_camera(&mut self, cam: std::rc::Rc<std::cell::RefCell<dyn Camera>>);
     fn change_input_handler(&mut self, handler: std::rc::Rc<std::cell::RefCell<dyn InputHandler>>);
 }
 
