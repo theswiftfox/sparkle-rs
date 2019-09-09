@@ -7,6 +7,8 @@ use std::collections::HashMap;
 type KeyCallback = fn(&mut FPSController, Action) -> Option<ApplicationRequest>;
 type MouseButtonCallback = fn(&mut FPSController, Action) -> ();
 
+const MOUSE_SPEED : f32 = 0.00390625f32;
+
 pub struct FPSController {
     pos: Vector3<f32>,
     h_angle: f32,
@@ -17,6 +19,7 @@ pub struct FPSController {
     keybinds: HashMap<Key, KeyCallback>,
     mousebinds: HashMap<Button, MouseButtonCallback>,
 
+    move_speed: f32,
     move_f: bool,
     move_b: bool,
     move_l: bool,
@@ -47,7 +50,20 @@ impl Camera for FPSController {
 }
 
 impl InputHandler for FPSController {
-    fn update(&mut self, delta_t: f32) {}
+    fn update(&mut self, delta_t: f32) {
+        if self.move_f {
+            self.pos = self.pos + -self.move_speed * delta_t * self.get_front();
+        }
+        if self.move_b {
+            self.pos = self.pos + self.move_speed * delta_t * self.get_front();
+        }
+        if self.move_r {
+            self.pos = self.pos + self.move_speed * delta_t * self.get_right();
+        }
+        if self.move_l {
+            self.pos = self.pos + -self.move_speed * delta_t * self.get_right();
+        }
+    }
     fn handle_key(&mut self, key: Key, action: Action) -> ApplicationRequest {
         match self.keybinds.get(&key) {
             Some(func) => match func(self, action) {
@@ -58,9 +74,20 @@ impl InputHandler for FPSController {
         }
         
     }
-    fn handle_mouse(&mut self, button: Button, action: Action) {}
-    fn handle_wheel(&mut self, axis: ScrollAxis, value: f32) {}
-    fn handle_mouse_move(&mut self, x: i32, y: i32) {}
+    fn handle_mouse(&mut self, button: Button, action: Action) {
+        match self.mousebinds.get(&button) {
+            Some(func) => func(self, action),
+            None => { },
+        }
+    }
+    fn handle_wheel(&mut self, _axis: ScrollAxis, _value: f32) {}
+    fn handle_mouse_move(&mut self, x: i32, y: i32) {
+        if self.aiming {
+            self.h_angle += (x as f32) * MOUSE_SPEED;
+            self.v_angle -= (y as f32) * MOUSE_SPEED;
+            self.v_angle = -1.5f32.max(self.v_angle).min(1.5f32);
+        }
+    }
 }
 
 impl FPSController {
@@ -75,6 +102,7 @@ impl FPSController {
             keybinds: FPSController::default_keybinds(),
             mousebinds: FPSController::default_mousebinds(),
             aiming: true,
+            move_speed: 1.0f32,
             move_b: false,
             move_f: false,
             move_l: false,
@@ -91,6 +119,16 @@ impl FPSController {
             aspect, fov, near, far,
         )))
     }
+    fn get_front(&self) -> Vector3<f32> {
+        self.view_mat[2].xyz()
+    }
+    fn get_up(&self) -> Vector3<f32> {
+        self.view_mat[1].xyz()
+    }
+    fn get_right(&self) -> Vector3<f32> {
+        self.view_mat[0].xyz()
+    }
+
     fn movement_front(&mut self, action: Action) -> Option<ApplicationRequest> {
         self.move_f = match action {
             Action::Up => false,
@@ -126,6 +164,13 @@ impl FPSController {
         }
     }
 
+    fn toggle_aim(&mut self, action: Action) {
+        match action {
+            Action::Down => self.aiming = !self.aiming,
+            Action::Up => { },
+        };
+    }
+
     fn default_keybinds() -> HashMap<Key, KeyCallback> {
         let mut keybinds : HashMap<Key, KeyCallback> = HashMap::new();
         keybinds.insert(Key::W, FPSController::movement_front);
@@ -137,6 +182,8 @@ impl FPSController {
         return keybinds;
     }
     fn default_mousebinds() -> HashMap<Button, MouseButtonCallback> {
-        HashMap::new()
+        let mut mousebinds : HashMap<Button, MouseButtonCallback> = HashMap::new();
+        mousebinds.insert(Button::Left, FPSController::toggle_aim);
+        return mousebinds;
     }
 }

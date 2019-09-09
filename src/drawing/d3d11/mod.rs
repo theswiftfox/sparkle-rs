@@ -1,5 +1,5 @@
 use crate::input::input_handler::InputHandler;
-use crate::input::controller::FPSController;
+use crate::input::first_person::FPSController;
 use crate::drawing::scenegraph::node::Node;
 use crate::drawing::scenegraph::Scenegraph;
 use crate::drawing::Renderer;
