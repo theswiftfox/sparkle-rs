@@ -5,7 +5,7 @@
 #[macro_use]
 extern crate const_cstr;
 
-mod controller;
+mod input;
 mod drawing;
 mod utils;
 mod window;
