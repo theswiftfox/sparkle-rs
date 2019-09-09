@@ -1,10 +1,11 @@
-use crate::controller::input_handler::{Action, Button, Direction, InputHandler, Key};
+use crate::input::input_handler::{Action, ApplicationRequest, Button, ScrollAxis, InputHandler, Key};
 use crate::utils;
 use crate::window::Window;
 use std::cell::RefCell;
 use std::rc::Rc as shared_ptr;
 use std::*;
 use winapi::shared::minwindef::{LPARAM, LRESULT, UINT, WPARAM};
+use winapi::shared::windowsx::{GET_X_LPARAM, GET_Y_LPARAM};
 use winapi::shared::windef::HWND;
 use winapi::um::libloaderapi::*;
 use winapi::um::winuser::*;
@@ -39,6 +40,7 @@ pub struct WindowWin {
     width: u32,
     height: u32,
     input_handler: Option<std::rc::Rc<std::cell::RefCell<dyn InputHandler>>>,
+    request_quit: bool,
 }
 
 impl Window for WindowWin {
@@ -63,11 +65,15 @@ impl Window for WindowWin {
             width: width as u32,
             height: height as u32,
             input_handler: None,
+            request_quit: false,
         }));
         wnd.borrow_mut().create(width, height, name, title);
         return wnd;
     }
     fn update(&self) -> bool {
+        if self.request_quit {
+            return false;
+        }
         unsafe {
             let mut msg: MSG = mem::uninitialized();
             if GetMessageW(&mut msg, self.handle, 0, 0) > 0 {
@@ -78,6 +84,9 @@ impl Window for WindowWin {
             }
         }
         false
+    }
+    fn set_input_handler(&mut self, handler: std::rc::Rc<std::cell::RefCell<dyn InputHandler>>) {
+        self.input_handler = Some(handler.clone())
     }
 }
 impl WindowWin {
@@ -122,11 +131,12 @@ impl WindowWin {
             self.handle = handle;
         }
     }
-    fn window_proc(&self, hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+
+    fn window_proc(&mut self, hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         if self.input_handler.is_none() {
             return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
         } else {
-            let handler = self.input_handler.as_ref().unwrap().borrow();
+            let handler = self.input_handler.as_ref().unwrap().clone();
             match msg {
                 WM_DESTROY => {
                     unsafe { PostQuitMessage(0) };
@@ -136,35 +146,59 @@ impl WindowWin {
                     return 0;
                 }
                 WM_KEYDOWN => {
-                    handler.handle_key(WindowWin::get_sparkle_key(wparam), Action::Down);
+                    match handler.borrow_mut().handle_key(WindowWin::get_sparkle_key(wparam), Action::Down) {
+                        ApplicationRequest::Quit => {
+                            unsafe { PostQuitMessage(0) };
+                            self.request_quit = true;
+                        },
+                        _ => { },
+                    };
                     return 0;
                 }
                 WM_KEYUP => {
-                    handler.handle_key(WindowWin::get_sparkle_key(wparam), Action::Up);
+                    match handler.borrow_mut().handle_key(WindowWin::get_sparkle_key(wparam), Action::Up) {
+                        ApplicationRequest::Quit => {
+                            unsafe { PostQuitMessage(0) };
+                            self.request_quit = true;
+                        },
+                        _ => { },
+                    };
                     return 0;
                 }
                 WM_LBUTTONDOWN => {
+                    handler.borrow_mut().handle_mouse(Button::Left, Action::Down);
                     return 0;
                 }
                 WM_LBUTTONUP => {
+                    handler.borrow_mut().handle_mouse(Button::Left, Action::Up);
                     return 0;
                 }
                 WM_MBUTTONDOWN => {
+                    handler.borrow_mut().handle_mouse(Button::Middle, Action::Down);
                     return 0;
                 }
                 WM_MBUTTONUP => {
+                    handler.borrow_mut().handle_mouse(Button::Middle, Action::Up);
                     return 0;
                 }
                 WM_RBUTTONDOWN => {
+                    handler.borrow_mut().handle_mouse(Button::Right, Action::Down);
                     return 0;
                 }
                 WM_RBUTTONUP => {
+                    handler.borrow_mut().handle_mouse(Button::Right, Action::Up);
                     return 0;
                 }
                 WM_MOUSEWHEEL => {
+                    handler.borrow_mut().handle_wheel(ScrollAxis::Vertical, f32::from(GET_WHEEL_DELTA_WPARAM(wparam)) / 5.0f32);
                     return 0;
                 }
+                WM_MOUSEHWHEEL => {
+                    handler.borrow_mut().handle_wheel(ScrollAxis::Horizontal, f32::from(GET_WHEEL_DELTA_WPARAM(wparam)) / 5.0f32);
+                    return 0;
+                },
                 WM_MOUSEMOVE => {
+                    handler.borrow_mut().handle_mouse_move(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
                     return 0;
                 }
                 _ => return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
