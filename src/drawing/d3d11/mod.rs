@@ -1,5 +1,7 @@
-use crate::drawing::scenegraph::Scenegraph;
+use crate::input::input_handler::InputHandler;
+use crate::input::controller::FPSController;
 use crate::drawing::scenegraph::node::Node;
+use crate::drawing::scenegraph::Scenegraph;
 use crate::drawing::Renderer;
 use crate::window::Window;
 use cgmath::conv::*;
@@ -11,17 +13,20 @@ mod shaders;
 pub mod drawable;
 
 pub struct D3D11Renderer<W> {
-    backend: backend::D3D11Backend,
-    draw_program: Option<shaders::ShaderProgram>,
     scene: Scenegraph,
+    draw_program: Option<shaders::ShaderProgram>,
+    input_handler: Option<std::rc::Rc<std::cell::RefCell<dyn InputHandler>>>,
+    backend: backend::D3D11Backend,
     window: std::rc::Rc<std::cell::RefCell<W>>,
 }
 
 impl<W> Renderer for D3D11Renderer<W>
 where
     W: Window,
-{
+    {
     fn create(width: i32, height: i32, title: &str) -> D3D11Renderer<W> {
+        let input_handler = FPSController::create_ptr((width as f32) / (height as f32), 70.0f32, 0.1f32, 100.0f32);
+
         let window = W::create_window(width, height, "main", title);
         let backend = match backend::D3D11Backend::init(window.clone()) {
             Ok(b) => b,
@@ -32,6 +37,7 @@ where
             window: window,
             draw_program: None,
             scene: Scenegraph::empty(),
+            input_handler: None,
         };
 
         let mut renderer = match renderer.init_draw_program() {
@@ -55,17 +61,19 @@ where
         index_buffer_data.push(1);
         index_buffer_data.push(2);
         let drawable = match drawable::DxDrawable::from_verts(
-                renderer.backend.get_device(),
-                renderer.backend.get_context(),
-                vertex_buffer_data,
-                index_buffer_data,
-            ) {
-                Ok(d) => d,
-                Err(e) =>panic!(e),
-            };
+            renderer.backend.get_device(),
+            renderer.backend.get_context(),
+            vertex_buffer_data,
+            index_buffer_data,
+        ) {
+            Ok(d) => d,
+            Err(e) => panic!(e),
+        };
         use cgmath::num_traits::One;
         let node = Node::create("Triangle", cgmath::Matrix4::one(), Some(drawable));
         renderer.scene.set_root(node);
+
+        renderer.change_input_handler(input_handler);
 
         return renderer;
     }
@@ -82,6 +90,17 @@ where
         }
 
         Ok(ok)
+    }
+
+    fn change_input_handler(&mut self, handler: std::rc::Rc<std::cell::RefCell<dyn InputHandler>>) {
+        match &self.input_handler {
+            Some(i) => { 
+                std::mem::drop(i);
+                self.input_handler = Some(handler.clone());
+            },
+            None => self.input_handler = Some(handler.clone()),
+        };
+        self.window.borrow_mut().set_input_handler(handler.clone())
     }
 }
 impl<W> D3D11Renderer<W> {

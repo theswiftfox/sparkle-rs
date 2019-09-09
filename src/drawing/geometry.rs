@@ -5,11 +5,6 @@ pub struct Vertex {
     pub color: Vector4<f32>,
 }
 
-pub struct Mesh {
-    vertices: Vec<Vertex>,
-    model_matrix: Matrix4<f32>,
-}
-
 pub struct Light {
     pub direction: Vector4<f32>,
     pub color: Vector4<f32>,

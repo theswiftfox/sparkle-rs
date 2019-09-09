@@ -1,3 +1,4 @@
+use crate::input::input_handler::InputHandler;
 
 #[cfg(target_os = "windows")]
 pub mod windows;
@@ -13,6 +14,8 @@ pub trait Window {
 
     fn get_width(&self) -> u32;
     fn get_height(&self) -> u32;
+
+    fn set_input_handler(&mut self, handler: std::rc::Rc<std::cell::RefCell<dyn InputHandler>>);
     
     #[cfg(target_os = "windows")]
     fn get_handle(&self) -> winapi::shared::windef::HWND;
