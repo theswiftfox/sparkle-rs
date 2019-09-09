@@ -4,18 +4,27 @@ use crate::drawing::scenegraph::node::Node;
 use crate::drawing::scenegraph::Scenegraph;
 use crate::drawing::Renderer;
 use crate::window::Window;
+use crate::input::Camera;
 use cgmath::conv::*;
 use winapi::um::d3d11 as dx11;
 
 mod backend;
 mod shaders;
+mod cbuffer;
 
 pub mod drawable;
+
+struct ShaderUniforms {
+    pub view: cgmath::Matrix4<f32>,
+    pub proj: cgmath::Matrix4<f32>,
+}
 
 pub struct D3D11Renderer<W> {
     scene: Scenegraph,
     draw_program: Option<shaders::ShaderProgram>,
     input_handler: Option<std::rc::Rc<std::cell::RefCell<dyn InputHandler>>>,
+    camera: Option<std::rc::Rc<std::cell::RefCell<dyn Camera>>>,
+    shader_uniforms: cbuffer::CBuffer<ShaderUniforms>,
     backend: backend::D3D11Backend,
     window: std::rc::Rc<std::cell::RefCell<W>>,
 }
@@ -30,6 +39,15 @@ where
         let window = W::create_window(width, height, "main", title);
         let backend = match backend::D3D11Backend::init(window.clone()) {
             Ok(b) => b,
+            Err(e) => panic!(format!("{}", e)),
+        };
+        use cgmath::num_traits::identities::One;
+        let uniforms = ShaderUniforms {
+            view: cgmath::Matrix4::one(),
+            proj: cgmath::Matrix4::one(),
+        };
+        let cbuff = match cbuffer::CBuffer::create(uniforms, backend.get_context(), backend.get_device()) {
+            Ok(b) => b,
             Err(e) => panic!(e),
         };
         let mut renderer = D3D11Renderer {
@@ -38,11 +56,13 @@ where
             draw_program: None,
             scene: Scenegraph::empty(),
             input_handler: None,
+            camera: None,
+            shader_uniforms: cbuff,
         };
 
         let mut renderer = match renderer.init_draw_program() {
             Ok(_) => renderer,
-            Err(e) => panic!(e),
+            Err(e) => panic!(format!("{}", e)),
         };
 
         // todo: cleanup this
@@ -69,11 +89,12 @@ where
             Ok(d) => d,
             Err(e) => panic!(e),
         };
-        use cgmath::num_traits::One;
-        let node = Node::create("Triangle", cgmath::Matrix4::one(), Some(drawable));
+        let node = Node::create("Triangle", cgmath::Matrix4::from_angle_x(cgmath::Rad::from(cgmath::Deg(-55.0f32))), Some(drawable));
         renderer.scene.set_root(node);
 
-        renderer.change_input_handler(input_handler);
+        renderer.change_input_handler(input_handler.clone());
+        renderer.change_camera(input_handler.clone());
+        renderer.shader_uniforms.data.proj = input_handler.borrow().projection_mat();
 
         return renderer;
     }
@@ -86,6 +107,18 @@ where
         let ok = self.window.borrow().update();
 
         if ok {
+            match &self.input_handler {
+                Some(i) => i.borrow_mut().update(1.0f32),
+                None => { }
+            };
+            match &self.camera {
+                Some(c) => {
+                    c.borrow_mut().update(1.0f32);
+                    self.shader_uniforms.data.view = c.borrow().view_mat();
+                },
+                None => { },
+            };
+            self.shader_uniforms.update()?;
             self.render()?;
         }
 
@@ -101,6 +134,16 @@ where
             None => self.input_handler = Some(handler.clone()),
         };
         self.window.borrow_mut().set_input_handler(handler.clone())
+    }
+    
+    fn change_camera(&mut self, cam: std::rc::Rc<std::cell::RefCell<dyn Camera>>) {
+        match &self.camera {
+            Some(c) => {
+                std::mem::drop(c);
+                self.camera = Some(cam.clone());
+            },
+            None => self.camera = Some(cam.clone()),
+        }
     }
 }
 impl<W> D3D11Renderer<W> {
@@ -140,8 +183,9 @@ impl<W> D3D11Renderer<W> {
         };
         self.backend.pix_begin_event("Render");
 
-        // let ctx = self.backend.get_context();
-        // unsafe { (*ctx).Draw(3, 0) };
+        let ctx = self.backend.get_context();
+        unsafe { (*ctx).VSSetConstantBuffers(0, 1, self.shader_uniforms.buffer_ptr()) };
+
         self.scene.draw();
 
         self.backend.pix_end_event();

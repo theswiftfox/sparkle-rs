@@ -107,7 +107,7 @@ impl Node {
         let me = self.apply_pre_transform(model);
         let me_ref = me.borrow();
         if me_ref.drawable.is_some() {
-            let drawable = me_ref.drawable.as_ref().unwrap().borrow();
+            let mut drawable = me_ref.drawable.as_ref().unwrap().borrow_mut();
             drawable.draw(me_ref.model);
         }
     }
