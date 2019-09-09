@@ -11,7 +11,7 @@ use super::{SceneGraphError, ErrorCause};
 #[derive(Clone)]
 pub struct Node {
     uuid: u64,
-    name: String,
+    pub name: String,
     model: Matrix4<f32>,
     children: HashMap<String, shared_ptr<RefCell<Node>>>,
 
