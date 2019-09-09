@@ -17,7 +17,7 @@ pub struct DxDrawable {
 }
 
 impl Drawable for DxDrawable {
-    fn draw(&self, model: cgmath::Matrix4<f32>) {
+    fn draw(&self, _model: cgmath::Matrix4<f32>) {
         let offset = 0 as u32;
         unsafe {
             (*self.context).IASetVertexBuffers(

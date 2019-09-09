@@ -1,4 +1,4 @@
-pub mod controller;
+pub mod first_person;
 pub mod input_handler;
 
 use cgmath::Matrix4;
