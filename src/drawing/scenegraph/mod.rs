@@ -31,7 +31,10 @@ impl Scenegraph {
         if self.root.is_none() {
             Err(SceneGraphError::err_empty("Root node is empty"))
         } else {
-            self.root.as_ref().unwrap().borrow().get_named(name)
+            match self.root.as_ref().unwrap().borrow().name.as_str() {
+                n if (n == name) => Ok(self.root.as_ref().unwrap().clone()),
+                _ => self.root.as_ref().unwrap().borrow().get_named(name),
+            }
         }
     }
 
