@@ -693,6 +693,7 @@ pub enum DxErrorType {
     Generic,
     ShaderCreate,
     ShaderCompile,
+    ResourceUpdate,
     ResourceCreation,
 }
 
@@ -719,6 +720,7 @@ impl std::fmt::Display for DxErrorType {
             DxErrorType::Device => "Device Error",
             DxErrorType::ShaderCreate => "Shader Create Error",
             DxErrorType::ShaderCompile => "Shader Compile Error",
+            DxErrorType::ResourceUpdate => "Resource Update",
             DxErrorType::ResourceCreation => "Resource Creation",
         };
         write!(f, "{}", msg)
