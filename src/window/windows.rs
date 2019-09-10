@@ -44,6 +44,9 @@ pub struct WindowWin {
     input_handler: Option<std::rc::Rc<std::cell::RefCell<dyn InputHandler>>>,
     request_quit: bool,
     snap_mouse: bool,
+
+    last_x: i32,
+    last_y: i32,
 }
 
 impl Window for WindowWin {
@@ -70,11 +73,13 @@ impl Window for WindowWin {
             input_handler: None,
             request_quit: false,
             snap_mouse: false,
+            last_x: std::i32::MIN,
+            last_y: std::i32::MIN,
         }));
         wnd.borrow_mut().create(width, height, name, title);
         return wnd;
     }
-    fn update(&self) -> bool {
+    fn update(&mut self) -> bool {
         if self.request_quit {
             return false;
         }
@@ -83,6 +88,14 @@ impl Window for WindowWin {
             while PeekMessageW(&mut msg, self.handle, 0, 0, PM_REMOVE) > 0 {
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
+            }
+            if self.snap_mouse {
+                // let mut rect: RECT = Default::default();
+                // if GetWindowRect(self.handle, &mut rect as *mut _) != 1 {
+                //     println!("Error getting Window Rectangle"); // todo: maybe log instead or smth?
+                // } else {
+                //     SetCursorPos((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2);
+                // }
             }
         }
         true
@@ -240,22 +253,18 @@ impl WindowWin {
                     );
                 }
                 WM_MOUSEMOVE => {
-                    let mut rect: RECT = Default::default();
-                    unsafe {
-                        if GetWindowRect(self.handle, &mut rect as *mut _) != 1 {
-                            return -1;
-                        }
-                    };
-                    if self.snap_mouse {
-                        unsafe {
-                            SetCursorPos((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2)
-                        };
-                    }
                     let wx = GET_X_LPARAM(lparam);
-                    let x = wx - ((rect.right - rect.left) / 2);
                     let wy = GET_Y_LPARAM(lparam);
-                    let y = wy - ((rect.bottom - rect.top) / 2);
-                    handler.borrow_mut().handle_mouse_move(x, y);
+                    if self.last_x != std::i32::MIN && self.last_y != std::i32::MIN {
+                        // let x = wx - ((rect.right - rect.left) / 2);
+                        // let y = wy - ((rect.bottom - rect.top) / 2);
+                        let x = wx - self.last_x;
+                        let y = wy - self.last_y;
+                        //println!("x({}) y({}), px({}) py({}) Dx({}) Dy({})", wx, wy, self.last_x, self.last_y, x, y);
+                        handler.borrow_mut().handle_mouse_move(x, y);
+                    }
+                    self.last_x = wx;
+                    self.last_y = wy;
                 }
                 _ => return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
             }
