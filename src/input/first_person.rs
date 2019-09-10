@@ -111,7 +111,8 @@ impl FPSController {
         return mat;
     }
     pub fn create(aspect: f32, fov: f32, near: f32, far: f32) -> FPSController {
-        let proj = glm::perspective_zo(aspect, fov, near, far);
+        let mut proj = glm::perspective_zo(aspect, fov, near, far);
+        proj[(1, 1)] *= -1.0f32;
         //cgmath::perspective(cgmath::Rad::from(Deg(fov)), aspect, near, far);
         FPSController {
             pos: glm::vec3(0.0f32, 0.0f32, 3.0f32),

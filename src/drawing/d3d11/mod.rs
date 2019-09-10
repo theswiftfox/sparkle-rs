@@ -37,7 +37,7 @@ where
 {
     fn create(width: i32, height: i32, title: &str) -> D3D11Renderer<W> {
         let input_handler =
-            FPSController::create_ptr((height as f32) / (width as f32), 45.0f32, 0.1f32, 100.0f32);
+            FPSController::create_ptr((width as f32) / (height as f32), 45.0f32, 0.1f32, 100.0f32);
 
         let window = W::create_window(width, height, "main", title);
         let backend = match backend::D3D11Backend::init(window.clone()) {
@@ -79,13 +79,12 @@ where
             Ok(d) => d,
             Err(e) => panic!(e),
         };
-        let rot_in: glm::Mat4 = glm::identity();
-        let rot = glm::rotate(
-            &rot_in,
-            glm::radians(&glm::vec1(-55.0f32)).x,
-            &glm::vec3(1.0f32, 0.0f32, 0.0f32),
-        );
-        let node = Node::create("Triangle", rot, Some(drawable));
+        // let rot = glm::rotate(
+        //     &glm::identity(),
+        //     glm::radians(&glm::vec1(-55.0f32)).x,
+        //     &glm::vec3(1.0f32, 0.0f32, 0.0f32),
+        // );
+        let node = Node::create("Triangle", glm::identity(), Some(drawable));
         renderer.scene.set_root(node);
 
         renderer.change_input_handler(input_handler.clone());
