@@ -98,7 +98,9 @@ impl D3D11Backend {
         &self.viewport
     }
 
-    pub fn init<T: crate::window::Window>(window: std::rc::Rc<std::cell::RefCell<T>>) -> Result<D3D11Backend, DxError> {
+    pub fn init<T: crate::window::Window>(
+        window: std::rc::Rc<std::cell::RefCell<T>>,
+    ) -> Result<D3D11Backend, DxError> {
         let mut backend = D3D11Backend::default();
         backend.window_handle = window.borrow().get_handle();
         backend.framebuffer_width = window.borrow().get_width();

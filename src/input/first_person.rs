@@ -2,10 +2,7 @@ use crate::input::input_handler::{
     Action, ApplicationRequest, Button, InputHandler, Key, ScrollAxis,
 };
 use crate::input::Camera;
-use cgmath::{
-    vec3, vec4, Angle, Deg, EuclideanSpace, InnerSpace, Matrix4, Point3, Rad, Transform, Vector3,
-    Zero,
-};
+
 use std::collections::HashMap;
 
 type KeyCallback = fn(&mut FPSController, Action) -> ApplicationRequest;
@@ -14,11 +11,11 @@ type MouseButtonCallback = fn(&mut FPSController, Action) -> ApplicationRequest;
 const MOUSE_SPEED: f32 = 0.05f32; // π/180 (convert deg to rad) * 0.05 (sensitivity) //0.00390625f32;
 
 pub struct FPSController {
-    pos: Vector3<f32>,
+    pos: glm::Vec3,
     h_angle_deg: f32,
     v_angle_deg: f32,
-    view_mat: Matrix4<f32>,
-    projection_mat: Matrix4<f32>,
+    view_mat: glm::Mat4,
+    projection_mat: glm::Mat4,
 
     keybinds: HashMap<Key, KeyCallback>,
     mousebinds: HashMap<Button, MouseButtonCallback>,
@@ -34,22 +31,21 @@ pub struct FPSController {
 
 impl Camera for FPSController {
     fn update(&mut self, _delta_t: f32) {
-        let pitch_rad = Rad::from(Deg(self.v_angle_deg));
-        let yaw_rad = Rad::from(Deg(self.h_angle_deg));
-        let dir = vec3(
+        let pitch_rad = glm::radians(&glm::vec1(self.v_angle_deg)).x;
+        let yaw_rad = glm::radians(&glm::vec1(self.h_angle_deg)).x;
+        let dir = glm::vec3(
             pitch_rad.cos() * yaw_rad.cos(),
             pitch_rad.sin(),
             pitch_rad.cos() * yaw_rad.sin(),
         )
         .normalize();
-        let center = Point3::/*new(0.0f32, 0.0f32, 0.0f32); */from_vec(self.pos + dir);
-        let eye = Point3::from_vec(self.pos);
-        self.view_mat = Matrix4::look_at(eye, center, Vector3::unit_y());
+        let center = self.pos + dir;
+        self.view_mat = glm::look_at(&self.pos, &center, &glm::vec3(0.0f32, 1.0f32, 0.0f32));
     }
-    fn view_mat(&self) -> Matrix4<f32> {
+    fn view_mat(&self) -> glm::Mat4 {
         self.view_mat
     }
-    fn projection_mat(&self) -> Matrix4<f32> {
+    fn projection_mat(&self) -> glm::Mat4 {
         self.projection_mat
     }
 }
@@ -96,28 +92,32 @@ impl InputHandler for FPSController {
 }
 
 impl FPSController {
-    fn proj_lh(aspect: f32, fov: f32, near: f32, far: f32) -> Matrix4<f32> {
-        let mut mat = Matrix4::zero();
-        let y_scale = (Rad::from(Deg(fov)) / 2.0f32).cot();
+    fn proj_lh(aspect: f32, fov: f32, near: f32, far: f32) -> glm::Mat4 {
+        let mut mat: glm::Mat4 = glm::zero();
+        let y_scale = 1.0f32 / glm::tan(&(glm::radians(&glm::vec1(fov)) / 2.0f32)).x;
         let x_scale = y_scale * aspect;
-        mat[0] = vec4(x_scale, 0.0f32, 0.0f32, 0.0f32);
-        mat[1] = vec4(0.0f32, y_scale, 0.0f32, 0.0f32);
-        mat[2] = vec4(
+        mat.column_mut(0)
+            .copy_from(&glm::vec4(x_scale, 0.0f32, 0.0f32, 0.0f32));
+        mat.column_mut(1)
+            .copy_from(&glm::vec4(0.0f32, y_scale, 0.0f32, 0.0f32));
+        mat.column_mut(2).copy_from(&glm::vec4(
             0.0f32,
             0.0f32,
             far / (near - far),
             (near * far) / (near - far),
-        );
-        mat[3] = vec4(0.0f32, 0.0f32, -1.0f32, 0.0f32);
+        ));
+        mat.column_mut(3)
+            .copy_from(&glm::vec4(0.0f32, 0.0f32, -1.0f32, 0.0f32));
         return mat;
     }
     pub fn create(aspect: f32, fov: f32, near: f32, far: f32) -> FPSController {
-        let proj = FPSController::proj_lh(aspect, fov, near, far); //cgmath::perspective(cgmath::Rad::from(Deg(fov)), aspect, near, far);
+        let proj = glm::perspective_zo(aspect, fov, near, far);
+        //cgmath::perspective(cgmath::Rad::from(Deg(fov)), aspect, near, far);
         FPSController {
-            pos: vec3(0.0f32, 0.0f32, 3.0f32),
+            pos: glm::vec3(0.0f32, 0.0f32, 3.0f32),
             h_angle_deg: -90.0f32,
             v_angle_deg: 0.0f32,
-            view_mat: Matrix4::one(),
+            view_mat: glm::identity(),
             projection_mat: proj,
             keybinds: FPSController::default_keybinds(),
             mousebinds: FPSController::default_mousebinds(),
@@ -140,14 +140,14 @@ impl FPSController {
             aspect, fov, near, far,
         )))
     }
-    fn get_front(&self) -> Vector3<f32> {
-        self.view_mat[2].xyz()
+    fn get_front(&self) -> glm::Vec3 {
+        self.view_mat.column(2).xyz()
     }
-    fn get_up(&self) -> Vector3<f32> {
-        self.view_mat[1].xyz()
+    fn get_up(&self) -> glm::Vec3 {
+        self.view_mat.column(1).xyz()
     }
-    fn get_right(&self) -> Vector3<f32> {
-        self.view_mat[0].xyz()
+    fn get_right(&self) -> glm::Vec3 {
+        self.view_mat.column(0).xyz()
     }
 
     fn movement_front(&mut self, action: Action) -> ApplicationRequest {
