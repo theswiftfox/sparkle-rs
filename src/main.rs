@@ -4,9 +4,10 @@
 #![allow(dead_code)]
 #[macro_use]
 extern crate const_cstr;
+extern crate nalgebra_glm as glm;
 
-mod input;
 mod drawing;
+mod input;
 mod utils;
 mod window;
 

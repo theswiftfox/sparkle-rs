@@ -1,32 +1,30 @@
-use cgmath::*;
-
 pub struct Vertex {
-    pub position: Vector4<f32>,
-    pub color: Vector4<f32>,
+    pub position: glm::Vec4,
+    pub color: glm::Vec4,
 }
 
 pub struct Light {
-    pub direction: Vector4<f32>,
-    pub color: Vector4<f32>,
+    pub direction: glm::Vec4,
+    pub color: glm::Vec4,
 }
 
 impl Default for Vertex {
     fn default() -> Vertex {
         Vertex {
-            position: Vector4::zero(),
-            color: Vector4::zero(),
+            position: glm::zero(),
+            color: glm::zero(),
         }
     }
 }
 
 impl Vertex {
-    pub fn new(position: &Vector4<f32>, color: &Vector4<f32>) -> Vertex {
+    pub fn new(position: &glm::Vec4, color: &glm::Vec4) -> Vertex {
         Vertex {
             position: *position,
             color: *color,
         }
     }
     pub fn new_from_f32(x: f32, y: f32, z: f32, w: f32, r: f32, g: f32, b: f32, a: f32) -> Vertex {
-        Vertex::new(&Vector4::new(x, y, z, w), &Vector4::new(r, g, b, a))
+        Vertex::new(&glm::vec4(x, y, z, w), &glm::vec4(r, g, b, a))
     }
 }

@@ -1,6 +1,5 @@
 use crate::drawing::d3d11::backend::{DxError, DxErrorType};
 use crate::utils;
-use cgmath::*;
 use std::ptr;
 use winapi::shared::dxgiformat as dxgifmt;
 use winapi::shared::winerror::S_OK;
@@ -18,14 +17,6 @@ pub struct ShaderProgram {
 
     pub context: *mut dx11_1::ID3D11DeviceContext1,
     active: bool,
-}
-
-pub struct ConstantBuffer {
-    pub view_matrix: Matrix4<f32>,
-    pub projection_matrix: Matrix4<f32>,
-    pub lights: [crate::drawing::geometry::Light; 2],
-    _pad_1: Vector4<f32>,
-    _pad_2: Vector4<f32>,
 }
 
 #[allow(dead_code)]
