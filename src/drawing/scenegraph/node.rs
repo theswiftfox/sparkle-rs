@@ -1,25 +1,26 @@
-use cgmath::Matrix4;
-use cgmath::Quaternion;
-use cgmath::Vector3;
 use std::cell::RefCell;
-use std::rc::Rc as shared_ptr;
 use std::collections::HashMap;
+use std::rc::Rc as shared_ptr;
 
 use super::drawable::Drawable;
-use super::{SceneGraphError, ErrorCause};
+use super::{ErrorCause, SceneGraphError};
 
 #[derive(Clone)]
 pub struct Node {
     uuid: u64,
     pub name: String,
-    model: Matrix4<f32>,
+    model: glm::Mat4,
     children: HashMap<String, shared_ptr<RefCell<Node>>>,
 
     drawable: Option<shared_ptr<RefCell<dyn Drawable>>>,
 }
 
 impl Node {
-    pub fn create(name: &str, model: Matrix4<f32>, drawable: Option<shared_ptr<RefCell<dyn Drawable>>>) -> shared_ptr<RefCell<Node>> {
+    pub fn create(
+        name: &str,
+        model: glm::Mat4,
+        drawable: Option<shared_ptr<RefCell<dyn Drawable>>>,
+    ) -> shared_ptr<RefCell<Node>> {
         shared_ptr::new(RefCell::new(Node {
             uuid: 0, // TODO
             name: name.to_string(),
@@ -34,7 +35,7 @@ impl Node {
         }
         match self.children.get(name) {
             Some(c) => return Ok(c.clone()),
-            _ => {},
+            _ => {}
         };
         for (_, node) in &self.children {
             match node.borrow().get_named(name) {
@@ -47,15 +48,15 @@ impl Node {
     pub fn get_drawable(&self) -> Option<shared_ptr<RefCell<dyn Drawable>>> {
         match &self.drawable {
             Some(d) => Some(d.clone()),
-            None => None
+            None => None,
         }
     }
-    pub fn apply_pre_transform(&self, model: Matrix4<f32>) -> shared_ptr<RefCell<Node>> {
+    pub fn apply_pre_transform(&self, model: glm::Mat4) -> shared_ptr<RefCell<Node>> {
         let node = shared_ptr::from(RefCell::from(self.clone()));
         node.borrow_mut().model = model * self.model;
         return node;
     }
-    pub fn traverse(&self, model: Matrix4<f32>) -> Vec<shared_ptr<RefCell<Node>>> {
+    pub fn traverse(&self, model: glm::Mat4) -> Vec<shared_ptr<RefCell<Node>>> {
         let mut nodes: Vec<shared_ptr<RefCell<Node>>> = Vec::new();
         let me = self.apply_pre_transform(model);
         for (_, c) in &self.children {
@@ -68,7 +69,10 @@ impl Node {
     pub fn add_child(&mut self, node: shared_ptr<RefCell<Node>>) -> Result<(), SceneGraphError> {
         let key = &node.borrow().name.clone();
         if self.children.contains_key(key) {
-            return Err(SceneGraphError::new("Duplicate Name", &ErrorCause::InvalidState));
+            return Err(SceneGraphError::new(
+                "Duplicate Name",
+                &ErrorCause::InvalidState,
+            ));
         }
         self.children.insert(key.to_string(), node);
         Ok(())
@@ -79,7 +83,7 @@ impl Node {
         } else {
             match self.children.remove(name) {
                 Some(_) => return Ok(()),
-                _ => {},
+                _ => {}
             }
             for (_, c) in &self.children {
                 return c.borrow_mut().remove_node(name);
@@ -90,24 +94,22 @@ impl Node {
     pub fn make_drawable(&mut self, drawable: shared_ptr<RefCell<dyn Drawable>>) {
         self.drawable = Some(drawable)
     }
-    pub fn translate(&mut self, t: Vector3<f32>) {
-        let t_mat = Matrix4::from_translation(t);
-        self.model = self.model * t_mat;
+    pub fn translate(&mut self, t: glm::Vec3) {
+        self.model = glm::translate(&self.model, &t);
     }
-    pub fn rotate(&mut self, r: Quaternion<f32>) {
-        let r_mat = Matrix4::from(r);
-        self.model = self.model * r_mat;
+    pub fn rotate(&mut self, r: glm::Quat) {
+        let rot = glm::quat_to_mat4(&r);
+        self.model = rot * self.model;
     }
     pub fn scale(&mut self, s: f32) {
-        let s_mat = Matrix4::from_scale(s);
-        self.model = self.model * s_mat;
+        self.model = glm::scale(&self.model, &glm::vec3(s, s, s));
     }
     pub fn get_bounding_volume(&self) {}
-    pub fn draw(&self, model: Matrix4<f32>) {
+    pub fn draw(&self, model: glm::Mat4) {
         let me = self.apply_pre_transform(model);
         let me_ref = me.borrow();
         if me_ref.drawable.is_some() {
-            let drawable = me_ref.drawable.as_ref().unwrap().borrow();
+            let mut drawable = me_ref.drawable.as_ref().unwrap().borrow_mut();
             drawable.draw(me_ref.model);
         }
     }

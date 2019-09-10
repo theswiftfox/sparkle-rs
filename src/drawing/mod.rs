@@ -1,5 +1,7 @@
 use crate::input::input_handler::InputHandler;
+use crate::input::Camera;
 
+pub mod generate;
 pub mod geometry;
 pub mod scenegraph;
 
@@ -12,41 +14,27 @@ pub trait Renderer {
     fn create(width: i32, height: i32, title: &str) -> Self;
     fn cleanup(&mut self);
     fn update(&mut self) -> Result<bool, Box<dyn std::error::Error>>;
+    fn change_camera(&mut self, cam: std::rc::Rc<std::cell::RefCell<dyn Camera>>);
     fn change_input_handler(&mut self, handler: std::rc::Rc<std::cell::RefCell<dyn InputHandler>>);
 }
 
 #[allow(dead_code)] // we don't want warnings if some color is not used..
 pub mod colors_linear {
-    pub const BACKGROUND: cgmath::Vector4<f32> = cgmath::Vector4 {
-        x: 0.052860655f32,
-        y: 0.052860655f32,
-        z: 0.052860655f32,
-        w: 1.0f32,
-    };
-    pub const GREEN: cgmath::Vector4<f32> = cgmath::Vector4 {
-        x: 0.005181516f32,
-        y: 0.201556236f32,
-        z: 0.005181516f32,
-        w: 1.0f32,
-    };
-    pub const BLUE: cgmath::Vector4<f32> = cgmath::Vector4 {
-        x: 0.001517635f32,
-        y: 0.114435382f32,
-        z: 0.610495627f32,
-        w: 1.0f32,
-    };
-    pub const RED: cgmath::Vector4<f32> = cgmath::Vector4 {
-        x: 0.545724571f32,
-        y: 0.026241219f32,
-        z: 0.001517635f32,
-        w: 1.0f32,
-    };
-    pub const WHITE: cgmath::Vector4<f32> = cgmath::Vector4 {
-        x: 0.052860655f32,
-        y: 0.052860655f32,
-        z: 0.052860655f32,
-        w: 1.0f32,
-    };
+    pub fn background() -> glm::Vec4 {
+        glm::vec4(0.052860655f32, 0.052860655f32, 0.052860655f32, 1.0f32)
+    }
+    pub fn green() -> glm::Vec4 {
+        glm::vec4(0.005181516f32, 0.201556236f32, 0.005181516f32, 1.0f32)
+    }
+    pub fn blue() -> glm::Vec4 {
+        glm::vec4(0.001517635f32, 0.114435382f32, 0.610495627f32, 1.0f32)
+    }
+    pub fn red() -> glm::Vec4 {
+        glm::vec4(0.545724571f32, 0.026241219f32, 0.001517635f32, 1.0f32)
+    }
+    pub fn white() -> glm::Vec4 {
+        glm::vec4(0.052860655f32, 0.052860655f32, 0.052860655f32, 1.0f32)
+    }
 }
 
 use crate::window::*;

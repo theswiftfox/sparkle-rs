@@ -7,7 +7,8 @@ build = "build.rs"
 
 
 [dependencies]
-cgmath = { version = "0.17.0", features = ["swizzle"] }
+# cgmath = { version = "0.17.0", features = ["swizzle"] }
+nalgebra-glm = "0.3"
 const-cstr = "0.1"
 
 [target.'cfg(windows)'.dependencies]
