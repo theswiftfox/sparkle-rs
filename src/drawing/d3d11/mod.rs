@@ -1,3 +1,4 @@
+use crate::drawing::generate;
 use crate::drawing::scenegraph::node::Node;
 use crate::drawing::scenegraph::Scenegraph;
 use crate::drawing::Renderer;
@@ -5,8 +6,6 @@ use crate::input::first_person::FPSController;
 use crate::input::input_handler::InputHandler;
 use crate::input::Camera;
 use crate::window::Window;
-use crate::drawing::generate;
-use cgmath::conv::*;
 use std::time::Instant;
 use winapi::um::d3d11 as dx11;
 
@@ -17,8 +16,8 @@ mod shaders;
 pub mod drawable;
 
 struct ShaderUniforms {
-    pub view: cgmath::Matrix4<f32>,
-    pub proj: cgmath::Matrix4<f32>,
+    pub view: glm::Mat4,
+    pub proj: glm::Mat4,
 }
 
 pub struct D3D11Renderer<W> {
@@ -45,10 +44,9 @@ where
             Ok(b) => b,
             Err(e) => panic!(format!("{}", e)),
         };
-        use cgmath::num_traits::identities::One;
         let uniforms = ShaderUniforms {
-            view: cgmath::Matrix4::one(),
-            proj: cgmath::Matrix4::one(),
+            view: glm::identity(),
+            proj: glm::identity(),
         };
         let cbuff =
             match cbuffer::CBuffer::create(uniforms, backend.get_context(), backend.get_device()) {
@@ -81,11 +79,13 @@ where
             Ok(d) => d,
             Err(e) => panic!(e),
         };
-        let node = Node::create(
-            "Triangle",
-            cgmath::Matrix4::from_angle_x(cgmath::Rad::from(cgmath::Deg(-55.0f32))),
-            Some(drawable),
+        let rot_in: glm::Mat4 = glm::identity();
+        let rot = glm::rotate(
+            &rot_in,
+            glm::radians(&glm::vec1(-55.0f32)).x,
+            &glm::vec3(1.0f32, 0.0f32, 0.0f32),
         );
+        let node = Node::create("Triangle", rot, Some(drawable));
         renderer.scene.set_root(node);
 
         renderer.change_input_handler(input_handler.clone());
@@ -155,7 +155,7 @@ impl<W> D3D11Renderer<W> {
         let render_target = self.backend.get_render_target_view();
         let depth_stencil = self.backend.get_depth_stencil_view();
 
-        let color = array4(crate::drawing::colors_linear::BACKGROUND);
+        let color: [f32; 4] = crate::drawing::colors_linear::background().into();
         unsafe {
             (*ctx).ClearRenderTargetView(render_target, &color);
             (*ctx).ClearDepthStencilView(

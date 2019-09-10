@@ -3,8 +3,6 @@ use crate::drawing::d3d11::cbuffer::CBuffer;
 use crate::drawing::geometry::Vertex;
 use crate::drawing::scenegraph::drawable::Drawable;
 
-use cgmath::num_traits::identities::One;
-use cgmath::Matrix4;
 use winapi::shared::dxgiformat::DXGI_FORMAT_R32_UINT;
 use winapi::shared::winerror::S_OK;
 use winapi::um::d3d11 as dx11;
@@ -17,11 +15,11 @@ pub struct DxDrawable {
     index_buffer: *mut dx11::ID3D11Buffer,
     index_buffer_stride: u32,
     index_count: u32,
-    cbuffer: CBuffer<Matrix4<f32>>,
+    cbuffer: CBuffer<glm::Mat4>,
 }
 
 impl Drawable for DxDrawable {
-    fn draw(&mut self, model: Matrix4<f32>) {
+    fn draw(&mut self, model: glm::Mat4) {
         self.cbuffer.data = model;
         match self.cbuffer.update() {
             Ok(_) => {}
@@ -107,7 +105,7 @@ impl DxDrawable {
                 ));
             }
         }
-        let cbuffer: CBuffer<Matrix4<f32>> = CBuffer::create(Matrix4::one(), context, device)?;
+        let cbuffer: CBuffer<glm::Mat4> = CBuffer::create(glm::identity(), context, device)?;
         Ok(std::rc::Rc::new(std::cell::RefCell::new(DxDrawable {
             context: context,
             vertex_buffer: vertex_buffer,
