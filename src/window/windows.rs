@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::rc::Rc as shared_ptr;
 use std::*;
 use winapi::shared::minwindef::{LPARAM, LRESULT, UINT, WPARAM};
-use winapi::shared::windef::{HWND, RECT};
+use winapi::shared::windef::{HWND, POINT, RECT};
 use winapi::shared::windowsx::{GET_X_LPARAM, GET_Y_LPARAM};
 use winapi::um::libloaderapi::*;
 use winapi::um::winuser::*;
@@ -89,13 +89,28 @@ impl Window for WindowWin {
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
-            if self.snap_mouse {
-                // let mut rect: RECT = Default::default();
-                // if GetWindowRect(self.handle, &mut rect as *mut _) != 1 {
-                //     println!("Error getting Window Rectangle"); // todo: maybe log instead or smth?
-                // } else {
-                //     SetCursorPos((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2);
-                // }
+            if self.snap_mouse && self.input_handler.is_some() {
+                let mut rect: RECT = Default::default();
+                if GetWindowRect(self.handle, &mut rect as *mut _) != 1 {
+                    println!("Error getting Window Rectangle");
+                    return false; // todo: maybe log instead or smth?
+                }
+                let cx = (rect.left + rect.right) / 2;
+                let cy = (rect.top + rect.bottom) / 2;
+
+                let mut pos: POINT = Default::default();
+                if GetCursorPos(&mut pos as *mut _) == 1 {
+                    let x = pos.x - cx;
+                    let y = pos.y - cy;
+
+                    self.input_handler
+                        .as_ref()
+                        .unwrap()
+                        .borrow_mut()
+                        .handle_mouse_move(x, y);
+
+                    SetCursorPos(cx, cy);
+                }
             }
         }
         true
@@ -253,11 +268,14 @@ impl WindowWin {
                     );
                 }
                 WM_MOUSEMOVE => {
+                    if self.snap_mouse {
+                        return 0;
+                    }
+
                     let wx = GET_X_LPARAM(lparam);
                     let wy = GET_Y_LPARAM(lparam);
+
                     if self.last_x != std::i32::MIN && self.last_y != std::i32::MIN {
-                        // let x = wx - ((rect.right - rect.left) / 2);
-                        // let y = wy - ((rect.bottom - rect.top) / 2);
                         let x = wx - self.last_x;
                         let y = wy - self.last_y;
                         //println!("x({}) y({}), px({}) py({}) Dx({}) Dy({})", wx, wy, self.last_x, self.last_y, x, y);
@@ -269,9 +287,19 @@ impl WindowWin {
                 _ => return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
             }
             if self.snap_mouse && !was_snapped {
-                unsafe { ShowCursor(0) };
+                unsafe {
+                    ShowCursor(0);
+                    // ClipCursor(&rect as *const _);
+                    //SetCapture(self.handle);
+                };
             } else if !self.snap_mouse && was_snapped {
-                unsafe { ShowCursor(1) };
+                unsafe {
+                    ShowCursor(1);
+                    // if ReleaseCapture() != 1 {
+                    //     return -1;
+                    // }
+                    // ClipCursor(ptr::null());
+                };
             }
             return 0;
         }
