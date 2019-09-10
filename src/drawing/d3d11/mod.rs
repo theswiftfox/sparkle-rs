@@ -103,7 +103,7 @@ where
     fn update(&mut self) -> Result<bool, Box<dyn std::error::Error>> {
         let dt = self.clock.elapsed().as_millis() as f32 / 1000f32;
         self.clock = Instant::now();
-        let ok = self.window.borrow().update();
+        let ok = self.window.borrow_mut().update();
 
         if ok {
             match &self.input_handler {
