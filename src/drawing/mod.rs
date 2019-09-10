@@ -1,6 +1,7 @@
 use crate::input::input_handler::InputHandler;
 use crate::input::Camera;
 
+pub mod generate;
 pub mod geometry;
 pub mod scenegraph;
 
