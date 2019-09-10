@@ -4,17 +4,16 @@ pub mod node;
 use node::Node;
 use std::cell::RefCell;
 use std::rc::Rc as shared_ptr;
-use cgmath::num_traits::One;
 
 pub struct Scenegraph {
-    transform: cgmath::Matrix4<f32>,
+    transform: glm::Mat4,
     root: Option<shared_ptr<RefCell<Node>>>,
 }
 
 impl Scenegraph {
     pub fn empty() -> Scenegraph {
         Scenegraph {
-            transform: cgmath::Matrix4::one(),
+            transform: glm::identity(),
             root: None,
         }
     }
@@ -38,11 +37,16 @@ impl Scenegraph {
         }
     }
 
-    pub fn traverse(&self) -> Result<Vec<shared_ptr<RefCell<Node>>>, SceneGraphError>  {
+    pub fn traverse(&self) -> Result<Vec<shared_ptr<RefCell<Node>>>, SceneGraphError> {
         if self.root.is_none() {
             Err(SceneGraphError::new("", &ErrorCause::Empty))
         } else {
-            let nodes = self.root.as_ref().unwrap().borrow().traverse(self.transform);
+            let nodes = self
+                .root
+                .as_ref()
+                .unwrap()
+                .borrow()
+                .traverse(self.transform);
             if nodes.is_empty() {
                 Err(SceneGraphError::err_empty("Root has no children"))
             } else {
@@ -54,7 +58,7 @@ impl Scenegraph {
     pub fn get_drawable(&self, name: &str) -> Option<shared_ptr<RefCell<dyn drawable::Drawable>>> {
         let node = match self.get_node(name) {
             Ok(n) => Some(n),
-            Err(_) => None
+            Err(_) => None,
         };
         match node {
             Some(n) => n.borrow().get_drawable(),
@@ -64,7 +68,7 @@ impl Scenegraph {
 
     pub fn remove_node(&mut self, name: &str) -> Result<(), SceneGraphError> {
         if self.root.is_none() {
-            return Err(SceneGraphError::err_empty("No root"))
+            return Err(SceneGraphError::err_empty("No root"));
         } else {
             self.root.as_ref().unwrap().borrow_mut().remove_node(name)
         }

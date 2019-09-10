@@ -1,12 +1,14 @@
-use crate::input::input_handler::{Action, ApplicationRequest, Button, ScrollAxis, InputHandler, Key};
+use crate::input::input_handler::{
+    Action, ApplicationRequest, Button, InputHandler, Key, ScrollAxis,
+};
 use crate::utils;
 use crate::window::Window;
 use std::cell::RefCell;
 use std::rc::Rc as shared_ptr;
 use std::*;
 use winapi::shared::minwindef::{LPARAM, LRESULT, UINT, WPARAM};
+use winapi::shared::windef::{HWND, POINT, RECT};
 use winapi::shared::windowsx::{GET_X_LPARAM, GET_Y_LPARAM};
-use winapi::shared::windef::HWND;
 use winapi::um::libloaderapi::*;
 use winapi::um::winuser::*;
 
@@ -41,6 +43,10 @@ pub struct WindowWin {
     height: u32,
     input_handler: Option<std::rc::Rc<std::cell::RefCell<dyn InputHandler>>>,
     request_quit: bool,
+    snap_mouse: bool,
+
+    last_x: i32,
+    last_y: i32,
 }
 
 impl Window for WindowWin {
@@ -66,24 +72,48 @@ impl Window for WindowWin {
             height: height as u32,
             input_handler: None,
             request_quit: false,
+            snap_mouse: false,
+            last_x: std::i32::MIN,
+            last_y: std::i32::MIN,
         }));
         wnd.borrow_mut().create(width, height, name, title);
         return wnd;
     }
-    fn update(&self) -> bool {
+    fn update(&mut self) -> bool {
         if self.request_quit {
             return false;
         }
         unsafe {
             let mut msg: MSG = mem::uninitialized();
-            if GetMessageW(&mut msg, self.handle, 0, 0) > 0 {
+            while PeekMessageW(&mut msg, self.handle, 0, 0, PM_REMOVE) > 0 {
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
+            }
+            if self.snap_mouse && self.input_handler.is_some() {
+                let mut rect: RECT = Default::default();
+                if GetWindowRect(self.handle, &mut rect as *mut _) != 1 {
+                    println!("Error getting Window Rectangle");
+                    return false; // todo: maybe log instead or smth?
+                }
+                let cx = (rect.left + rect.right) / 2;
+                let cy = (rect.top + rect.bottom) / 2;
 
-                return true;
+                let mut pos: POINT = Default::default();
+                if GetCursorPos(&mut pos as *mut _) == 1 {
+                    let x = pos.x - cx;
+                    let y = pos.y - cy;
+
+                    self.input_handler
+                        .as_ref()
+                        .unwrap()
+                        .borrow_mut()
+                        .handle_mouse_move(x, y);
+
+                    SetCursorPos(cx, cy);
+                }
             }
         }
-        false
+        true
     }
     fn set_input_handler(&mut self, handler: std::rc::Rc<std::cell::RefCell<dyn InputHandler>>) {
         self.input_handler = Some(handler.clone())
@@ -137,72 +167,141 @@ impl WindowWin {
             return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
         } else {
             let handler = self.input_handler.as_ref().unwrap().clone();
+            let was_snapped = self.snap_mouse;
             match msg {
                 WM_DESTROY => {
                     unsafe { PostQuitMessage(0) };
+                    self.request_quit = true;
                     return 0;
                 }
                 WM_SIZE => {
                     return 0;
                 }
                 WM_KEYDOWN => {
-                    match handler.borrow_mut().handle_key(WindowWin::get_sparkle_key(wparam), Action::Down) {
+                    match handler
+                        .borrow_mut()
+                        .handle_key(WindowWin::get_sparkle_key(wparam), Action::Down)
+                    {
                         ApplicationRequest::Quit => {
                             unsafe { PostQuitMessage(0) };
                             self.request_quit = true;
-                        },
-                        _ => { },
+                        }
+                        _ => {}
                     };
-                    return 0;
                 }
                 WM_KEYUP => {
-                    match handler.borrow_mut().handle_key(WindowWin::get_sparkle_key(wparam), Action::Up) {
+                    match handler
+                        .borrow_mut()
+                        .handle_key(WindowWin::get_sparkle_key(wparam), Action::Up)
+                    {
                         ApplicationRequest::Quit => {
                             unsafe { PostQuitMessage(0) };
                             self.request_quit = true;
-                        },
-                        _ => { },
+                        }
+                        _ => {}
                     };
-                    return 0;
                 }
                 WM_LBUTTONDOWN => {
-                    handler.borrow_mut().handle_mouse(Button::Left, Action::Down);
-                    return 0;
+                    match handler
+                        .borrow_mut()
+                        .handle_mouse(Button::Left, Action::Down)
+                    {
+                        ApplicationRequest::SnapMouse => self.snap_mouse = true,
+                        ApplicationRequest::UnsnapMouse => self.snap_mouse = false,
+                        _ => {}
+                    };
                 }
                 WM_LBUTTONUP => {
-                    handler.borrow_mut().handle_mouse(Button::Left, Action::Up);
-                    return 0;
+                    match handler.borrow_mut().handle_mouse(Button::Left, Action::Up) {
+                        ApplicationRequest::SnapMouse => self.snap_mouse = true,
+                        ApplicationRequest::UnsnapMouse => self.snap_mouse = false,
+                        _ => {}
+                    };
                 }
                 WM_MBUTTONDOWN => {
-                    handler.borrow_mut().handle_mouse(Button::Middle, Action::Down);
-                    return 0;
+                    match handler
+                        .borrow_mut()
+                        .handle_mouse(Button::Middle, Action::Down)
+                    {
+                        ApplicationRequest::SnapMouse => self.snap_mouse = true,
+                        ApplicationRequest::UnsnapMouse => self.snap_mouse = false,
+                        _ => {}
+                    };
                 }
                 WM_MBUTTONUP => {
-                    handler.borrow_mut().handle_mouse(Button::Middle, Action::Up);
-                    return 0;
+                    match handler
+                        .borrow_mut()
+                        .handle_mouse(Button::Middle, Action::Up)
+                    {
+                        ApplicationRequest::SnapMouse => self.snap_mouse = true,
+                        ApplicationRequest::UnsnapMouse => self.snap_mouse = false,
+                        _ => {}
+                    };
                 }
                 WM_RBUTTONDOWN => {
-                    handler.borrow_mut().handle_mouse(Button::Right, Action::Down);
-                    return 0;
+                    match handler
+                        .borrow_mut()
+                        .handle_mouse(Button::Right, Action::Down)
+                    {
+                        ApplicationRequest::SnapMouse => self.snap_mouse = true,
+                        ApplicationRequest::UnsnapMouse => self.snap_mouse = false,
+                        _ => {}
+                    };
                 }
                 WM_RBUTTONUP => {
-                    handler.borrow_mut().handle_mouse(Button::Right, Action::Up);
-                    return 0;
+                    match handler.borrow_mut().handle_mouse(Button::Right, Action::Up) {
+                        ApplicationRequest::SnapMouse => self.snap_mouse = true,
+                        ApplicationRequest::UnsnapMouse => self.snap_mouse = false,
+                        _ => {}
+                    };
                 }
                 WM_MOUSEWHEEL => {
-                    handler.borrow_mut().handle_wheel(ScrollAxis::Vertical, f32::from(GET_WHEEL_DELTA_WPARAM(wparam)) / 5.0f32);
-                    return 0;
+                    handler.borrow_mut().handle_wheel(
+                        ScrollAxis::Vertical,
+                        f32::from(GET_WHEEL_DELTA_WPARAM(wparam)) / 5.0f32,
+                    );
                 }
                 WM_MOUSEHWHEEL => {
-                    handler.borrow_mut().handle_wheel(ScrollAxis::Horizontal, f32::from(GET_WHEEL_DELTA_WPARAM(wparam)) / 5.0f32);
-                    return 0;
-                },
+                    handler.borrow_mut().handle_wheel(
+                        ScrollAxis::Horizontal,
+                        f32::from(GET_WHEEL_DELTA_WPARAM(wparam)) / 5.0f32,
+                    );
+                }
                 WM_MOUSEMOVE => {
-                    handler.borrow_mut().handle_mouse_move(GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam));
-                    return 0;
+                    if self.snap_mouse {
+                        return 0;
+                    }
+
+                    let wx = GET_X_LPARAM(lparam);
+                    let wy = GET_Y_LPARAM(lparam);
+
+                    if self.last_x != std::i32::MIN && self.last_y != std::i32::MIN {
+                        let x = wx - self.last_x;
+                        let y = wy - self.last_y;
+                        //println!("x({}) y({}), px({}) py({}) Dx({}) Dy({})", wx, wy, self.last_x, self.last_y, x, y);
+                        handler.borrow_mut().handle_mouse_move(x, y);
+                    }
+                    self.last_x = wx;
+                    self.last_y = wy;
                 }
                 _ => return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
             }
+            if self.snap_mouse && !was_snapped {
+                unsafe {
+                    ShowCursor(0);
+                    // ClipCursor(&rect as *const _);
+                    //SetCapture(self.handle);
+                };
+            } else if !self.snap_mouse && was_snapped {
+                unsafe {
+                    ShowCursor(1);
+                    // if ReleaseCapture() != 1 {
+                    //     return -1;
+                    // }
+                    // ClipCursor(ptr::null());
+                };
+            }
+            return 0;
         }
     }
 

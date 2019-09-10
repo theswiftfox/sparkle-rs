@@ -1,20 +1,24 @@
-use crate::input::input_handler::{Action, ApplicationRequest, Button, InputHandler, Key, ScrollAxis};
+use crate::input::input_handler::{
+    Action, ApplicationRequest, Button, InputHandler, Key, ScrollAxis,
+};
 use crate::input::Camera;
-use cgmath::EuclideanSpace;
-use cgmath::{num_traits::One, vec3, Matrix4, Point3, Vector3};
+
 use std::collections::HashMap;
 
-type KeyCallback = fn(&mut FPSController, Action) -> Option<ApplicationRequest>;
-type MouseButtonCallback = fn(&mut FPSController, Action) -> ();
+type KeyCallback = fn(&mut FPSController, Action) -> ApplicationRequest;
+type MouseButtonCallback = fn(&mut FPSController, Action) -> ApplicationRequest;
 
-const MOUSE_SPEED : f32 = 0.00390625f32;
+const MOUSE_SPEED: f32 = 0.05f32; // π/180 (convert deg to rad) * 0.05 (sensitivity) //0.00390625f32;
 
 pub struct FPSController {
-    pos: Vector3<f32>,
-    h_angle: f32,
-    v_angle: f32,
-    view_mat: Matrix4<f32>,
-    projection_mat: Matrix4<f32>,
+    world_up: glm::Vec3,
+    pos: glm::Vec3,
+    front: glm::Vec3,
+    up: glm::Vec3,
+    right: glm::Vec3,
+    h_angle_deg: f32,
+    v_angle_deg: f32,
+    projection_mat: glm::Mat4,
 
     keybinds: HashMap<Key, KeyCallback>,
     mousebinds: HashMap<Button, MouseButtonCallback>,
@@ -25,26 +29,27 @@ pub struct FPSController {
     move_l: bool,
     move_r: bool,
     aiming: bool,
+    first_mouse: bool,
 }
 
 impl Camera for FPSController {
     fn update(&mut self, _delta_t: f32) {
-        let dir = vec3(
-            (-self.v_angle).cos() * (-self.h_angle).sin(),
-            (-self.v_angle).sin(),
-            (-self.v_angle).cos() * (-self.h_angle).cos(),
-        );
-        let center = self.pos + dir;
-        self.view_mat = Matrix4::look_at(
-            Point3::from_vec(self.pos),
-            Point3::from_vec(center),
-            Vector3::unit_y(),
-        );
+        let pitch_rad = glm::radians(&glm::vec1(self.v_angle_deg)).x;
+        let yaw_rad = glm::radians(&glm::vec1(self.h_angle_deg)).x;
+        self.front = glm::vec3(
+            pitch_rad.cos() * yaw_rad.cos(),
+            pitch_rad.sin(),
+            pitch_rad.cos() * yaw_rad.sin(),
+        )
+        .normalize();
+        self.right = self.front.cross(&self.world_up).normalize();
+        self.up = self.right.cross(&self.front).normalize();
     }
-    fn view_mat(&self) -> Matrix4<f32> {
-        self.view_mat
+    fn view_mat(&self) -> glm::Mat4 {
+        let center = self.pos + self.front;
+        glm::look_at(&self.pos, &center, &glm::vec3(0.0f32, 1.0f32, 0.0f32))
     }
-    fn projection_mat(&self) -> Matrix4<f32> {
+    fn projection_mat(&self) -> glm::Mat4 {
         self.projection_mat
     }
 }
@@ -52,10 +57,10 @@ impl Camera for FPSController {
 impl InputHandler for FPSController {
     fn update(&mut self, delta_t: f32) {
         if self.move_f {
-            self.pos = self.pos + -self.move_speed * delta_t * self.get_front();
+            self.pos = self.pos + self.move_speed * delta_t * self.get_front();
         }
         if self.move_b {
-            self.pos = self.pos + self.move_speed * delta_t * self.get_front();
+            self.pos = self.pos + -self.move_speed * delta_t * self.get_front();
         }
         if self.move_r {
             self.pos = self.pos + self.move_speed * delta_t * self.get_right();
@@ -66,47 +71,71 @@ impl InputHandler for FPSController {
     }
     fn handle_key(&mut self, key: Key, action: Action) -> ApplicationRequest {
         match self.keybinds.get(&key) {
-            Some(func) => match func(self, action) {
-                Some(r) => r,
-                None => ApplicationRequest::Nothing,
-            },
+            Some(func) => func(self, action),
             None => ApplicationRequest::Nothing,
         }
-        
     }
-    fn handle_mouse(&mut self, button: Button, action: Action) {
+    fn handle_mouse(&mut self, button: Button, action: Action) -> ApplicationRequest {
         match self.mousebinds.get(&button) {
             Some(func) => func(self, action),
-            None => { },
+            None => ApplicationRequest::Nothing,
         }
     }
     fn handle_wheel(&mut self, _axis: ScrollAxis, _value: f32) {}
     fn handle_mouse_move(&mut self, x: i32, y: i32) {
         if self.aiming {
-            self.h_angle += (x as f32) * MOUSE_SPEED;
-            self.v_angle -= (y as f32) * MOUSE_SPEED;
-            self.v_angle = -1.5f32.max(self.v_angle).min(1.5f32);
+            if self.first_mouse {
+                self.first_mouse = false;
+                return;
+            }
+            // println!("Mouse Event: x({}), y({})", x, y);
+            self.h_angle_deg += (x as f32) * MOUSE_SPEED;
+            self.v_angle_deg += (y as f32) * MOUSE_SPEED;
+            self.v_angle_deg = (-89.9f32).max(self.v_angle_deg).min(89.9f32);
         }
     }
 }
 
 impl FPSController {
+    fn proj_lh(aspect: f32, fov: f32, near: f32, far: f32) -> glm::Mat4 {
+        let mut mat: glm::Mat4 = glm::zero();
+        let y_scale = 1.0f32 / glm::tan(&(glm::radians(&glm::vec1(fov)) / 2.0f32)).x;
+        let x_scale = y_scale * aspect;
+        mat.column_mut(0)
+            .copy_from(&glm::vec4(x_scale, 0.0f32, 0.0f32, 0.0f32));
+        mat.column_mut(1)
+            .copy_from(&glm::vec4(0.0f32, y_scale, 0.0f32, 0.0f32));
+        mat.column_mut(2).copy_from(&glm::vec4(
+            0.0f32,
+            0.0f32,
+            far / (near - far),
+            (near * far) / (near - far),
+        ));
+        mat.column_mut(3)
+            .copy_from(&glm::vec4(0.0f32, 0.0f32, -1.0f32, 0.0f32));
+        return mat;
+    }
     pub fn create(aspect: f32, fov: f32, near: f32, far: f32) -> FPSController {
-        let proj = cgmath::perspective(cgmath::Rad::from(cgmath::Deg(fov)), aspect, near, far);
+        let mut proj = glm::perspective_zo(aspect, fov, near, far);
+        proj[(1, 1)] *= -1.0f32;
         FPSController {
-            pos: vec3(0.0f32, 0.0f32, 0.0f32),
-            h_angle: std::f32::consts::FRAC_PI_4,
-            v_angle: 0.0f32,
-            view_mat: Matrix4::one(),
+            world_up: glm::vec3(0.0f32, 1.0f32, 0.0f32),
+            pos: glm::vec3(0.0f32, 0.0f32, 3.0f32),
+            front: glm::zero(),
+            up: glm::zero(),
+            right: glm::zero(),
+            h_angle_deg: -90.0f32,
+            v_angle_deg: 0.0f32,
             projection_mat: proj,
             keybinds: FPSController::default_keybinds(),
             mousebinds: FPSController::default_mousebinds(),
-            aiming: true,
+            aiming: false,
             move_speed: 1.0f32,
             move_b: false,
             move_f: false,
             move_l: false,
             move_r: false,
+            first_mouse: true,
         }
     }
     pub fn create_ptr(
@@ -119,60 +148,70 @@ impl FPSController {
             aspect, fov, near, far,
         )))
     }
-    fn get_front(&self) -> Vector3<f32> {
-        self.view_mat[2].xyz()
+    fn get_front(&self) -> glm::Vec3 {
+        self.front.clone()
     }
-    fn get_up(&self) -> Vector3<f32> {
-        self.view_mat[1].xyz()
+    fn get_up(&self) -> glm::Vec3 {
+        self.up.clone()
     }
-    fn get_right(&self) -> Vector3<f32> {
-        self.view_mat[0].xyz()
+    fn get_right(&self) -> glm::Vec3 {
+        self.right.clone()
     }
 
-    fn movement_front(&mut self, action: Action) -> Option<ApplicationRequest> {
+    fn movement_front(&mut self, action: Action) -> ApplicationRequest {
         self.move_f = match action {
             Action::Up => false,
             Action::Down => true,
         };
-        None
+        ApplicationRequest::Nothing
     }
-    fn movement_back(&mut self, action: Action) -> Option<ApplicationRequest> {
+    fn movement_back(&mut self, action: Action) -> ApplicationRequest {
         self.move_b = match action {
             Action::Up => false,
             Action::Down => true,
         };
-        None
+        ApplicationRequest::Nothing
     }
-    fn movement_left(&mut self, action: Action) -> Option<ApplicationRequest> {
+    fn movement_left(&mut self, action: Action) -> ApplicationRequest {
         self.move_l = match action {
             Action::Up => false,
             Action::Down => true,
         };
-        None
+        ApplicationRequest::Nothing
     }
-    fn movement_right(&mut self, action: Action) -> Option<ApplicationRequest> {
+    fn movement_right(&mut self, action: Action) -> ApplicationRequest {
         self.move_r = match action {
             Action::Up => false,
             Action::Down => true,
         };
-        None
+        ApplicationRequest::Nothing
     }
-    fn request_quit(&mut self, action: Action) -> Option<ApplicationRequest> {
+    fn request_quit(&mut self, action: Action) -> ApplicationRequest {
         match action {
-            Action::Up => Some(ApplicationRequest::Quit),
-            Action::Down => None,
+            Action::Up => ApplicationRequest::Quit,
+            Action::Down => ApplicationRequest::Nothing,
         }
     }
 
-    fn toggle_aim(&mut self, action: Action) {
+    fn toggle_aim(&mut self, action: Action) -> ApplicationRequest {
         match action {
-            Action::Down => self.aiming = !self.aiming,
-            Action::Up => { },
-        };
+            Action::Down => match self.aiming {
+                true => {
+                    self.aiming = false;
+                    ApplicationRequest::UnsnapMouse
+                }
+                false => {
+                    self.aiming = true;
+                    self.first_mouse = true;
+                    ApplicationRequest::SnapMouse
+                }
+            },
+            Action::Up => ApplicationRequest::Nothing,
+        }
     }
 
     fn default_keybinds() -> HashMap<Key, KeyCallback> {
-        let mut keybinds : HashMap<Key, KeyCallback> = HashMap::new();
+        let mut keybinds: HashMap<Key, KeyCallback> = HashMap::new();
         keybinds.insert(Key::W, FPSController::movement_front);
         keybinds.insert(Key::S, FPSController::movement_back);
         keybinds.insert(Key::A, FPSController::movement_left);
@@ -182,7 +221,7 @@ impl FPSController {
         return keybinds;
     }
     fn default_mousebinds() -> HashMap<Button, MouseButtonCallback> {
-        let mut mousebinds : HashMap<Button, MouseButtonCallback> = HashMap::new();
+        let mut mousebinds: HashMap<Button, MouseButtonCallback> = HashMap::new();
         mousebinds.insert(Button::Left, FPSController::toggle_aim);
         return mousebinds;
     }

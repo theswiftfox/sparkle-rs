@@ -1,9 +1,10 @@
 use super::backend::{DxError, DxErrorType};
+use crate::drawing::d3d11::cbuffer::CBuffer;
 use crate::drawing::geometry::Vertex;
 use crate::drawing::scenegraph::drawable::Drawable;
 
+use winapi::shared::dxgiformat::DXGI_FORMAT_R32_UINT;
 use winapi::shared::winerror::S_OK;
-use winapi::shared::dxgiformat::{DXGI_FORMAT_R32_UINT};
 use winapi::um::d3d11 as dx11;
 use winapi::um::d3d11_1 as dx11_1;
 
@@ -14,10 +15,16 @@ pub struct DxDrawable {
     index_buffer: *mut dx11::ID3D11Buffer,
     index_buffer_stride: u32,
     index_count: u32,
+    cbuffer: CBuffer<glm::Mat4>,
 }
 
 impl Drawable for DxDrawable {
-    fn draw(&self, _model: cgmath::Matrix4<f32>) {
+    fn draw(&mut self, model: glm::Mat4) {
+        self.cbuffer.data = model;
+        match self.cbuffer.update() {
+            Ok(_) => {}
+            Err(e) => println!("{}", e),
+        };
         let offset = 0 as u32;
         unsafe {
             (*self.context).IASetVertexBuffers(
@@ -27,11 +34,8 @@ impl Drawable for DxDrawable {
                 &self.vertex_buffer_stride,
                 &offset,
             );
-            (*self.context).IASetIndexBuffer(
-                self.index_buffer,
-                DXGI_FORMAT_R32_UINT,
-                0
-            );
+            (*self.context).IASetIndexBuffer(self.index_buffer, DXGI_FORMAT_R32_UINT, 0);
+            (*self.context).VSSetConstantBuffers(1, 1, &self.cbuffer.buffer_ptr() as *const *mut _);
             (*self.context).DrawIndexed(self.index_count, 0, 0);
         }
     }
@@ -101,6 +105,7 @@ impl DxDrawable {
                 ));
             }
         }
+        let cbuffer: CBuffer<glm::Mat4> = CBuffer::create(glm::identity(), context, device)?;
         Ok(std::rc::Rc::new(std::cell::RefCell::new(DxDrawable {
             context: context,
             vertex_buffer: vertex_buffer,
@@ -108,6 +113,7 @@ impl DxDrawable {
             index_buffer: index_buffer,
             index_buffer_stride: idx_stride,
             index_count: indices.len() as u32,
+            cbuffer: cbuffer,
         })))
     }
 }
