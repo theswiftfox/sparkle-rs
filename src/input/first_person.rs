@@ -84,6 +84,7 @@ impl InputHandler for FPSController {
                 self.first_mouse = false;
                 return;
             }
+            // println!("Mouse Event: x({}), y({})", x, y);
             self.h_angle_deg += (x as f32) * MOUSE_SPEED;
             self.v_angle_deg += (y as f32) * MOUSE_SPEED;
             self.v_angle_deg = (-89.9f32).max(self.v_angle_deg).min(89.9f32);

@@ -12,9 +12,7 @@ pub trait Window {
         name: &str,
         title: &str,
     ) -> std::rc::Rc<std::cell::RefCell<Self>>;
-    #[cfg(target_os = "windows")]
-    fn update(&self) -> bool;
-    #[cfg(target_os = "linux")]
+
     fn update(&mut self) -> bool;
 
     fn get_width(&self) -> u32;
