@@ -178,7 +178,7 @@ impl ShaderProgram {
     pub fn setup_shaders(&mut self, device: *mut dx11_1::ID3D11Device1) -> Result<(), DxError> {
         let mut release = true;
 
-        #[cfg(debug_assertions)]
+        //#[cfg(debug_assertions)]
         {
             let mut shader_dir = std::env::current_exe()
                 .unwrap()

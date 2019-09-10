@@ -1,16 +1,17 @@
-use crate::input::input_handler::InputHandler;
-use crate::input::first_person::FPSController;
 use crate::drawing::scenegraph::node::Node;
 use crate::drawing::scenegraph::Scenegraph;
 use crate::drawing::Renderer;
-use crate::window::Window;
+use crate::input::first_person::FPSController;
+use crate::input::input_handler::InputHandler;
 use crate::input::Camera;
+use crate::window::Window;
 use cgmath::conv::*;
+use std::time::Instant;
 use winapi::um::d3d11 as dx11;
 
 mod backend;
-mod shaders;
 mod cbuffer;
+mod shaders;
 
 pub mod drawable;
 
@@ -27,14 +28,16 @@ pub struct D3D11Renderer<W> {
     shader_uniforms: cbuffer::CBuffer<ShaderUniforms>,
     backend: backend::D3D11Backend,
     window: std::rc::Rc<std::cell::RefCell<W>>,
+    clock: Instant,
 }
 
 impl<W> Renderer for D3D11Renderer<W>
 where
     W: Window,
-    {
+{
     fn create(width: i32, height: i32, title: &str) -> D3D11Renderer<W> {
-        let input_handler = FPSController::create_ptr((width as f32) / (height as f32), 70.0f32, 0.1f32, 100.0f32);
+        let input_handler =
+            FPSController::create_ptr((height as f32) / (width as f32), 45.0f32, 0.1f32, 100.0f32);
 
         let window = W::create_window(width, height, "main", title);
         let backend = match backend::D3D11Backend::init(window.clone()) {
@@ -46,10 +49,11 @@ where
             view: cgmath::Matrix4::one(),
             proj: cgmath::Matrix4::one(),
         };
-        let cbuff = match cbuffer::CBuffer::create(uniforms, backend.get_context(), backend.get_device()) {
-            Ok(b) => b,
-            Err(e) => panic!(e),
-        };
+        let cbuff =
+            match cbuffer::CBuffer::create(uniforms, backend.get_context(), backend.get_device()) {
+                Ok(b) => b,
+                Err(e) => panic!(e),
+            };
         let mut renderer = D3D11Renderer {
             backend: backend,
             window: window,
@@ -58,6 +62,7 @@ where
             input_handler: None,
             camera: None,
             shader_uniforms: cbuff,
+            clock: Instant::now(),
         };
 
         let mut renderer = match renderer.init_draw_program() {
@@ -89,13 +94,19 @@ where
             Ok(d) => d,
             Err(e) => panic!(e),
         };
-        let node = Node::create("Triangle", cgmath::Matrix4::from_angle_x(cgmath::Rad::from(cgmath::Deg(-55.0f32))), Some(drawable));
+        let node = Node::create(
+            "Triangle",
+            cgmath::Matrix4::from_angle_x(cgmath::Rad::from(cgmath::Deg(-55.0f32))),
+            Some(drawable),
+        );
         renderer.scene.set_root(node);
 
         renderer.change_input_handler(input_handler.clone());
         renderer.change_camera(input_handler.clone());
         renderer.shader_uniforms.data.proj = input_handler.borrow().projection_mat();
 
+        println!("DX Setup took {} ms", renderer.clock.elapsed().as_millis());
+        renderer.clock = Instant::now();
         return renderer;
     }
 
@@ -104,44 +115,44 @@ where
     }
 
     fn update(&mut self) -> Result<bool, Box<dyn std::error::Error>> {
+        let dt = self.clock.elapsed().as_millis() as f32 / 1000f32;
+        self.clock = Instant::now();
         let ok = self.window.borrow().update();
 
         if ok {
             match &self.input_handler {
-                Some(i) => i.borrow_mut().update(1.0f32),
-                None => { }
+                Some(i) => i.borrow_mut().update(dt),
+                None => {}
             };
             match &self.camera {
                 Some(c) => {
-                    c.borrow_mut().update(1.0f32);
+                    c.borrow_mut().update(dt);
                     self.shader_uniforms.data.view = c.borrow().view_mat();
-                },
-                None => { },
+                }
+                None => {}
             };
             self.shader_uniforms.update()?;
             self.render()?;
         }
-
         Ok(ok)
     }
 
     fn change_input_handler(&mut self, handler: std::rc::Rc<std::cell::RefCell<dyn InputHandler>>) {
         match &self.input_handler {
-            Some(i) => { 
+            Some(i) => {
                 std::mem::drop(i);
                 self.input_handler = Some(handler.clone());
-            },
+            }
             None => self.input_handler = Some(handler.clone()),
         };
         self.window.borrow_mut().set_input_handler(handler.clone())
     }
-    
     fn change_camera(&mut self, cam: std::rc::Rc<std::cell::RefCell<dyn Camera>>) {
         match &self.camera {
             Some(c) => {
                 std::mem::drop(c);
                 self.camera = Some(cam.clone());
-            },
+            }
             None => self.camera = Some(cam.clone()),
         }
     }
@@ -184,7 +195,9 @@ impl<W> D3D11Renderer<W> {
         self.backend.pix_begin_event("Render");
 
         let ctx = self.backend.get_context();
-        unsafe { (*ctx).VSSetConstantBuffers(0, 1, self.shader_uniforms.buffer_ptr()) };
+        unsafe {
+            (*ctx).VSSetConstantBuffers(0, 1, &self.shader_uniforms.buffer_ptr() as *const *mut _)
+        };
 
         self.scene.draw();
 

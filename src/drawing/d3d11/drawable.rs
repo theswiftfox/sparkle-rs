@@ -1,12 +1,12 @@
 use super::backend::{DxError, DxErrorType};
+use crate::drawing::d3d11::cbuffer::CBuffer;
 use crate::drawing::geometry::Vertex;
 use crate::drawing::scenegraph::drawable::Drawable;
-use crate::drawing::d3d11::cbuffer::CBuffer;
 
-use cgmath::Matrix4;
 use cgmath::num_traits::identities::One;
+use cgmath::Matrix4;
+use winapi::shared::dxgiformat::DXGI_FORMAT_R32_UINT;
 use winapi::shared::winerror::S_OK;
-use winapi::shared::dxgiformat::{DXGI_FORMAT_R32_UINT};
 use winapi::um::d3d11 as dx11;
 use winapi::um::d3d11_1 as dx11_1;
 
@@ -24,7 +24,7 @@ impl Drawable for DxDrawable {
     fn draw(&mut self, model: Matrix4<f32>) {
         self.cbuffer.data = model;
         match self.cbuffer.update() {
-            Ok(_) => { },
+            Ok(_) => {}
             Err(e) => println!("{}", e),
         };
         let offset = 0 as u32;
@@ -36,12 +36,8 @@ impl Drawable for DxDrawable {
                 &self.vertex_buffer_stride,
                 &offset,
             );
-            (*self.context).IASetIndexBuffer(
-                self.index_buffer,
-                DXGI_FORMAT_R32_UINT,
-                0
-            );
-            (*self.context).VSSetConstantBuffers(1, 1, self.cbuffer.buffer_ptr());
+            (*self.context).IASetIndexBuffer(self.index_buffer, DXGI_FORMAT_R32_UINT, 0);
+            (*self.context).VSSetConstantBuffers(1, 1, &self.cbuffer.buffer_ptr() as *const *mut _);
             (*self.context).DrawIndexed(self.index_count, 0, 0);
         }
     }
@@ -111,7 +107,7 @@ impl DxDrawable {
                 ));
             }
         }
-        let cbuffer : CBuffer<Matrix4<f32>> = CBuffer::create(Matrix4::one(), context, device)?;
+        let cbuffer: CBuffer<Matrix4<f32>> = CBuffer::create(Matrix4::one(), context, device)?;
         Ok(std::rc::Rc::new(std::cell::RefCell::new(DxDrawable {
             context: context,
             vertex_buffer: vertex_buffer,
