@@ -5,6 +5,7 @@ use crate::input::first_person::FPSController;
 use crate::input::input_handler::InputHandler;
 use crate::input::Camera;
 use crate::window::Window;
+use crate::drawing::generate;
 use cgmath::conv::*;
 use std::time::Instant;
 use winapi::um::d3d11 as dx11;
@@ -70,26 +71,12 @@ where
             Err(e) => panic!(format!("{}", e)),
         };
 
-        // todo: cleanup this
-        let mut vertex_buffer_data: Vec<crate::drawing::geometry::Vertex> = Vec::new();
-        vertex_buffer_data.push(crate::drawing::geometry::Vertex::new_from_f32(
-            0.0f32, 0.5f32, 0.5f32, 1.0f32, 1.0f32, 0.0f32, 0.0f32, 1.0f32,
-        ));
-        vertex_buffer_data.push(crate::drawing::geometry::Vertex::new_from_f32(
-            0.5f32, -0.5f32, 0.5f32, 1.0f32, 0.0f32, 1.0f32, 0.0f32, 1.0f32,
-        ));
-        vertex_buffer_data.push(crate::drawing::geometry::Vertex::new_from_f32(
-            -0.5f32, -0.5f32, 0.5f32, 1.0f32, 0.0f32, 0.0f32, 1.0f32, 1.0f32,
-        ));
-        let mut index_buffer_data: Vec<u32> = Vec::new();
-        index_buffer_data.push(0);
-        index_buffer_data.push(1);
-        index_buffer_data.push(2);
+        let (cube_verts, cube_indices) = generate::cube();
         let drawable = match drawable::DxDrawable::from_verts(
             renderer.backend.get_device(),
             renderer.backend.get_context(),
-            vertex_buffer_data,
-            index_buffer_data,
+            cube_verts,
+            cube_indices,
         ) {
             Ok(d) => d,
             Err(e) => panic!(e),
