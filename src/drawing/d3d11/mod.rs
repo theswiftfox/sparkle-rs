@@ -11,6 +11,7 @@ use winapi::um::d3d11 as dx11;
 
 mod backend;
 mod cbuffer;
+mod sampler;
 mod shaders;
 
 pub mod drawable;
