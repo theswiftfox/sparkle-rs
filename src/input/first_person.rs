@@ -5,8 +5,7 @@ use crate::input::Camera;
 
 use std::collections::HashMap;
 
-type KeyCallback = fn(&mut FPSController, Action) -> ApplicationRequest;
-type MouseButtonCallback = fn(&mut FPSController, Action) -> ApplicationRequest;
+type ActionCallback = fn(&mut FPSController, Action) -> ApplicationRequest;
 
 const MOUSE_SPEED: f32 = 0.05f32; // π/180 (convert deg to rad) * 0.05 (sensitivity) //0.00390625f32;
 
@@ -20,8 +19,8 @@ pub struct FPSController {
     v_angle_deg: f32,
     projection_mat: glm::Mat4,
 
-    keybinds: HashMap<Key, KeyCallback>,
-    mousebinds: HashMap<Button, MouseButtonCallback>,
+    keybinds: HashMap<Key, ActionCallback>,
+    mousebinds: HashMap<Button, ActionCallback>,
 
     move_speed: f32,
     move_f: bool,
@@ -210,8 +209,8 @@ impl FPSController {
         }
     }
 
-    fn default_keybinds() -> HashMap<Key, KeyCallback> {
-        let mut keybinds: HashMap<Key, KeyCallback> = HashMap::new();
+    fn default_keybinds() -> HashMap<Key, ActionCallback> {
+        let mut keybinds: HashMap<Key, ActionCallback> = HashMap::new();
         keybinds.insert(Key::W, FPSController::movement_front);
         keybinds.insert(Key::S, FPSController::movement_back);
         keybinds.insert(Key::A, FPSController::movement_left);
@@ -220,8 +219,8 @@ impl FPSController {
 
         return keybinds;
     }
-    fn default_mousebinds() -> HashMap<Button, MouseButtonCallback> {
-        let mut mousebinds: HashMap<Button, MouseButtonCallback> = HashMap::new();
+    fn default_mousebinds() -> HashMap<Button, ActionCallback> {
+        let mut mousebinds: HashMap<Button, ActionCallback> = HashMap::new();
         mousebinds.insert(Button::Left, FPSController::toggle_aim);
         return mousebinds;
     }
