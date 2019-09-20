@@ -80,6 +80,13 @@ where
             Ok(d) => d,
             Err(e) => panic!(e),
         };
+
+        let img = image::open("./images/test.jpg").unwrap();
+        let tex = match sampler::Texture2D::create_from_image(img, renderer.backend.get_device()) {
+            Ok(t) => t,
+            Err(e) => panic!(e),
+        };
+        drawable.as_ref().borrow_mut().add_texture(0, tex);
         // let rot = glm::rotate(
         //     &glm::identity(),
         //     glm::radians(&glm::vec1(-55.0f32)).x,

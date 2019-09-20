@@ -1,12 +1,12 @@
 
 struct VS_IN {
 	float4 pos		: SV_Position;
-	float4 color	: COLOR0;
+	float2 txCoord 	: TEXCOORD0;
 };
 
 struct VS_OUT {
 	float4 pos		: SV_Position;
-	float4 color	: COLOR0;
+	float2 txCoord 	: TEXCOORD0;
 };
 
 cbuffer FrameConsts : register(b0) {
@@ -21,6 +21,6 @@ cbuffer PerInstance : register(b1) {
 VS_OUT main(VS_IN input) {
 	VS_OUT output;
 	output.pos = mul(proj, mul(view , mul(model, input.pos)));
-	output.color = input.color;
+	output.txCoord = input.txCoord;
 	return output;
 }
