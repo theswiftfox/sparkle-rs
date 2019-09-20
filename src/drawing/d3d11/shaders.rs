@@ -39,7 +39,7 @@ impl ShaderProgram {
         shader_program.setup_shaders(device)?;
 
         let pos_name: &'static std::ffi::CStr = const_cstr!("SV_Position").as_cstr();
-        let color_name: &'static std::ffi::CStr = const_cstr!("COLOR").as_cstr();
+        let tx_coord_name: &'static std::ffi::CStr = const_cstr!("TEXCOORD").as_cstr();
         let input_element_description: [dx11::D3D11_INPUT_ELEMENT_DESC; 2] = [
             dx11::D3D11_INPUT_ELEMENT_DESC {
                 SemanticName: pos_name.as_ptr() as *const _,
@@ -51,9 +51,9 @@ impl ShaderProgram {
                 InstanceDataStepRate: 0,
             },
             dx11::D3D11_INPUT_ELEMENT_DESC {
-                SemanticName: color_name.as_ptr() as *const _,
+                SemanticName: tx_coord_name.as_ptr() as *const _,
                 SemanticIndex: 0,
-                Format: dxgifmt::DXGI_FORMAT_R32G32B32A32_FLOAT,
+                Format: dxgifmt::DXGI_FORMAT_R32G32_FLOAT,
                 InputSlot: 0,
                 AlignedByteOffset: 16,
                 InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
