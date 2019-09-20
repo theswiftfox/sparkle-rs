@@ -4,14 +4,14 @@ use std::error::Error;
 use std::process::Command;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    println!("cargo:rerun-if-changed=src/shaders");
+    //println!("cargo:rerun-if-changed=src/shaders");
     let _out_dir = "target/release/shaders";
     #[cfg(debug_assertions)]
     let _out_dir = "target/debug/shaders";
     // Create destination path if necessary
     std::fs::create_dir_all(_out_dir)?;
 
-    let mut release = true;
+    let mut release = false;
     #[cfg(debug_assertions)]
     {
         release = false;

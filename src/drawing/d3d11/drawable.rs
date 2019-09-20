@@ -1,5 +1,6 @@
 use super::backend::{DxError, DxErrorType};
 use crate::drawing::d3d11::cbuffer::CBuffer;
+use crate::drawing::d3d11::sampler::Texture2D;
 use crate::drawing::geometry::Vertex;
 use crate::drawing::scenegraph::drawable::Drawable;
 
@@ -16,6 +17,7 @@ pub struct DxDrawable {
     index_buffer_stride: u32,
     index_count: u32,
     cbuffer: CBuffer<glm::Mat4>,
+    textures: Vec<(u32, Texture2D)>, // (slot, tex)
 }
 
 impl Drawable for DxDrawable {
@@ -36,12 +38,22 @@ impl Drawable for DxDrawable {
             );
             (*self.context).IASetIndexBuffer(self.index_buffer, DXGI_FORMAT_R32_UINT, 0);
             (*self.context).VSSetConstantBuffers(1, 1, &self.cbuffer.buffer_ptr() as *const *mut _);
+
+            for (slot, tex) in &self.textures {
+                (*self.context).PSSetSamplers(*slot, 1, &tex.get_sampler() as *const *mut _);
+                (*self.context).PSSetShaderResources(*slot, 1, &tex.get_texture() as *const *mut _);
+            }
+
             (*self.context).DrawIndexed(self.index_count, 0, 0);
         }
     }
 }
 
 impl DxDrawable {
+    pub fn add_texture(&mut self, slot: u32, tex: Texture2D) {
+        self.textures.push((slot, tex))
+    }
+
     pub fn from_verts(
         device: *mut dx11_1::ID3D11Device1,
         context: *mut dx11_1::ID3D11DeviceContext1,
@@ -114,6 +126,7 @@ impl DxDrawable {
             index_buffer_stride: idx_stride,
             index_count: indices.len() as u32,
             cbuffer: cbuffer,
+            textures: Vec::<(u32, Texture2D)>::new(),
         })))
     }
 }
