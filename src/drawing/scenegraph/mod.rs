@@ -26,14 +26,17 @@ impl Scenegraph {
             self.root.as_ref().unwrap().borrow().draw(self.transform);
         }
     }
-    pub fn get_node(&self, name: &str) -> Result<shared_ptr<RefCell<Node>>, SceneGraphError> {
+    pub fn get_node_named(&self, name: &str) -> Result<shared_ptr<RefCell<Node>>, SceneGraphError> {
         if self.root.is_none() {
             Err(SceneGraphError::err_empty("Root node is empty"))
         } else {
-            match self.root.as_ref().unwrap().borrow().name.as_str() {
-                n if (n == name) => Ok(self.root.as_ref().unwrap().clone()),
-                _ => self.root.as_ref().unwrap().borrow().get_named(name),
-            }
+            match &self.root.as_ref().unwrap().borrow().name {
+                Some(n) => if n.as_str() == name {
+                    return Ok(self.root.as_ref().unwrap().clone());
+                }
+                None => (),
+            };
+            self.root.as_ref().unwrap().borrow().get_named(name)
         }
     }
 
@@ -55,8 +58,8 @@ impl Scenegraph {
         }
     }
 
-    pub fn get_drawable(&self, name: &str) -> Option<shared_ptr<RefCell<dyn drawable::Drawable>>> {
-        let node = match self.get_node(name) {
+    pub fn get_drawable_named(&self, name: &str) -> Option<shared_ptr<RefCell<dyn drawable::Drawable>>> {
+        let node = match self.get_node_named(name) {
             Ok(n) => Some(n),
             Err(_) => None,
         };
@@ -66,11 +69,14 @@ impl Scenegraph {
         }
     }
 
-    pub fn remove_node(&mut self, name: &str) -> Result<(), SceneGraphError> {
+    pub fn remove_node_named(&mut self, name: &str) -> Result<(), SceneGraphError> {
         if self.root.is_none() {
             return Err(SceneGraphError::err_empty("No root"));
         } else {
-            self.root.as_ref().unwrap().borrow_mut().remove_node(name)
+            match self.root.as_ref().unwrap().borrow_mut().remove_node_named(name) {
+                true => Ok(()),
+                false => Err(SceneGraphError::new(name, &ErrorCause::NotFound))
+            }
         }
     }
 }
