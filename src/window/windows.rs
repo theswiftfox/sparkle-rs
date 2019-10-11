@@ -84,7 +84,7 @@ impl Window for WindowWin {
             return false;
         }
         unsafe {
-            let mut msg: MSG = mem::uninitialized();
+            let mut msg: MSG = mem::MaybeUninit::<MSG>::uninit().assume_init();
             while PeekMessageW(&mut msg, self.handle, 0, 0, PM_REMOVE) > 0 {
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);

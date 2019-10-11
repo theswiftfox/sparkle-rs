@@ -92,7 +92,7 @@ where
         //     glm::radians(&glm::vec1(-55.0f32)).x,
         //     &glm::vec3(1.0f32, 0.0f32, 0.0f32),
         // );
-        let node = Node::create("Triangle", glm::identity(), Some(drawable));
+        let node = Node::create(Some("Triangle"), glm::identity(), Some(drawable));
         renderer.scene.set_root(node);
 
         renderer.change_input_handler(input_handler.clone());

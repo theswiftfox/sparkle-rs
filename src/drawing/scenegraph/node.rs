@@ -8,7 +8,7 @@ use super::{ErrorCause, SceneGraphError};
 #[derive(Clone)]
 pub struct Node {
     uuid: u64,
-    pub name: String,
+    pub name: Option<String>,
     model: glm::Mat4,
     children: HashMap<String, shared_ptr<RefCell<Node>>>,
 
@@ -17,17 +17,32 @@ pub struct Node {
 
 impl Node {
     pub fn create(
-        name: &str,
+        name: Option<&str>,
         model: glm::Mat4,
         drawable: Option<shared_ptr<RefCell<dyn Drawable>>>,
     ) -> shared_ptr<RefCell<Node>> {
         shared_ptr::new(RefCell::new(Node {
             uuid: 0, // TODO
-            name: name.to_string(),
+            name: match name {
+                Some(n) => Some(n.to_string()),
+                None => None
+            },
             model: model,
             drawable: drawable,
             children: HashMap::new(),
         }))
+    }
+    pub fn destroy(&mut self) {
+        // if self.drawable.is_some() {
+        //     let d = self.drawable.unwrap();
+        //     self.drawable = None;
+        //     drop(d);
+        // }
+        self.drawable = None; // this should reduce the ref count if we had a drawable and rc should auto delete if ref count == 0?
+        for (_, c) in &self.children {
+            c.borrow_mut().destroy();
+        }
+        self.children.clear();
     }
     pub fn get_named(&self, name: &str) -> Result<shared_ptr<RefCell<Node>>, SceneGraphError> {
         if self.children.is_empty() {
@@ -67,29 +82,65 @@ impl Node {
         return nodes;
     }
     pub fn add_child(&mut self, node: shared_ptr<RefCell<Node>>) -> Result<(), SceneGraphError> {
-        let key = &node.borrow().name.clone();
-        if self.children.contains_key(key) {
+        let n = node.borrow();
+        let key = match &n.name {
+            Some(n) => n.clone(),
+            None => n.uuid.to_string(),
+        };
+        if self.children.contains_key(&key) {
             return Err(SceneGraphError::new(
                 "Duplicate Name",
                 &ErrorCause::InvalidState,
             ));
         }
+        drop(n); // unborrow node so we can move it into children
         self.children.insert(key.to_string(), node);
         Ok(())
     }
-    pub fn remove_node(&mut self, name: &str) -> Result<(), SceneGraphError> {
+    pub fn remove_node_named(&mut self, name: &str) -> bool {
         if self.children.is_empty() {
-            return Err(SceneGraphError::new(name, &ErrorCause::NotFound));
+            return false; //Err(SceneGraphError::new(name, &ErrorCause::NotFound));
         } else {
             match self.children.remove(name) {
-                Some(_) => return Ok(()),
+                Some(v) => {
+                    v.borrow_mut().destroy();
+                    return true
+                },
                 _ => {}
             }
             for (_, c) in &self.children {
-                return c.borrow_mut().remove_node(name);
+                match c.borrow_mut().remove_node_named(name) {
+                    true => return true,
+                    false => (),
+                }
             }
         }
-        Ok(())
+        false
+    }
+    pub fn remove_node_uuid(&mut self, uuid: u64) -> bool {
+        if self.children.is_empty() {
+            return false; //Err(SceneGraphError::new(&format!("UUID: {} not found", uuid), &ErrorCause::NotFound))
+        }
+        let mut key = String::default();
+        for (k, c) in &self.children {
+            if c.borrow().uuid == uuid {
+                key = k.clone();
+                break;
+            }
+        }
+        if key.len() > 0 {
+            let n = self.children.remove(&key).unwrap();
+            n.borrow_mut().destroy();
+            return true;
+        } else {
+            for (_, c) in &self.children {
+                match c.borrow_mut().remove_node_uuid(uuid) {
+                    true => return true,
+                    false => (),
+                }
+            }
+        }
+        false
     }
     pub fn make_drawable(&mut self, drawable: shared_ptr<RefCell<dyn Drawable>>) {
         self.drawable = Some(drawable)

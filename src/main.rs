@@ -6,6 +6,7 @@
 extern crate const_cstr;
 extern crate nalgebra_glm as glm;
 
+mod import;
 mod drawing;
 mod input;
 mod utils;
