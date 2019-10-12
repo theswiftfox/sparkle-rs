@@ -11,6 +11,7 @@ build = "build.rs"
 nalgebra-glm = "0.3"
 const-cstr = "0.1"
 image = "0.22.2"
+gltf = "0.14"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3.7", features = [
