@@ -6,9 +6,9 @@ pub mod geometry;
 pub mod scenegraph;
 
 #[cfg(target_os = "windows")]
-mod d3d11;
+crate mod d3d11;
 #[cfg(target_os = "linux")]
-mod opengl;
+crate mod opengl;
 
 pub trait Renderer {
     fn create(width: i32, height: i32, title: &str) -> Self;

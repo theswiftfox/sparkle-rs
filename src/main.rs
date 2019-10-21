@@ -1,5 +1,7 @@
 #![feature(fixed_size_array)]
 #![feature(stmt_expr_attributes)]
+#![feature(crate_visibility_modifier)]
+
 #![allow(unused_assignments)]
 #![allow(dead_code)]
 #[macro_use]

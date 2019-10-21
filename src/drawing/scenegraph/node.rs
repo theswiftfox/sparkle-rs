@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc as shared_ptr;
+use std::rc::Rc; // shared_ptr
 
 use super::drawable::Drawable;
 use super::{ErrorCause, SceneGraphError};
@@ -10,27 +10,31 @@ pub struct Node {
     uuid: u64,
     pub name: Option<String>,
     model: glm::Mat4,
-    children: HashMap<String, shared_ptr<RefCell<Node>>>,
+    children: HashMap<String, Rc<RefCell<Node>>>,
 
-    drawable: Option<shared_ptr<RefCell<dyn Drawable>>>,
+    drawables: Vec<Rc<RefCell<dyn Drawable>>>,
 }
 
 impl Node {
     pub fn create(
         name: Option<&str>,
         model: glm::Mat4,
-        drawable: Option<shared_ptr<RefCell<dyn Drawable>>>,
-    ) -> shared_ptr<RefCell<Node>> {
-        shared_ptr::new(RefCell::new(Node {
+        drawable: Option<Rc<RefCell<dyn Drawable>>>,
+    ) -> Rc<RefCell<Node>> {
+        let n = Rc::new(RefCell::new(Node {
             uuid: 0, // TODO
             name: match name {
                 Some(n) => Some(n.to_string()),
                 None => None
             },
             model: model,
-            drawable: drawable,
+            drawables: Vec::new(),
             children: HashMap::new(),
-        }))
+        }));
+        if drawable.is_some() {
+            n.borrow_mut().drawables.push(drawable.unwrap())
+        }
+        return n;
     }
     pub fn destroy(&mut self) {
         // if self.drawable.is_some() {
@@ -38,13 +42,13 @@ impl Node {
         //     self.drawable = None;
         //     drop(d);
         // }
-        self.drawable = None; // this should reduce the ref count if we had a drawable and rc should auto delete if ref count == 0?
+        self.drawables.clear(); // this should reduce the ref count if we had a primitives and rc should auto delete if ref count == 0?
         for (_, c) in &self.children {
             c.borrow_mut().destroy();
         }
         self.children.clear();
     }
-    pub fn get_named(&self, name: &str) -> Result<shared_ptr<RefCell<Node>>, SceneGraphError> {
+    pub fn get_named(&self, name: &str) -> Result<Rc<RefCell<Node>>, SceneGraphError> {
         if self.children.is_empty() {
             return Err(SceneGraphError::new(name, &ErrorCause::NotFound));
         }
@@ -60,19 +64,16 @@ impl Node {
         }
         Err(SceneGraphError::new(name, &ErrorCause::NotFound))
     }
-    pub fn get_drawable(&self) -> Option<shared_ptr<RefCell<dyn Drawable>>> {
-        match &self.drawable {
-            Some(d) => Some(d.clone()),
-            None => None,
-        }
+    pub fn get_drawables(&self) -> Vec<Rc<RefCell<dyn Drawable>>> {
+        return self.drawables.clone()
     }
-    pub fn apply_pre_transform(&self, model: glm::Mat4) -> shared_ptr<RefCell<Node>> {
-        let node = shared_ptr::from(RefCell::from(self.clone()));
+    pub fn apply_pre_transform(&self, model: glm::Mat4) -> Rc<RefCell<Node>> {
+        let node = Rc::from(RefCell::from(self.clone()));
         node.borrow_mut().model = model * self.model;
         return node;
     }
-    pub fn traverse(&self, model: glm::Mat4) -> Vec<shared_ptr<RefCell<Node>>> {
-        let mut nodes: Vec<shared_ptr<RefCell<Node>>> = Vec::new();
+    pub fn traverse(&self, model: glm::Mat4) -> Vec<Rc<RefCell<Node>>> {
+        let mut nodes: Vec<Rc<RefCell<Node>>> = Vec::new();
         let me = self.apply_pre_transform(model);
         for (_, c) in &self.children {
             let mut others = c.borrow().traverse(me.borrow().model);
@@ -81,7 +82,7 @@ impl Node {
         nodes.push(me);
         return nodes;
     }
-    pub fn add_child(&mut self, node: shared_ptr<RefCell<Node>>) -> Result<(), SceneGraphError> {
+    pub fn add_child(&mut self, node: Rc<RefCell<Node>>) -> Result<(), SceneGraphError> {
         let n = node.borrow();
         let key = match &n.name {
             Some(n) => n.clone(),
@@ -142,8 +143,8 @@ impl Node {
         }
         false
     }
-    pub fn make_drawable(&mut self, drawable: shared_ptr<RefCell<dyn Drawable>>) {
-        self.drawable = Some(drawable)
+    pub fn add_drawable(&mut self, drawable: Rc<RefCell<dyn Drawable>>) {
+        self.drawables.push(drawable)
     }
     pub fn translate(&mut self, t: glm::Vec3) {
         self.model = glm::translate(&self.model, &t);
@@ -159,9 +160,8 @@ impl Node {
     pub fn draw(&self, model: glm::Mat4) {
         let me = self.apply_pre_transform(model);
         let me_ref = me.borrow();
-        if me_ref.drawable.is_some() {
-            let mut drawable = me_ref.drawable.as_ref().unwrap().borrow_mut();
-            drawable.draw(me_ref.model);
+        for drawable in &me_ref.drawables {
+            drawable.borrow_mut().draw(me_ref.model);
         }
     }
 }
