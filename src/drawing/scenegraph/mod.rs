@@ -58,13 +58,13 @@ impl Scenegraph {
         }
     }
 
-    pub fn get_drawable_named(&self, name: &str) -> Option<shared_ptr<RefCell<dyn drawable::Drawable>>> {
+    pub fn get_drawables_named(&self, name: &str) -> Option<Vec<shared_ptr<RefCell<dyn drawable::Drawable>>>> {
         let node = match self.get_node_named(name) {
             Ok(n) => Some(n),
             Err(_) => None,
         };
         match node {
-            Some(n) => n.borrow().get_drawable(),
+            Some(n) => Some(n.borrow().get_drawables()),
             None => None,
         }
     }
