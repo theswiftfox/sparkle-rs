@@ -18,6 +18,7 @@ pub struct ImportError {
 
 struct GltfImporter {
 	buffers: Vec<gltf::buffer::Data>,
+	images: Vec<gltf::image::Data>,
 	device: *mut dx11_1::ID3D11Device1,
 	context: *mut dx11_1::ID3D11DeviceContext1
 }
@@ -32,12 +33,13 @@ impl ImportError {
 }
 
 pub fn load_gltf(path: &str, device: *mut dx11_1::ID3D11Device1, context: *mut dx11_1::ID3D11DeviceContext1) -> Result<Rc<RefCell<Node>>, ImportError> {
-	let (gltf, buffers, _) = match gltf::import(path) {
+	let (gltf, buffers, images) = match gltf::import(path) {
 		Ok(g) => g,
 		Err(e) => return Err(ImportError::from("GLTF Import Error", e.description())),
 	};
 	let importer = GltfImporter{ 
 		buffers: buffers,
+		images: images,
 		device: device,
 		context: context,
 	};
@@ -99,7 +101,7 @@ impl GltfImporter {
 						tex_coord: uv,
 					});
 				}
-				let dx_prim = DxDrawable::from_verts(self.device, self.context, vertices, indices);
+				let dx_prim = DxDrawable::from_verts(self.device, self.context, vertices, indices).expect("Initialization for DxPrimitive failed");
 				let mat = primitive.material();
 				let pbr = mat.pbr_metallic_roughness();
 				let alb = pbr.base_color_texture();
@@ -107,22 +109,26 @@ impl GltfImporter {
 				let tex_color = match alb {
 					Some(info) => {
 						let tx = info.texture().source();
-						let img = match tx.source() {
+						let img = image::load_from_memory(self.images[tx.index()].pixels.as_ref()).unwrap();
+						/*match tx.source() {
 							gltf::image::Source::View { view, .. } => {
 								// init image from existing data in view
+								image::load_from_memory(view.)
 							},
 							gltf::image::Source::Uri { uri, .. } => {
 								image::open(uri).unwrap()
 							}
-						};
+						}; */
 						// todo: sampler
-						Texture2D::create_from_image(img, self.device)
+						Texture2D::create_from_image(img, self.device).expect(&format!("Unable to load texture with index {}", tx.index()))
 					}, 
 					None => {
 						let img = image::open("images/textures/missing_tex.png").unwrap();
 						Texture2D::create_from_image(img, self.device).expect("Unable to load default texture")
 					}
 				};
+				dx_prim.borrow_mut().add_texture(0, tex_color);
+				drawables.push(dx_prim);
 			}
 			// let drawable = DxDrawable::from_verts();
 		} 
