@@ -1,5 +1,6 @@
 use crate::drawing::generate;
 use crate::drawing::scenegraph::node::Node;
+use crate::import;
 use crate::drawing::scenegraph::Scenegraph;
 use crate::drawing::Renderer;
 use crate::input::first_person::FPSController;
@@ -11,7 +12,7 @@ use winapi::um::d3d11 as dx11;
 
 mod backend;
 mod cbuffer;
-mod sampler;
+crate mod sampler;
 mod shaders;
 
 pub mod drawable;
@@ -70,29 +71,26 @@ where
             Err(e) => panic!(format!("{}", e)),
         };
 
-        let (cube_verts, cube_indices) = generate::cube();
-        let drawable = match drawable::DxDrawable::from_verts(
-            renderer.backend.get_device(),
-            renderer.backend.get_context(),
-            cube_verts,
-            cube_indices,
-        ) {
-            Ok(d) => d,
-            Err(e) => panic!(e),
-        };
+        // let (cube_verts, cube_indices) = generate::cube();
+        // let drawable = match drawable::DxDrawable::from_verts(
+        //     renderer.backend.get_device(),
+        //     renderer.backend.get_context(),
+        //     cube_verts,
+        //     cube_indices,
+        // ) {
+        //     Ok(d) => d,
+        //     Err(e) => panic!(e),
+        // };
 
-        let img = image::open("./images/test.jpg").unwrap();
-        let tex = match sampler::Texture2D::create_from_image(img, renderer.backend.get_device()) {
-            Ok(t) => t,
-            Err(e) => panic!(e),
-        };
-        drawable.as_ref().borrow_mut().add_texture(0, tex);
-        // let rot = glm::rotate(
-        //     &glm::identity(),
-        //     glm::radians(&glm::vec1(-55.0f32)).x,
-        //     &glm::vec3(1.0f32, 0.0f32, 0.0f32),
-        // );
-        let node = Node::create(Some("Triangle"), glm::identity(), Some(drawable));
+        // let img = image::open("./images/test.jpg").unwrap();
+        // let tex = match sampler::Texture2D::create_from_image_obj(img, renderer.backend.get_device()) {
+        //     Ok(t) => t,
+        //     Err(e) => panic!(e),
+        // };
+        // drawable.as_ref().borrow_mut().add_texture(0, tex);
+
+        // let node = Node::create(Some("Cube"), glm::identity(), Some(vec!(drawable)));
+        let node = import::load_gltf("assets/sponza_glTF/Sponza.gltf", renderer.backend.get_device(), renderer.backend.get_context()).expect("Unable to load scene");
         renderer.scene.set_root(node);
 
         renderer.change_input_handler(input_handler.clone());

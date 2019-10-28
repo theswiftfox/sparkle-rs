@@ -1,6 +1,7 @@
 
 struct PX_IN {
 	float4 pos : SV_Position;
+	float3 normal : NORMAL0;
 	float2 txCoord : TEXCOORD0;
 };
 
