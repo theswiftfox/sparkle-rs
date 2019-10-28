@@ -22,7 +22,7 @@ impl Texture2D {
         self.shader_view
     }
 
-    pub fn create_from_image(
+    pub fn create_from_image_obj(
         image: DynamicImage,
         device: *mut dx11_1::ID3D11Device1,
     ) -> Result<Texture2D, DxError> {
@@ -32,7 +32,7 @@ impl Texture2D {
         ) = ((None, 0), (None, 0));
         let mut data: dx11::D3D11_SUBRESOURCE_DATA = Default::default();
         if let Some(_) = match image.color() {
-            ColorType::Gray(dtype) => {
+            ColorType::Gray(_) => {
                 let format = fmt::DXGI_FORMAT_R8_UNORM;
                 /*match typeof(dtype) {
                     u8 => fmt::DXGI_FORMAT_R8_UNORM,
@@ -43,13 +43,13 @@ impl Texture2D {
                 TODO: other datatpyes?
                 */
                 img.1 = (Some(image.to_luma()), format);
-                data.SysMemPitch = image.dimensions().0 * std::mem::size_of_val(&dtype) as u32;
+                data.SysMemPitch = image.dimensions().0 * 4;//std::mem::size_of_val(&dtype) as u32;
                 Some(())
             }
-            ColorType::BGR(dtype)
-            | ColorType::BGRA(dtype)
-            | ColorType::RGB(dtype)
-            | ColorType::RGBA(dtype) => {
+            ColorType::BGR(_)
+            | ColorType::BGRA(_)
+            | ColorType::RGB(_)
+            | ColorType::RGBA(_) => {
                 let format = fmt::DXGI_FORMAT_R8G8B8A8_UNORM;
                 /* match dtype {
                     u8 => fmt::DXGI_FORMAT_R8G8B8A8_UNORM,
@@ -59,7 +59,7 @@ impl Texture2D {
                 };
                 */
                 img.0 = (Some(image.to_rgba()), format);
-                data.SysMemPitch = image.dimensions().0 * std::mem::size_of_val(&dtype) as u32;
+                data.SysMemPitch = image.dimensions().0 * 4; //std::mem::size_of_val(&dtype) as u32;
                 Some(())
             }
             _ => None,
@@ -88,6 +88,20 @@ impl Texture2D {
             Err(DxError::new("Unimplemented", DxErrorType::Generic))
         }
     }
+    pub fn create_from_image_data(
+        image_data: &Vec<u8>,
+        width: u32,
+        height: u32,
+        format: winapi::shared::dxgiformat::DXGI_FORMAT,
+        channels: u32,
+        device: *mut dx11_1::ID3D11Device1,
+    ) -> Result<Texture2D, DxError> {
+        let mut data: dx11::D3D11_SUBRESOURCE_DATA = Default::default();
+        data.pSysMem = image_data.as_ptr() as *const _;
+        data.SysMemPitch = width * channels;
+        Texture2D::create(format, 1, width, height, device, &data as *const _)
+    }
+
     pub fn create_empty_mutable(
         format: u32,
         miplevels: u32,

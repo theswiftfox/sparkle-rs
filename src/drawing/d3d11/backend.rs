@@ -8,6 +8,7 @@ use winapi::shared::dxgi;
 use winapi::shared::dxgi1_2 as dxgi2;
 use winapi::shared::dxgiformat as dxgifmt;
 use winapi::shared::windef::HWND;
+use winapi::shared::minwindef::{TRUE, FALSE};
 use winapi::shared::winerror::*;
 use winapi::um::d3d11 as dx11;
 use winapi::um::d3d11_1 as dx11_1;
@@ -16,7 +17,7 @@ use winapi::um::unknwnbase::IUnknown;
 
 #[cfg(debug_assertions)]
 use winapi::shared::dxgi1_3 as dxgi3;
-#[cfg(debug_assertions)]
+//#[cfg(debug_assertions)]
 use winapi::um::d3d11sdklayers as sdklayers;
 #[cfg(debug_assertions)]
 use winapi::um::dxgidebug as dxgidbg;
@@ -43,6 +44,7 @@ pub struct D3D11Backend {
     render_target: *mut dx11::ID3D11Texture2D,
     depth_stencil: *mut dx11::ID3D11Texture2D,
     viewport: dx11::D3D11_VIEWPORT,
+    rasterizer_state: *mut dx11_1::ID3D11RasterizerState1,
     initialized: bool,
 }
 
@@ -72,6 +74,7 @@ impl Default for D3D11Backend {
             depth_stencil_view: ptr::null_mut(),
             depth_stencil: ptr::null_mut(),
             viewport: Default::default(),
+            rasterizer_state: ptr::null_mut(),
             backbuffer_format: dxgifmt::DXGI_FORMAT_B8G8R8A8_UNORM,
             backbuffer_count: 2,
             depthbuffer_format: dxgifmt::DXGI_FORMAT_D32_FLOAT,
@@ -377,7 +380,7 @@ impl D3D11Backend {
             ));
         }
 
-        #[cfg(debug_assertions)]
+        //#[cfg(debug_assertions)]
         {
             let mut d3d11_debug: *mut sdklayers::ID3D11Debug = ptr::null_mut();
             let d3d11_debug_uuid = <sdklayers::ID3D11Debug as winapi::Interface>::uuidof();
@@ -609,6 +612,31 @@ impl D3D11Backend {
                 MaxDepth: dx11::D3D11_MAX_DEPTH,
                 MinDepth: dx11::D3D11_MIN_DEPTH,
             };
+
+            let rasterizer_state = dx11_1::D3D11_RASTERIZER_DESC1 {
+                FillMode: dx11::D3D11_FILL_SOLID,
+                CullMode: dx11::D3D11_CULL_BACK,
+                FrontCounterClockwise: TRUE,
+                DepthBias: 0,
+                DepthBiasClamp: 0.0f32,
+                SlopeScaledDepthBias: 0.0f32,
+                DepthClipEnable: TRUE,
+                ScissorEnable: FALSE,
+                MultisampleEnable: FALSE,
+                AntialiasedLineEnable: FALSE,
+                ForcedSampleCount: 0,
+            };
+            unsafe {
+                let res = (*self.device).CreateRasterizerState( &rasterizer_state, &mut self.rasterizer_state as *mut *mut _);
+                if res < S_OK {
+                    println!("Unable to setup rasterizer");
+                    return Err(DxError::new(
+                        "Rasterizer init failed!",
+                        DxErrorType::ResourceCreation
+                    ));
+                }
+                (*self.context).RSSetState(self.rasterizer_state as *mut _);
+            }
         }
 
         // update context
