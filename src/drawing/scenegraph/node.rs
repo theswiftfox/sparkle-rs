@@ -19,7 +19,7 @@ impl Node {
     pub fn create(
         name: Option<&str>,
         model: glm::Mat4,
-        drawable: Option<Rc<RefCell<dyn Drawable>>>,
+        drawable: Option<Vec<Rc<RefCell<dyn Drawable>>>>,
     ) -> Rc<RefCell<Node>> {
         let n = Rc::new(RefCell::new(Node {
             uuid: 0, // TODO
@@ -32,7 +32,7 @@ impl Node {
             children: HashMap::new(),
         }));
         if drawable.is_some() {
-            n.borrow_mut().drawables.push(drawable.unwrap())
+            n.borrow_mut().drawables = drawable.unwrap()
         }
         return n;
     }
@@ -162,6 +162,9 @@ impl Node {
         let me_ref = me.borrow();
         for drawable in &me_ref.drawables {
             drawable.borrow_mut().draw(me_ref.model);
+        }
+        for (_, c) in &me_ref.children {
+            c.borrow().draw(me_ref.model);
         }
     }
 }
