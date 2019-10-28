@@ -89,7 +89,7 @@ impl InputHandler for FPSController {
             }
             // println!("Mouse Event: x({}), y({})", x, y);
             self.h_angle_deg += (x as f32) * MOUSE_SPEED;
-            self.v_angle_deg += (y as f32) * MOUSE_SPEED;
+            self.v_angle_deg -= (y as f32) * MOUSE_SPEED;
             self.v_angle_deg = (-89.9f32).max(self.v_angle_deg).min(89.9f32);
         }
     }
@@ -115,8 +115,8 @@ impl FPSController {
         return mat;
     }
     pub fn create(aspect: f32, fov: f32, near: f32, far: f32) -> FPSController {
-        let mut proj = glm::perspective_zo(aspect, fov, near, far);
-        proj[(1, 1)] *= -1.0f32;
+        let proj = glm::perspective_zo(aspect, fov, near, far);
+        //proj[(1, 1)] *= -1.0f32;
         FPSController {
             world_up: glm::vec3(0.0f32, 1.0f32, 0.0f32),
             pos: glm::vec3(0.0f32, 0.0f32, 3.0f32),
