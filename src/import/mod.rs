@@ -103,9 +103,9 @@ impl GltfImporter {
 							let (img_data, fmt, channels) = match img_raw.format {
 								gltf::image::Format::R8 => (&img_raw.pixels, dx_format::DXGI_FORMAT_R8_UNORM, 1),
 								gltf::image::Format::R8G8 => (&img_raw.pixels, dx_format::DXGI_FORMAT_R8G8_UNORM, 2),
-								gltf::image::Format::R8G8B8 => {
+								gltf::image::Format::R8G8B8 => { // pad a 255 alpha value to make it rgba
 									let len = (img_raw.width * img_raw.height * 4) as usize;
-									image_data = vec![0; len]; // 4channel vec
+									image_data = vec![255; len]; // 4channel vec
 									let mut src_index = 0;
 									let mut ch = 0;
 									for i in 0..len {
@@ -122,7 +122,7 @@ impl GltfImporter {
 								gltf::image::Format::R8G8B8A8 => (&img_raw.pixels, dx_format::DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, 4),
 								gltf::image::Format::B8G8R8 => {
 									let len = (img_raw.width * img_raw.height * 4) as usize;
-									image_data = vec![0; len]; // 4channel vec
+									image_data = vec![255; len]; // 4channel vec
 									let mut src_index = 0;
 									let mut ch = 0;
 									for i in 0..len {

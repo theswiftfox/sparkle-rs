@@ -12,26 +12,12 @@ nalgebra-glm = "0.3"
 const-cstr = "0.1"
 image = "0.22.2"
 gltf = "0.14"
-
-[target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3.7", features = [
-    "unknwnbase",
-    "windef",
-    "winerror",
-    "winuser",
-    "d3d11",
-    "d3d11_1",
-    "dxgi",
-    "dxgi1_6",
-    "d3d11sdklayers",
-    "dxgidebug",
-    "d3dcompiler",
-    "libloaderapi",
-    "impl-default",
-] }
-
-[target.'cfg(unix)'.dependencies]
-glium = "*"
+    "unknwnbase", "windef", "winerror", "winuser", "windowsx", 
+    "d3d11", "d3d11_1", "dxgi", "dxgi1_6", "d3d11sdklayers", "dxgidebug",
+    "d3dcompiler", 
+    "libloaderapi", "impl-default"
+    ] }
 
 # From doc.rust-lang.org:
 # The development profile, used for `cargo build`.
