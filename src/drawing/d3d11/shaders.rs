@@ -1,4 +1,4 @@
-use crate::drawing::d3d11::backend::{DxError, DxErrorType};
+use super::{DxError, DxErrorType};
 use crate::utils;
 use std::ptr;
 use winapi::shared::dxgiformat as dxgifmt;

@@ -14,8 +14,6 @@ mod input;
 mod utils;
 mod window;
 
-use drawing::Renderer;
-
 use std::io;
 use std::io::prelude::*;
 fn pause() {

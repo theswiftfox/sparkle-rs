@@ -1,4 +1,4 @@
-use crate::drawing::d3d11::backend::{DxError, DxErrorType};
+use super::{DxError, DxErrorType};
 
 use winapi::um::d3d11 as dx11;
 use winapi::um::d3d11_1 as dx11_1;
