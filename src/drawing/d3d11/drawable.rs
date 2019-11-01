@@ -1,4 +1,4 @@
-use super::backend::{DxError, DxErrorType};
+use super::{DxError, DxErrorType};
 use crate::drawing::d3d11::cbuffer::CBuffer;
 use crate::drawing::d3d11::sampler::Texture2D;
 use crate::drawing::geometry::Vertex;

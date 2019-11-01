@@ -1,4 +1,4 @@
-use crate::drawing::d3d11::backend::{DxError, DxErrorType};
+use super::{DxError, DxErrorType};
 
 use winapi::shared::dxgiformat as fmt;
 use winapi::um::d3d11 as dx11;
