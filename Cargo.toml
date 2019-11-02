@@ -22,7 +22,7 @@ winapi = { version = "0.3.7", features = [
 # From doc.rust-lang.org:
 # The development profile, used for `cargo build`.
 [profile.dev]
-opt-level = 0      # controls the `--opt-level` the compiler builds with.
+opt-level = 1      # controls the `--opt-level` the compiler builds with.
                    # 0-1 is good for debugging. 2 is well-optimized. Max is 3.
                    # 's' attempts to reduce size, 'z' reduces size even more.
 debug = true       # (u32 or bool) Include debug information (debug symbols).

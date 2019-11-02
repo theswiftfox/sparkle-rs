@@ -54,6 +54,23 @@ pub fn load_gltf(path: &str, device: *mut dx11_1::ID3D11Device1, context: *mut d
 	Ok(root)
 }
 
+fn convert_3ch_to_4ch_img(image: &gltf::image::Data) -> Vec<u8> {
+	let len = (image.width * image.height * 4) as usize;
+	let mut image_data = vec![255; len]; // 4channel vec
+	let mut src_index = 0;
+	let mut ch = 0;
+	for i in 0..len {
+		if ch == 3 {
+			ch = 0;
+		} else {
+			image_data[i] = image.pixels[src_index];
+			src_index += 1;
+			ch += 1;
+		}
+	}
+	image_data
+}
+
 impl GltfImporter {
 	fn process_node(&self, node: gltf::scene::Node<'_>, parent: &Rc<RefCell<Node>>) -> Result<(), ImportError> {
 		let mut parent = parent.clone();
@@ -94,52 +111,31 @@ impl GltfImporter {
 									tex_coords.push(glm::vec2(uv[0], uv[1]));
 								}
 							}
-
 							let tx = info.texture().source();
-							let img_raw = &self.images[tx.index()];
-							let mut image_data : Vec<u8> = Vec::new();
-							// todo: sampler
-							use winapi::shared::dxgiformat as dx_format;
-							let (img_data, fmt, channels) = match img_raw.format {
-								gltf::image::Format::R8 => (&img_raw.pixels, dx_format::DXGI_FORMAT_R8_UNORM, 1),
-								gltf::image::Format::R8G8 => (&img_raw.pixels, dx_format::DXGI_FORMAT_R8G8_UNORM, 2),
-								gltf::image::Format::R8G8B8 => { // pad a 255 alpha value to make it rgba
-									let len = (img_raw.width * img_raw.height * 4) as usize;
-									image_data = vec![255; len]; // 4channel vec
-									let mut src_index = 0;
-									let mut ch = 0;
-									for i in 0..len {
-										if ch == 3 {
-											ch = 0;
-										} else {
-											image_data[i] = img_raw.pixels[src_index];
-											src_index += 1;
-											ch += 1;
-										}
-									}
-									(&image_data, dx_format::DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, 4)
-								},
-								gltf::image::Format::R8G8B8A8 => (&img_raw.pixels, dx_format::DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, 4),
-								gltf::image::Format::B8G8R8 => {
-									let len = (img_raw.width * img_raw.height * 4) as usize;
-									image_data = vec![255; len]; // 4channel vec
-									let mut src_index = 0;
-									let mut ch = 0;
-									for i in 0..len {
-										if ch == 3 {
-											ch = 0;
-										} else {
-											image_data[i] = img_raw.pixels[src_index];
-											src_index += 1;
-											ch += 1;
-										}
-									}
-									(&image_data, dx_format::DXGI_FORMAT_B8G8R8X8_UNORM_SRGB, 4)
-								},
-								gltf::image::Format::B8G8R8A8 => (&img_raw.pixels, dx_format::DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, 4),
-							};
-							Texture2D::create_from_image_data(img_data, img_raw.width, img_raw.height, fmt, channels, self.device).expect(&format!("Unable to load texture with index {}", tx.index()))
+							self.dx_tex_from_gltf(tx)
 						}, 
+						None => {
+							let img = image::open("images/textures/missing_tex.png").unwrap();
+							Texture2D::create_from_image_obj(img, self.device).expect("Unable to load default texture")
+						}
+					};
+
+					let tex_mr = match pbr.metallic_roughness_texture() {
+						Some(info) => {
+							let tx = info.texture().source();
+							self.dx_tex_from_gltf(tx)
+						},
+						None => {
+							let img = image::open("images/textures/missing_mr_tex.png").unwrap();
+							Texture2D::create_from_image_obj(img, self.device).expect("Unable to load default texture")
+						}
+					};
+
+					let tex_norm = match mat.normal_texture() {
+						Some(info) => {
+							let tx = info.texture().source();
+							self.dx_tex_from_gltf(tx)
+						},
 						None => {
 							let img = image::open("images/textures/missing_tex.png").unwrap();
 							Texture2D::create_from_image_obj(img, self.device).expect("Unable to load default texture")
@@ -165,6 +161,8 @@ impl GltfImporter {
 					}
 					let dx_prim = DxDrawable::from_verts(self.device, self.context, vertices, indices).expect("Initialization for DxPrimitive failed");
 					dx_prim.borrow_mut().add_texture(0, tex_color);
+					dx_prim.borrow_mut().add_texture(1, tex_mr);
+					dx_prim.borrow_mut().add_texture(2, tex_norm);
 					drawables.push(dx_prim);
 				}
 				let n = Node::create(node.name(), transform, Some(drawables));
@@ -176,6 +174,28 @@ impl GltfImporter {
 			}
 		}
 		Ok(())
+	}
+
+	fn dx_tex_from_gltf(&self, gltf_tex: gltf::image::Image) -> Texture2D {
+		let img_raw = &self.images[gltf_tex.index()];
+		let mut image_data : Vec<u8> = Vec::new();
+		// todo: sampler
+		use winapi::shared::dxgiformat as dx_format;
+		let (img_data, fmt, channels) = match img_raw.format {
+			gltf::image::Format::R8 => (&img_raw.pixels, dx_format::DXGI_FORMAT_R8_UNORM, 1),
+			gltf::image::Format::R8G8 => (&img_raw.pixels, dx_format::DXGI_FORMAT_R8G8_UNORM, 2),
+			gltf::image::Format::R8G8B8 => { // pad a 255 alpha value to make it rgba
+				image_data = convert_3ch_to_4ch_img(img_raw);
+				(&image_data, dx_format::DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, 4)
+			},
+			gltf::image::Format::R8G8B8A8 => (&img_raw.pixels, dx_format::DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, 4),
+			gltf::image::Format::B8G8R8 => {
+				image_data = convert_3ch_to_4ch_img(img_raw);
+				(&image_data, dx_format::DXGI_FORMAT_B8G8R8X8_UNORM_SRGB, 4)
+			},
+			gltf::image::Format::B8G8R8A8 => (&img_raw.pixels, dx_format::DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, 4),
+		};
+		Texture2D::create_from_image_data(img_data, img_raw.width, img_raw.height, fmt, channels, self.device).expect(&format!("Unable to load texture with index {}", gltf_tex.index()))
 	}
 }
 
