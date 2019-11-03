@@ -1,4 +1,4 @@
-pub mod generate;
+//pub mod generate;
 pub mod geometry;
 pub mod scenegraph;
 
@@ -14,9 +14,12 @@ use std::time::Instant;
 use winapi::um::d3d11 as dx11;
 use d3d11::{shaders,cbuffer,D3D11Backend,DxError};
 
-struct ShaderUniforms {
+struct VertexShaderUniforms {
     pub view: glm::Mat4,
     pub proj: glm::Mat4,
+}
+struct PixelShaderUniforms {
+    pub camera_pos: glm::Vec4,
 }
 
 pub struct Renderer {
@@ -24,7 +27,8 @@ pub struct Renderer {
     draw_program: Option<shaders::ShaderProgram>,
     input_handler: Option<std::rc::Rc<std::cell::RefCell<dyn InputHandler>>>,
     camera: Option<std::rc::Rc<std::cell::RefCell<dyn Camera>>>,
-    shader_uniforms: cbuffer::CBuffer<ShaderUniforms>,
+    vertex_shader_uniforms: cbuffer::CBuffer<VertexShaderUniforms>,
+    pixel_shader_uniforms: cbuffer::CBuffer<PixelShaderUniforms>,
     backend: D3D11Backend,
     window: std::rc::Rc<std::cell::RefCell<Window>>,
     clock: Instant,
@@ -41,12 +45,20 @@ impl Renderer
             Ok(b) => b,
             Err(e) => panic!(format!("{}", e)),
         };
-        let uniforms = ShaderUniforms {
+        let vtx_uniforms = VertexShaderUniforms {
             view: glm::identity(),
             proj: glm::identity(),
         };
-        let cbuff =
-            match cbuffer::CBuffer::create(uniforms, backend.get_context(), backend.get_device()) {
+        let pxl_uniforms = PixelShaderUniforms {
+            camera_pos: glm::zero(),
+        };
+        let vtx_cbuff =
+            match cbuffer::CBuffer::create(vtx_uniforms, backend.get_context(), backend.get_device()) {
+                Ok(b) => b,
+                Err(e) => panic!(e),
+            };
+        let pxl_cbuff =
+            match cbuffer::CBuffer::create(pxl_uniforms, backend.get_context(), backend.get_device()) {
                 Ok(b) => b,
                 Err(e) => panic!(e),
             };
@@ -57,7 +69,8 @@ impl Renderer
             scene: Scenegraph::empty(),
             input_handler: None,
             camera: None,
-            shader_uniforms: cbuff,
+            vertex_shader_uniforms: vtx_cbuff,
+            pixel_shader_uniforms: pxl_cbuff,
             clock: Instant::now(),
         };
 
@@ -67,11 +80,12 @@ impl Renderer
         };
 
         let node = import::load_gltf("assets/sponza_glTF/Sponza.gltf", renderer.backend.get_device(), renderer.backend.get_context()).expect("Unable to load scene");
+        //let node = import::load_gltf("assets/gltf_uv_test/TextureCoordinateTest.gltf", renderer.backend.get_device(), renderer.backend.get_context()).expect("Unable to load scene");
         renderer.scene.set_root(node);
 
         renderer.change_input_handler(input_handler.clone());
         renderer.change_camera(input_handler.clone());
-        renderer.shader_uniforms.data.proj = input_handler.borrow().projection_mat();
+        renderer.vertex_shader_uniforms.data.proj = input_handler.borrow().projection_mat();
 
         println!("DX Setup took {} ms", renderer.clock.elapsed().as_millis());
         renderer.clock = Instant::now();
@@ -95,11 +109,13 @@ impl Renderer
             match &self.camera {
                 Some(c) => {
                     c.borrow_mut().update(dt);
-                    self.shader_uniforms.data.view = c.borrow().view_mat();
+                    self.vertex_shader_uniforms.data.view = c.borrow().view_mat();
+                    self.pixel_shader_uniforms.data.camera_pos = glm::vec3_to_vec4(&c.borrow().position());
                 }
                 None => {}
             };
-            self.shader_uniforms.update()?;
+            self.vertex_shader_uniforms.update()?;
+            self.pixel_shader_uniforms.update()?;
             self.render()?;
         }
         Ok(ok)
@@ -163,7 +179,8 @@ impl Renderer
 
         let ctx = self.backend.get_context();
         unsafe {
-            (*ctx).VSSetConstantBuffers(0, 1, &self.shader_uniforms.buffer_ptr() as *const *mut _)
+            (*ctx).VSSetConstantBuffers(0, 1, &self.vertex_shader_uniforms.buffer_ptr() as *const *mut _);
+            (*ctx).PSSetConstantBuffers(0, 1, &self.pixel_shader_uniforms.buffer_ptr() as *const *mut _);
         };
 
         self.scene.draw();

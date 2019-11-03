@@ -20,11 +20,11 @@ use winapi::um::d3d11_1 as dx11_1;
 use winapi::um::d3dcommon as dx;
 use winapi::um::unknwnbase::IUnknown;
 
-#[cfg(debug_assertions)]
+#[cfg(feature = "debug_context")]
 use winapi::shared::dxgi1_3 as dxgi3;
-//#[cfg(debug_assertions)]
+#[cfg(feature = "debug_context")]
 use winapi::um::d3d11sdklayers as sdklayers;
-#[cfg(debug_assertions)]
+#[cfg(feature = "debug_context")]
 use winapi::um::dxgidebug as dxgidbg;
 
 pub struct D3D11Backend {
@@ -129,7 +129,7 @@ impl D3D11Backend {
         self.swap_chain = ptr::null_mut();
         self.context = ptr::null_mut();
 
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "debug_context")]
         {
             let mut d3d_debug: *mut sdklayers::ID3D11Debug = ptr::null_mut();
             let d3d_debug_uuid = <sdklayers::ID3D11Debug as winapi::Interface>::uuidof();
@@ -156,7 +156,7 @@ impl D3D11Backend {
         Ok(())
     }
 
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "debug_context")]
     fn debug_layers_available() -> bool {
         let res = unsafe {
             dx11::D3D11CreateDevice(
@@ -179,7 +179,7 @@ impl D3D11Backend {
         let factory_uuid = <dxgi2::IDXGIFactory2 as winapi::Interface>::uuidof();
 
         let mut debug_dxgi = false;
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "debug_context")]
         {
             let mut info_queue: *mut dxgidbg::IDXGIInfoQueue = ptr::null_mut();
             let info_queue_uuid = <dxgidbg::IDXGIInfoQueue as winapi::Interface>::uuidof();
@@ -353,9 +353,10 @@ impl D3D11Backend {
             }
         }
 
-        let mut creation_flags = dx11::D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+        let mut creation_flags : u32 = 0;
+        creation_flags = dx11::D3D11_CREATE_DEVICE_BGRA_SUPPORT;
 
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "debug_context")]
         {
             if D3D11Backend::debug_layers_available() {
                 creation_flags |= dx11::D3D11_CREATE_DEVICE_DEBUG;
@@ -387,7 +388,7 @@ impl D3D11Backend {
             ));
         }
 
-        //#[cfg(debug_assertions)]
+        #[cfg(feature = "debug_context")]
         {
             let mut d3d11_debug: *mut sdklayers::ID3D11Debug = ptr::null_mut();
             let d3d11_debug_uuid = <sdklayers::ID3D11Debug as winapi::Interface>::uuidof();
@@ -683,7 +684,7 @@ impl D3D11Backend {
             (*self.context).DiscardView(self.depth_stencil_view as *mut _);
         }
         if res == DXGI_ERROR_DEVICE_REMOVED || res == DXGI_ERROR_DEVICE_RESET {
-            #[cfg(debug_assertions)]
+            #[cfg(feature = "debug_context")]
             {
                 let reason = match res {
                     DXGI_ERROR_DEVICE_REMOVED => unsafe { (*self.device).GetDeviceRemovedReason() },

@@ -5,4 +5,5 @@ pub trait Camera {
     fn update(&mut self, delta_t: f32);
     fn view_mat(&self) -> glm::Mat4;
     fn projection_mat(&self) -> glm::Mat4;
+    fn position(&self) -> glm::Vec3;
 }
