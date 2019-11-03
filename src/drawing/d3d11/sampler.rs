@@ -24,6 +24,9 @@ impl Texture2D {
 
     pub fn create_from_image_obj(
         image: DynamicImage,
+        address_u: u32,
+        address_v: u32,
+        filter: u32,
         device: *mut dx11_1::ID3D11Device1,
     ) -> Result<Texture2D, DxError> {
         let mut img: (
@@ -69,13 +72,13 @@ impl Texture2D {
                     let (width, height) = rgba.dimensions();
                     let rgba_data = rgba.into_raw();
                     data.pSysMem = rgba_data.as_ptr() as *const _;
-                    return Texture2D::create(fmt, 1, width, height, device, &data as *const _);
+                    return Texture2D::create(fmt, 1, width, height, address_u, address_v, filter, device, &data as *const _);
                 }
                 ((None, _), (Some(gray), fmt)) => {
                     let (width, height) = gray.dimensions();
                     let gray_data = gray.into_raw();
                     data.pSysMem = gray_data.as_ptr() as *const _;
-                    return Texture2D::create(fmt, 1, width, height, device, &data as *const _);
+                    return Texture2D::create(fmt, 1, width, height, address_u, address_v, filter, device, &data as *const _);
                 }
                 _ => {
                     return Err(DxError::new(
@@ -94,12 +97,15 @@ impl Texture2D {
         height: u32,
         format: winapi::shared::dxgiformat::DXGI_FORMAT,
         channels: u32,
+        address_u: u32,
+        address_v: u32,
+        filter: u32,
         device: *mut dx11_1::ID3D11Device1,
     ) -> Result<Texture2D, DxError> {
         let mut data: dx11::D3D11_SUBRESOURCE_DATA = Default::default();
         data.pSysMem = image_data.as_ptr() as *const _;
         data.SysMemPitch = width * channels;
-        Texture2D::create(format, 1, width, height, device, &data as *const _)
+        Texture2D::create(format, 1, width, height, address_u, address_v, filter, device, &data as *const _)
     }
 
     pub fn create_empty_mutable(
@@ -107,7 +113,7 @@ impl Texture2D {
         miplevels: u32,
         device: *mut dx11_1::ID3D11Device1,
     ) -> Result<Texture2D, DxError> {
-        Texture2D::create(format, miplevels, 0, 0, device, std::ptr::null())
+        Texture2D::create(format, miplevels, 0, 0,dx11::D3D11_TEXTURE_ADDRESS_WRAP ,dx11::D3D11_TEXTURE_ADDRESS_WRAP , dx11::D3D11_FILTER_MIN_MAG_MIP_LINEAR, device, std::ptr::null())
     }
 
     fn create(
@@ -115,6 +121,9 @@ impl Texture2D {
         miplevels: u32,
         width: u32,
         height: u32,
+        address_u: u32,
+        address_v: u32,
+        filter: u32,
         device: *mut dx11_1::ID3D11Device1,
         image: *const dx11::D3D11_SUBRESOURCE_DATA,
     ) -> Result<Texture2D, DxError> {
@@ -125,10 +134,10 @@ impl Texture2D {
         };
         {
             let mut desc: dx11::D3D11_SAMPLER_DESC = Default::default();
-            desc.Filter = dx11::D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-            desc.AddressU = dx11::D3D11_TEXTURE_ADDRESS_WRAP;
-            desc.AddressV = dx11::D3D11_TEXTURE_ADDRESS_WRAP;
-            desc.AddressW = dx11::D3D11_TEXTURE_ADDRESS_WRAP;
+            desc.Filter = filter;
+            desc.AddressU = address_u;
+            desc.AddressV = address_v;
+            desc.AddressW = address_v;
             desc.ComparisonFunc = dx11::D3D11_COMPARISON_NEVER;
             desc.MinLOD = 0.0f32;
             desc.MaxLOD = dx11::D3D11_FLOAT32_MAX;
@@ -136,7 +145,7 @@ impl Texture2D {
                 unsafe { (*device).CreateSamplerState(&desc, &mut tex.sampler as *mut *mut _) };
             if res < winapi::shared::winerror::S_OK {
                 return Err(DxError::new(
-                    "Sampler creation failed",
+                    format!("Sampler creation failed\n ModeU: {}, ModeV: {}, Filter: {}", address_u, address_v, filter).as_str(),
                     DxErrorType::ResourceCreation,
                 ));
             }
