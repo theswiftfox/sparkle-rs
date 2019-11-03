@@ -51,6 +51,9 @@ impl Camera for FPSController {
     fn projection_mat(&self) -> glm::Mat4 {
         self.projection_mat
     }
+    fn position(&self) -> glm::Vec3 {
+       self.pos 
+    }
 }
 
 impl InputHandler for FPSController {

@@ -5,6 +5,9 @@ authors = ["Patrick Gantner <patrick.gantner@linesofcode.at>"]
 edition = "2018"
 build = "build.rs"
 
+[features]
+default = [ "debug_context" ]
+debug_context = [] # toggle dx debug context
 
 [dependencies]
 # cgmath = { version = "0.17.0", features = ["swizzle"] }
