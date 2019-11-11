@@ -1,8 +1,8 @@
 use super::{DxError, DxErrorType};
-use crate::drawing::d3d11::cbuffer::CBuffer;
-use crate::drawing::d3d11::sampler::Texture2D;
-use crate::drawing::geometry::Vertex;
-use crate::drawing::scenegraph::drawable::Drawable;
+use super::cbuffer::CBuffer;
+use super::sampler::Texture2D;
+use super::super::geometry::Vertex;
+use super::super::scenegraph::drawable::Drawable;
 
 use winapi::shared::dxgiformat::DXGI_FORMAT_R32_UINT;
 use winapi::shared::winerror::S_OK;
