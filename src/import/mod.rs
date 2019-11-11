@@ -6,11 +6,11 @@ use std::rc::Rc;
 use winapi::um::d3d11 as dx11;
 use winapi::um::d3d11_1 as dx11_1;
 
-use crate::drawing::geometry::Vertex;
-use crate::drawing::scenegraph::node::Node;
-use crate::drawing::scenegraph::drawable::Drawable;
-use crate::drawing::d3d11::drawable::DxDrawable;
-use crate::drawing::d3d11::sampler::Texture2D;
+use crate::engine::geometry::Vertex;
+use crate::engine::scenegraph::node::Node;
+use crate::engine::scenegraph::drawable::Drawable;
+use crate::engine::d3d11::drawable::DxDrawable;
+use crate::engine::d3d11::sampler::Texture2D;
 
 #[derive(Debug, Clone)]
 pub struct ImportError {

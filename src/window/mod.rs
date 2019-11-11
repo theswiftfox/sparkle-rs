@@ -2,9 +2,12 @@ use crate::input::input_handler::{
     Action, ApplicationRequest, Button, InputHandler, Key, ScrollAxis,
 };
 use crate::utils;
+
 use std::cell::RefCell;
-use std::rc::Rc as shared_ptr;
+use std::convert::TryInto;
+use std::rc::Rc;
 use std::*;
+
 use winapi::shared::minwindef::{LPARAM, LRESULT, UINT, WPARAM};
 use winapi::shared::windef::{HWND, POINT, RECT};
 use winapi::shared::windowsx::{GET_X_LPARAM, GET_Y_LPARAM};
@@ -60,15 +63,15 @@ impl Window {
     }
 
     pub fn create_window(
-        width: i32,
-        height: i32,
+        width: u32,
+        height: u32,
         name: &str,
         title: &str,
-    ) -> shared_ptr<RefCell<Window>> {
-        let wnd = shared_ptr::new(RefCell::new(Window {
+    ) -> Rc<RefCell<Window>> {
+        let wnd = Rc::new(RefCell::new(Window {
             handle: ptr::null_mut(),
-            width: width as u32,
-            height: height as u32,
+            width: width,
+            height: height,
             input_handler: None,
             request_quit: false,
             snap_mouse: false,
@@ -114,11 +117,14 @@ impl Window {
         }
         true
     }
-    pub fn set_input_handler(&mut self, handler: std::rc::Rc<std::cell::RefCell<dyn InputHandler>>) {
+    pub fn set_input_handler(
+        &mut self,
+        handler: std::rc::Rc<std::cell::RefCell<dyn InputHandler>>,
+    ) {
         self.input_handler = Some(handler.clone())
     }
 
-    fn create(&mut self, width: i32, height: i32, name: &str, title: &str) {
+    fn create(&mut self, width: u32, height: u32, name: &str, title: &str) {
         let name = utils::to_wide_str(name);
         let title = utils::to_wide_str(title);
 
@@ -145,8 +151,8 @@ impl Window {
                 WS_OVERLAPPEDWINDOW | WS_VISIBLE,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
-                width,
-                height,
+                width.try_into().unwrap(),
+                height.try_into().unwrap(),
                 ptr::null_mut(),
                 ptr::null_mut(),
                 instance,
