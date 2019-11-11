@@ -79,6 +79,15 @@ impl Scenegraph {
             }
         }
     }
+
+    pub fn clear(&mut self) -> Result<(), SceneGraphError> {
+        if self.root.is_none() {
+            return Ok(());
+        }
+        self.root.as_ref().unwrap().borrow_mut().destroy();
+        self.root = None;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
