@@ -20,7 +20,13 @@ pub struct Settings {
 impl Settings {
     pub fn load() -> Settings {
         let mut settings = Settings::default();
-        let ini = match Ini::load_from_file(SETTINGS_FILE) {
+        let mut settings_file = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        settings_file.push(SETTINGS_FILE);
+        let ini = match Ini::load_from_file(settings_file) {
             Ok(ini) => ini,
             Err(_) => return settings,
         };
