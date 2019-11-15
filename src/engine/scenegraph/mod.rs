@@ -5,8 +5,11 @@ use node::Node;
 use std::cell::RefCell;
 use std::rc::Rc as shared_ptr;
 
+use super::geometry::Light;
+
 pub struct Scenegraph {
     transform: glm::Mat4,
+    directional_light: Light,
     root: Option<shared_ptr<RefCell<Node>>>,
 }
 
@@ -15,10 +18,29 @@ impl Scenegraph {
         Scenegraph {
             transform: glm::identity(),
             root: None,
+            directional_light: Light {
+                direction: glm::zero(),
+                color: glm::zero(),
+            },
         }
     }
     pub fn set_root(&mut self, node: shared_ptr<RefCell<Node>>) {
         self.root = Some(node)
+    }
+
+    pub fn set_directional_light(&mut self, light: Light) {
+        self.directional_light = light
+    }
+
+    pub fn set_light_direction(&mut self, dir: glm::Vec3) {
+        self.directional_light.direction = glm::vec3_to_vec4(&dir)
+    }
+    pub fn set_light_color(&mut self, color: glm::Vec3) {
+        self.directional_light.color = glm::vec3_to_vec4(&color)
+    }
+
+    pub fn get_directional_light(&self) -> &Light {
+        return &self.directional_light;
     }
 
     pub fn draw(&self) {
@@ -31,8 +53,10 @@ impl Scenegraph {
             Err(SceneGraphError::err_empty("Root node is empty"))
         } else {
             match &self.root.as_ref().unwrap().borrow().name {
-                Some(n) => if n.as_str() == name {
-                    return Ok(self.root.as_ref().unwrap().clone());
+                Some(n) => {
+                    if n.as_str() == name {
+                        return Ok(self.root.as_ref().unwrap().clone());
+                    }
                 }
                 None => (),
             };
@@ -58,7 +82,10 @@ impl Scenegraph {
         }
     }
 
-    pub fn get_drawables_named(&self, name: &str) -> Option<Vec<shared_ptr<RefCell<dyn drawable::Drawable>>>> {
+    pub fn get_drawables_named(
+        &self,
+        name: &str,
+    ) -> Option<Vec<shared_ptr<RefCell<dyn drawable::Drawable>>>> {
         let node = match self.get_node_named(name) {
             Ok(n) => Some(n),
             Err(_) => None,
@@ -73,9 +100,15 @@ impl Scenegraph {
         if self.root.is_none() {
             return Err(SceneGraphError::err_empty("No root"));
         } else {
-            match self.root.as_ref().unwrap().borrow_mut().remove_node_named(name) {
+            match self
+                .root
+                .as_ref()
+                .unwrap()
+                .borrow_mut()
+                .remove_node_named(name)
+            {
                 true => Ok(()),
-                false => Err(SceneGraphError::new(name, &ErrorCause::NotFound))
+                false => Err(SceneGraphError::new(name, &ErrorCause::NotFound)),
             }
         }
     }

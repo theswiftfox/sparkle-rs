@@ -52,7 +52,7 @@ impl Camera for FPSController {
         self.projection_mat
     }
     fn position(&self) -> glm::Vec3 {
-       self.pos 
+        self.pos
     }
 }
 

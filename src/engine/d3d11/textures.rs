@@ -9,17 +9,22 @@ use image::DynamicImage;
 use image::GenericImageView;
 
 pub struct Texture2D {
+    pub format: u32,
     sampler: *mut dx11::ID3D11SamplerState,
     handle: *mut dx11::ID3D11Texture2D,
-    shader_view: *mut dx11::ID3D11ShaderResourceView,
+    pub shader_view: *mut dx11::ID3D11ShaderResourceView,
 }
 
 impl Texture2D {
     pub fn get_sampler(&self) -> *mut dx11::ID3D11SamplerState {
         self.sampler
     }
-    pub fn get_texture(&self) -> *mut dx11::ID3D11ShaderResourceView {
+    pub fn get_texture_view(&self) -> *mut dx11::ID3D11ShaderResourceView {
         self.shader_view
+    }
+
+    pub fn get_texture_handle(&self) -> *mut dx11::ID3D11Texture2D {
+        self.handle
     }
 
     pub fn create_from_image_obj(
@@ -46,13 +51,10 @@ impl Texture2D {
                 TODO: other datatpyes?
                 */
                 img.1 = (Some(image.to_luma()), format);
-                data.SysMemPitch = image.dimensions().0 * 4;//std::mem::size_of_val(&dtype) as u32;
+                data.SysMemPitch = image.dimensions().0 * 4; //std::mem::size_of_val(&dtype) as u32;
                 Some(())
             }
-            ColorType::BGR(_)
-            | ColorType::BGRA(_)
-            | ColorType::RGB(_)
-            | ColorType::RGBA(_) => {
+            ColorType::BGR(_) | ColorType::BGRA(_) | ColorType::RGB(_) | ColorType::RGBA(_) => {
                 let format = fmt::DXGI_FORMAT_R8G8B8A8_UNORM;
                 /* match dtype {
                     u8 => fmt::DXGI_FORMAT_R8G8B8A8_UNORM,
@@ -72,13 +74,65 @@ impl Texture2D {
                     let (width, height) = rgba.dimensions();
                     let rgba_data = rgba.into_raw();
                     data.pSysMem = rgba_data.as_ptr() as *const _;
-                    return Texture2D::create(fmt, 1, width, height, address_u, address_v, filter, device, &data as *const _);
+                    let mut tex = Texture2D::create(
+                        width,
+                        height,
+                        fmt,
+                        address_u,
+                        address_v,
+                        filter,
+                        1,
+                        dx11::D3D11_BIND_SHADER_RESOURCE,
+                        dx11::D3D11_USAGE_IMMUTABLE,
+                        device,
+                        &data as *const _,
+                    )?;
+                    let res = unsafe {
+                        (*device).CreateShaderResourceView(
+                            tex.handle as *mut _,
+                            std::ptr::null(),
+                            &mut tex.shader_view as *mut *mut _,
+                        )
+                    };
+                    if res < winapi::shared::winerror::S_OK {
+                        return Err(DxError::new(
+                            "ShaderView creation failed",
+                            DxErrorType::ResourceCreation,
+                        ));
+                    }
+                    return Ok(tex)
                 }
                 ((None, _), (Some(gray), fmt)) => {
                     let (width, height) = gray.dimensions();
                     let gray_data = gray.into_raw();
                     data.pSysMem = gray_data.as_ptr() as *const _;
-                    return Texture2D::create(fmt, 1, width, height, address_u, address_v, filter, device, &data as *const _);
+                    let mut tex = Texture2D::create(
+                        width,
+                        height,
+                        fmt,
+                        address_u,
+                        address_v,
+                        filter,
+                        1,
+                        dx11::D3D11_BIND_SHADER_RESOURCE,
+                        dx11::D3D11_USAGE_IMMUTABLE,
+                        device,
+                        &data as *const _,
+                    )?;
+                    let res = unsafe {
+                        (*device).CreateShaderResourceView(
+                            tex.handle as *mut _,
+                            std::ptr::null(),
+                            &mut tex.shader_view as *mut *mut _,
+                        )
+                    };
+                    if res < winapi::shared::winerror::S_OK {
+                        return Err(DxError::new(
+                            "ShaderView creation failed",
+                            DxErrorType::ResourceCreation,
+                        ));
+                    }
+                    return Ok(tex)
                 }
                 _ => {
                     return Err(DxError::new(
@@ -105,34 +159,109 @@ impl Texture2D {
         let mut data: dx11::D3D11_SUBRESOURCE_DATA = Default::default();
         data.pSysMem = image_data.as_ptr() as *const _;
         data.SysMemPitch = width * channels;
-        Texture2D::create(format, 1, width, height, address_u, address_v, filter, device, &data as *const _)
+        let mut tex = Texture2D::create(
+            width,
+            height,
+            format,
+            address_u,
+            address_v,
+            filter,
+            1,
+            dx11::D3D11_BIND_SHADER_RESOURCE,
+            dx11::D3D11_USAGE_IMMUTABLE,
+            device,
+            &data as *const _,
+        )?;
+        let res = unsafe {
+            (*device).CreateShaderResourceView(
+                tex.handle as *mut _,
+                std::ptr::null(),
+                &mut tex.shader_view as *mut *mut _,
+            )
+        };
+        if res < winapi::shared::winerror::S_OK {
+            return Err(DxError::new(
+                "ShaderView creation failed",
+                DxErrorType::ResourceCreation,
+            ));
+        }
+        return Ok(tex)
     }
 
     pub fn create_empty_mutable(
-        format: u32,
-        miplevels: u32,
-        device: *mut dx11_1::ID3D11Device1,
-    ) -> Result<Texture2D, DxError> {
-        Texture2D::create(format, miplevels, 0, 0,dx11::D3D11_TEXTURE_ADDRESS_WRAP ,dx11::D3D11_TEXTURE_ADDRESS_WRAP , dx11::D3D11_FILTER_MIN_MAG_MIP_LINEAR, device, std::ptr::null())
-    }
-
-    fn create(
-        format: u32,
-        miplevels: u32,
         width: u32,
         height: u32,
+        format: u32,
         address_u: u32,
         address_v: u32,
         filter: u32,
+        miplevels: u32,
+        bind_flags: u32,
+        usage: u32,
+        device: *mut dx11_1::ID3D11Device1,
+    ) -> Result<Texture2D, DxError> {
+        Texture2D::create(
+            width,
+            height,
+            format,
+            address_u,
+            address_v,
+            filter,
+            miplevels,
+            bind_flags,
+            usage,
+            device,
+            std::ptr::null(),
+        )
+    }
+    pub fn create_mutable_render_target(
+        width: u32,
+        height: u32,
+        format: u32,
+        address_u: u32,
+        address_v: u32,
+        filter: u32,
+        miplevels: u32,
+        bind_flags: u32,
+        device: *mut dx11_1::ID3D11Device1,
+    ) -> Result<Texture2D, DxError> {
+        Texture2D::create(
+            width,
+            height,
+            format,
+            address_u,
+            address_v,
+            filter,
+            miplevels,
+            bind_flags,
+            dx11::D3D11_USAGE_DEFAULT,
+            device,
+            std::ptr::null(),
+        )
+    }
+
+    fn create(
+        width: u32,
+        height: u32,
+        format: u32,
+        address_u: u32,
+        address_v: u32,
+        filter: u32,
+        miplevels: u32,
+        bind_flags: u32,
+        usage: u32,
         device: *mut dx11_1::ID3D11Device1,
         image: *const dx11::D3D11_SUBRESOURCE_DATA,
     ) -> Result<Texture2D, DxError> {
         let mut tex = Texture2D {
+            format: format,
             sampler: std::ptr::null_mut(),
             handle: std::ptr::null_mut(),
             shader_view: std::ptr::null_mut(),
         };
-        {
+        let is_shader_resource =
+            bind_flags & dx11::D3D11_BIND_SHADER_RESOURCE == dx11::D3D11_BIND_SHADER_RESOURCE;
+        if is_shader_resource {
             let mut desc: dx11::D3D11_SAMPLER_DESC = Default::default();
             desc.Filter = filter;
             desc.AddressU = address_u;
@@ -145,47 +274,31 @@ impl Texture2D {
                 unsafe { (*device).CreateSamplerState(&desc, &mut tex.sampler as *mut *mut _) };
             if res < winapi::shared::winerror::S_OK {
                 return Err(DxError::new(
-                    format!("Sampler creation failed\n ModeU: {}, ModeV: {}, Filter: {}", address_u, address_v, filter).as_str(),
+                    format!(
+                        "Sampler creation failed\n ModeU: {}, ModeV: {}, Filter: {}",
+                        address_u, address_v, filter
+                    )
+                    .as_str(),
                     DxErrorType::ResourceCreation,
                 ));
             }
         }
         {
             let mut desc: dx11::D3D11_TEXTURE2D_DESC = Default::default();
-            match image {
-                i if i.is_null() => {
-                    desc.Usage = dx11::D3D11_USAGE_DYNAMIC;
-                }
-                _ => {
-                    desc.Usage = dx11::D3D11_USAGE_IMMUTABLE;
-                    desc.Width = width;
-                    desc.Height = height;
-                }
-            };
+            desc.Usage = usage;
+            desc.Width = width;
+            desc.Height = height;
             desc.MipLevels = miplevels;
             desc.ArraySize = 1;
             desc.Format = format;
             desc.SampleDesc.Count = 1;
-            desc.BindFlags = dx11::D3D11_BIND_SHADER_RESOURCE;
+            desc.BindFlags = bind_flags;
 
             let res =
                 unsafe { (*device).CreateTexture2D(&desc, image, &mut tex.handle as *mut *mut _) };
             if res < winapi::shared::winerror::S_OK {
                 return Err(DxError::new(
                     "Texture creation failed",
-                    DxErrorType::ResourceCreation,
-                ));
-            }
-            let res = unsafe {
-                (*device).CreateShaderResourceView(
-                    tex.handle as *mut _,
-                    std::ptr::null(),
-                    &mut tex.shader_view as *mut *mut _,
-                )
-            };
-            if res < winapi::shared::winerror::S_OK {
-                return Err(DxError::new(
-                    "ShaderView creation failed",
                     DxErrorType::ResourceCreation,
                 ));
             }
