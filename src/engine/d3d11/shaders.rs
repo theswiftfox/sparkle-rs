@@ -2,7 +2,6 @@ use super::{DxError, DxErrorType};
 use crate::utils;
 
 use std::ptr;
-use winapi::shared::dxgiformat as dxgifmt;
 use winapi::shared::winerror::S_OK;
 use winapi::um::d3d11 as dx11;
 use winapi::um::d3d11_1 as dx11_1;
@@ -17,12 +16,14 @@ pub struct ShaderProgram {
     input_layout: *mut dx11::ID3D11InputLayout,
 
     pub context: *mut dx11_1::ID3D11DeviceContext1,
-    active: bool,
 }
 
 #[allow(dead_code)]
 impl ShaderProgram {
     pub fn create(
+        vs_file: &str,
+        ps_file: &str,
+        input_desc: &[dx11::D3D11_INPUT_ELEMENT_DESC],
         device: *mut dx11_1::ID3D11Device1,
         context: *mut dx11_1::ID3D11DeviceContext1,
     ) -> Result<ShaderProgram, DxError> {
@@ -33,80 +34,17 @@ impl ShaderProgram {
             pixel_shader_byte_code: ptr::null_mut(),
             input_layout: ptr::null_mut(),
             context: ptr::null_mut(),
-            active: false,
         };
 
         shader_program.context = context;
-        shader_program.setup_shaders(device)?;
-
-        let pos_name: &'static std::ffi::CStr = const_cstr!("SV_Position").as_cstr();
-        let norm_name: &'static std::ffi::CStr = const_cstr!("NORMAL").as_cstr();
-        let tang_name: &'static std::ffi::CStr = const_cstr!("TANGENT").as_cstr();
-        let bitang_name: &'static std::ffi::CStr = const_cstr!("BITANGENT").as_cstr();
-        let tx_coord_name: &'static std::ffi::CStr = const_cstr!("TEXCOORD").as_cstr();
-        let input_element_description: [dx11::D3D11_INPUT_ELEMENT_DESC; 6] = [
-            dx11::D3D11_INPUT_ELEMENT_DESC {
-                SemanticName: pos_name.as_ptr() as *const _,
-                SemanticIndex: 0,
-                Format: dxgifmt::DXGI_FORMAT_R32G32B32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: 0,
-                InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-            dx11::D3D11_INPUT_ELEMENT_DESC {
-                SemanticName: norm_name.as_ptr() as *const _,
-                SemanticIndex: 0,
-                Format: dxgifmt::DXGI_FORMAT_R32G32B32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
-                InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-            dx11::D3D11_INPUT_ELEMENT_DESC {
-                SemanticName: tang_name.as_ptr() as *const _,
-                SemanticIndex: 0,
-                Format: dxgifmt::DXGI_FORMAT_R32G32B32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
-                InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-            dx11::D3D11_INPUT_ELEMENT_DESC {
-                SemanticName: bitang_name.as_ptr() as *const _,
-                SemanticIndex: 0,
-                Format: dxgifmt::DXGI_FORMAT_R32G32B32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
-                InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-            dx11::D3D11_INPUT_ELEMENT_DESC {
-                SemanticName: tx_coord_name.as_ptr() as *const _,
-                SemanticIndex: 0,
-                Format: dxgifmt::DXGI_FORMAT_R32G32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
-                InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-            dx11::D3D11_INPUT_ELEMENT_DESC {
-                SemanticName: tx_coord_name.as_ptr() as *const _,
-                SemanticIndex: 1,
-                Format: dxgifmt::DXGI_FORMAT_R32G32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
-                InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-        ];
+        shader_program.setup_shaders(vs_file, ps_file, device)?;
 
         let vertex_shader = shader_program.get_vertex_shader_byte_code();
 
         let res = unsafe {
             (*device).CreateInputLayout(
-                input_element_description.as_ptr(),
-                input_element_description.len() as u32,
+                input_desc.as_ptr(),
+                input_desc.len() as u32,
                 (*vertex_shader).GetBufferPointer(),
                 (*vertex_shader).GetBufferSize(),
                 &mut shader_program.input_layout as *mut *mut _,
@@ -139,26 +77,19 @@ impl ShaderProgram {
     }
 
     pub fn activate(&mut self) {
-        if self.active {
-            return;
-        }
         unsafe {
             (*self.context).VSSetShader(self.vertex_shader, ptr::null(), 0);
             (*self.context).GSSetShader(ptr::null_mut(), ptr::null(), 0);
             (*self.context).PSSetShader(self.pixel_shader, ptr::null(), 0);
         }
-        self.active = true;
     }
     pub fn deactivate(&mut self) {
-        if !self.active {
-            return;
-        }
+        // todo: useless?
         unsafe {
             (*self.context).VSSetShader(ptr::null_mut(), ptr::null(), 0);
             (*self.context).GSSetShader(ptr::null_mut(), ptr::null(), 0);
             (*self.context).PSSetShader(ptr::null_mut(), ptr::null(), 0);
         }
-        self.active = false;
     }
 
     pub fn compile_shader(
@@ -206,7 +137,12 @@ impl ShaderProgram {
     }
 
     #[allow(unused_mut)]
-    pub fn setup_shaders(&mut self, device: *mut dx11_1::ID3D11Device1) -> Result<(), DxError> {
+    pub fn setup_shaders(
+        &mut self,
+        vs_file: &str,
+        ps_file: &str,
+        device: *mut dx11_1::ID3D11Device1,
+    ) -> Result<(), DxError> {
         let mut release = true;
 
         //#[cfg(debug_assertions)]
@@ -218,7 +154,7 @@ impl ShaderProgram {
                 .to_path_buf();
             shader_dir.push("shaders");
             let mut vtx_shader_file = std::path::PathBuf::from(shader_dir.to_str().unwrap());
-            vtx_shader_file.push("vertex.hlsl");
+            vtx_shader_file.push(vs_file);
             let target = "vs_5_0";
             ShaderProgram::compile_shader(
                 &mut self.vertex_shader_byte_code as *mut *mut _,
@@ -245,7 +181,7 @@ impl ShaderProgram {
             }
 
             let mut px_shader_file = std::path::PathBuf::from(shader_dir.to_str().unwrap());
-            px_shader_file.push("pixel.hlsl");
+            px_shader_file.push(ps_file);
             let target = "ps_5_0";
             ShaderProgram::compile_shader(
                 &mut self.pixel_shader_byte_code as *mut *mut _,

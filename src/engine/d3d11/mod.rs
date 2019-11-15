@@ -1,10 +1,9 @@
 pub(super) mod cbuffer;
 pub(crate) mod drawable;
-pub(crate) mod sampler;
+pub(crate) mod textures;
 pub(super) mod shaders;
 
 use crate::utils;
-use shaders::ShaderProgram;
 
 use std::array::FixedSizeArray;
 use std::*;
@@ -733,10 +732,6 @@ impl D3D11Backend {
             self.create_resources()?;
             Ok(true)
         }
-    }
-
-    pub fn create_shader_program(&self) -> Result<ShaderProgram, DxError> {
-        ShaderProgram::create(self.device, self.context)
     }
 
     /**
