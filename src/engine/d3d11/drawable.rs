@@ -1,6 +1,6 @@
 use super::{DxError, DxErrorType};
 use super::cbuffer::CBuffer;
-use super::sampler::Texture2D;
+use super::textures::Texture2D;
 use super::super::geometry::Vertex;
 use super::super::scenegraph::drawable::Drawable;
 
@@ -41,7 +41,7 @@ impl Drawable for DxDrawable {
 
             for (slot, tex) in &self.textures {
                 (*self.context).PSSetSamplers(*slot, 1, &tex.get_sampler() as *const *mut _);
-                (*self.context).PSSetShaderResources(*slot, 1, &tex.get_texture() as *const *mut _);
+                (*self.context).PSSetShaderResources(*slot, 1, &tex.get_texture_view() as *const *mut _);
             }
 
             (*self.context).DrawIndexed(self.index_count, 0, 0);

@@ -16,7 +16,7 @@ winapi = { version = "0.3.7", features = [
     "d3dcompiler", 
     "libloaderapi", "impl-default"
     ] }
-nalgebra-glm = "0.3"
+nalgebra-glm = "0.5.0"
 const-cstr = "0.1"
 image = "0.22.2"
 gltf = "0.14"

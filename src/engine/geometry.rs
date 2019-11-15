@@ -7,6 +7,7 @@ pub struct Vertex {
     pub tex_coord_normalmap: glm::Vec2,
 }
 
+#[derive(Clone)]
 pub struct Light {
     pub direction: glm::Vec4,
     pub color: glm::Vec4,

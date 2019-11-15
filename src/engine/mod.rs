@@ -5,31 +5,25 @@ pub mod scenegraph;
 pub(crate) mod d3d11;
 pub(crate) mod settings;
 
+mod draw_programs;
+
 use crate::import;
 use crate::input::first_person::FPSController;
 use crate::input::input_handler::InputHandler;
 use crate::input::Camera;
 use crate::window::Window;
-use d3d11::{cbuffer, shaders, D3D11Backend, DxError};
+
+use d3d11::{D3D11Backend, DxError};
 use scenegraph::Scenegraph;
 use std::time::Instant;
 use winapi::um::d3d11 as dx11;
 
-struct VertexShaderUniforms {
-    pub view: glm::Mat4,
-    pub proj: glm::Mat4,
-}
-struct PixelShaderUniforms {
-    pub camera_pos: glm::Vec4,
-}
-
 pub struct Renderer {
     scene: Scenegraph,
-    draw_program: Option<shaders::ShaderProgram>,
+    main_program: Option<draw_programs::MainPass>,
+    shadow_program: Option<draw_programs::ShadowPass>,
     input_handler: Option<std::rc::Rc<std::cell::RefCell<dyn InputHandler>>>,
     camera: Option<std::rc::Rc<std::cell::RefCell<dyn Camera>>>,
-    vertex_shader_uniforms: cbuffer::CBuffer<VertexShaderUniforms>,
-    pixel_shader_uniforms: cbuffer::CBuffer<PixelShaderUniforms>,
     backend: D3D11Backend,
     window: std::rc::Rc<std::cell::RefCell<Window>>,
     clock: Instant,
@@ -51,49 +45,37 @@ impl Renderer {
             Ok(b) => b,
             Err(e) => panic!(format!("{}", e)),
         };
-        let vtx_uniforms = VertexShaderUniforms {
-            view: glm::identity(),
-            proj: glm::identity(),
-        };
-        let pxl_uniforms = PixelShaderUniforms {
-            camera_pos: glm::zero(),
-        };
-        let vtx_cbuff = match cbuffer::CBuffer::create(
-            vtx_uniforms,
-            backend.get_context(),
-            backend.get_device(),
-        ) {
-            Ok(b) => b,
-            Err(e) => panic!(e),
-        };
-        let pxl_cbuff = match cbuffer::CBuffer::create(
-            pxl_uniforms,
-            backend.get_context(),
-            backend.get_device(),
-        ) {
-            Ok(b) => b,
-            Err(e) => panic!(e),
-        };
         let mut renderer = Renderer {
             backend: backend,
             window: window,
-            draw_program: None,
+            main_program: None,
+            shadow_program: None,
             scene: Scenegraph::empty(),
             input_handler: None,
             camera: None,
-            vertex_shader_uniforms: vtx_cbuff,
-            pixel_shader_uniforms: pxl_cbuff,
             clock: Instant::now(),
         };
 
         let mut renderer = match renderer.init_draw_program() {
             Ok(_) => renderer,
-            Err(e) => panic!(format!("{}", e)),
+            Err(e) => {
+                // use std::error::Error; // put error description() trait in scope
+                // println!(
+                //     "Error during draw program initialization:\n{}",
+                //     e.description()
+                // );
+                panic!(format!("{}", e))
+            }
         };
 
         renderer.change_input_handler(input_handler.clone());
         renderer.change_camera(input_handler.clone());
-        renderer.vertex_shader_uniforms.data.proj = input_handler.borrow().projection_mat();
+        renderer
+            .main_program
+            .as_mut()
+            .unwrap()
+            .set_proj(input_handler.borrow().projection_mat(), false)
+            .expect("Impossible");
 
         println!("DX Setup took {} ms", renderer.clock.elapsed().as_millis());
         renderer.clock = Instant::now();
@@ -104,6 +86,45 @@ impl Renderer {
                         "Loaded scene in {} ms",
                         renderer.clock.elapsed().as_millis()
                     );
+                    let light = renderer.scene.get_directional_light();
+                    let shadow_dist = 15.0;
+                    let light_proj = glm::ortho_zo(
+                        -shadow_dist,
+                        shadow_dist,
+                        -shadow_dist,
+                        shadow_dist,
+                        1.0,
+                        100.0,
+                    );
+                    let dir = light.direction.xyz() * (-1.0);
+                    let mut up = glm::vec3(0.0, 1.0, 0.0);
+                    if (up.dot(&dir.normalize()) - 1.0).abs() <= 0.0000001 {
+                        up = glm::vec3(0.0, 0.0, 1.0);
+                    }
+                    //println!("{}", light_proj);
+                    let light_view = glm::look_at(&dir, &glm::zero(), &up);
+                    println!("{}", light_view);
+                    let light_space_mat = light_proj * light_view;
+                    renderer
+                        .main_program
+                        .as_mut()
+                        .unwrap()
+                        .set_directional_light((*light).clone(), false)
+                        .expect("Impossible");
+                    renderer
+                        .main_program
+                        .as_mut()
+                        .unwrap()
+                        .set_light_space_matrix(light_space_mat, false)
+                        .expect("Impossible");
+                    match &mut renderer.shadow_program {
+                        Some(p) => {
+                            p.set_light_space(light_space_mat, true)
+                                .expect("Internal error when setting light space matrix");
+                        }
+                        None => (),
+                    };
+
                     renderer.clock = Instant::now();
                 }
                 Err(_) => {
@@ -132,14 +153,27 @@ impl Renderer {
             match &self.camera {
                 Some(c) => {
                     c.borrow_mut().update(dt);
-                    self.vertex_shader_uniforms.data.view = c.borrow().view_mat();
-                    self.pixel_shader_uniforms.data.camera_pos =
-                        glm::vec3_to_vec4(&c.borrow().position());
+                    match &self.main_program {
+                        Some(_) => {
+                            &self
+                                .main_program
+                                .as_mut()
+                                .unwrap()
+                                .set_view(c.borrow().view_mat(), false)
+                                .expect("Error setting view mat");
+                            &self
+                                .main_program
+                                .as_mut()
+                                .unwrap()
+                                .set_camera_pos(glm::vec3_to_vec4(&c.borrow().position()), false)
+                                .expect("Error setting camera pos");
+                            &self.main_program.as_mut().unwrap().update();
+                        }
+                        _ => (),
+                    };
                 }
                 None => {}
             };
-            self.vertex_shader_uniforms.update()?;
-            self.pixel_shader_uniforms.update()?;
             self.render()?;
         }
         Ok(ok)
@@ -163,6 +197,10 @@ impl Renderer {
         .expect("Unable to load scene");
         //let node = import::load_gltf("assets/gltf_uv_test/TextureCoordinateTest.gltf", renderer.backend.get_device(), renderer.backend.get_context()).expect("Unable to load scene");
         self.scene.set_root(node);
+        self.scene.set_directional_light(geometry::Light {
+            direction: glm::vec4(-15.0, -50.0, -5.0, 1.0),
+            color: glm::vec4(0.3, 0.3, 0.3, 1.0),
+        });
         // todo: err handling
         Ok(())
     }
@@ -199,45 +237,82 @@ impl Renderer {
         let ctx = self.backend.get_context();
         let render_target = self.backend.get_render_target_view();
         let depth_stencil = self.backend.get_depth_stencil_view();
+        let shadow_map_dt = match &self.shadow_program {
+            Some(sp) => sp.get_depth_stencil_view(),
+            None => std::ptr::null_mut(),
+        };
 
         let color: [f32; 4] = colors_linear::background().into();
+        //let shadow_map_clear_color: [f32; 4] = glm::zero::<glm::Vec4>().into();
         unsafe {
             (*ctx).ClearRenderTargetView(render_target, &color);
+            if !shadow_map_dt.is_null() {
+                //(*ctx).ClearRenderTargetView(shadow_map_rt, &shadow_map_clear_color);
+                (*ctx).ClearDepthStencilView(
+                    shadow_map_dt,
+                    dx11::D3D11_CLEAR_DEPTH | dx11::D3D11_CLEAR_STENCIL,
+                    1.0f32,
+                    0,
+                );
+            }
             (*ctx).ClearDepthStencilView(
                 depth_stencil,
                 dx11::D3D11_CLEAR_DEPTH | dx11::D3D11_CLEAR_STENCIL,
                 1.0f32,
                 0,
             );
-
-            (*ctx).OMSetRenderTargets(1, &render_target, depth_stencil);
         };
-        let viewport = self.backend.get_viewport();
-        unsafe { (*ctx).RSSetViewports(1, viewport) };
 
         self.backend.pix_end_event();
     }
 
     fn render(&mut self) -> Result<(), DxError> {
         self.clear();
-        match &self.draw_program {
-            Some(_) => self.draw_program.as_mut().unwrap().activate(),
-            None => {}
-        };
-        self.backend.pix_begin_event("Render");
 
         let ctx = self.backend.get_context();
-        unsafe {
-            (*ctx).VSSetConstantBuffers(
-                0,
-                1,
-                &self.vertex_shader_uniforms.buffer_ptr() as *const *mut _,
-            );
-            (*ctx).PSSetConstantBuffers(
-                0,
-                1,
-                &self.pixel_shader_uniforms.buffer_ptr() as *const *mut _,
-            );
+        match &mut self.shadow_program {
+            Some(sp) => {
+                self.backend.pix_begin_event("Shadow Mapping");
+                let viewport = sp.get_shadow_map_viewport();
+                unsafe { (*ctx).RSSetViewports(1, viewport) };
+                unsafe {
+                    let null_sampler: [*mut dx11::ID3D11SamplerState; 1] = [std::ptr::null_mut()];
+                    let null_srv: [*mut dx11::ID3D11ShaderResourceView; 1] = [std::ptr::null_mut()];
+                    (*ctx).PSSetSamplers(3, 1, null_sampler.as_ptr());
+                    (*ctx).PSSetShaderResources(3, 1, null_srv.as_ptr());
+                };
+                //let render_target = sp.get_render_target_view();
+                let depth_stencil = sp.get_depth_stencil_view();
+                unsafe { (*ctx).OMSetRenderTargets(0, std::ptr::null(), depth_stencil) };
+                self.shadow_program.as_mut().unwrap().prepare_draw(ctx);
+
+                self.scene.draw();
+                self.backend.pix_end_event();
+            }
+            None => {}
+        }
+
+        let render_target = self.backend.get_render_target_view();
+        let depth_stencil = self.backend.get_depth_stencil_view();
+        let viewport = self.backend.get_viewport();
+        unsafe { (*ctx).RSSetViewports(1, viewport) };
+
+        self.backend.pix_begin_event("Main Pass");
+        unsafe { (*ctx).OMSetRenderTargets(1, &render_target, depth_stencil) };
+        match &mut self.main_program {
+            Some(mp) => mp.prepare_draw(ctx),
+            None => {}
+        };
+
+        match &self.shadow_program {
+            Some(sp) => {
+                let tex = sp.get_shadow_map();
+                unsafe {
+                    (*ctx).PSSetSamplers(3, 1, &tex.get_sampler() as *const *mut _);
+                    (*ctx).PSSetShaderResources(3, 1, &tex.get_texture_view() as *const *mut _);
+                }
+            }
+            None => (),
         };
 
         self.scene.draw();
@@ -250,7 +325,14 @@ impl Renderer {
     }
 
     fn init_draw_program(&mut self) -> Result<(), DxError> {
-        self.draw_program = Some(self.backend.create_shader_program()?);
+        self.main_program = Some(draw_programs::MainPass::create(
+            self.backend.get_device(),
+            self.backend.get_context(),
+        )?);
+        self.shadow_program = Some(draw_programs::ShadowPass::create(
+            self.backend.get_device(),
+            self.backend.get_context(),
+        )?);
 
         Ok(())
     }
