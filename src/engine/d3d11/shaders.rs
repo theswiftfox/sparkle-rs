@@ -13,6 +13,8 @@ pub struct ShaderProgram {
     vertex_shader_byte_code: *mut dx::ID3DBlob,
     pixel_shader: *mut dx11::ID3D11PixelShader,
     pixel_shader_byte_code: *mut dx::ID3DBlob,
+    geometry_shader: *mut dx11::ID3D11GeometryShader,
+    geometry_shader_byte_code: *mut dx::ID3DBlob,
     input_layout: *mut dx11::ID3D11InputLayout,
 
     pub context: *mut dx11_1::ID3D11DeviceContext1,
@@ -23,6 +25,7 @@ impl ShaderProgram {
     pub fn create(
         vs_file: &str,
         ps_file: &str,
+        geom_file: Option<&str>,
         input_desc: &[dx11::D3D11_INPUT_ELEMENT_DESC],
         device: *mut dx11_1::ID3D11Device1,
         context: *mut dx11_1::ID3D11DeviceContext1,
@@ -32,12 +35,14 @@ impl ShaderProgram {
             vertex_shader_byte_code: ptr::null_mut(),
             pixel_shader: ptr::null_mut(),
             pixel_shader_byte_code: ptr::null_mut(),
+            geometry_shader: ptr::null_mut(),
+            geometry_shader_byte_code: ptr::null_mut(),
             input_layout: ptr::null_mut(),
             context: ptr::null_mut(),
         };
 
         shader_program.context = context;
-        shader_program.setup_shaders(vs_file, ps_file, device)?;
+        shader_program.setup_shaders(vs_file, ps_file, geom_file, device)?;
 
         let vertex_shader = shader_program.get_vertex_shader_byte_code();
 
@@ -141,6 +146,7 @@ impl ShaderProgram {
         &mut self,
         vs_file: &str,
         ps_file: &str,
+        geom_file: Option<&str>,
         device: *mut dx11_1::ID3D11Device1,
     ) -> Result<(), DxError> {
         let mut release = true;
@@ -153,12 +159,11 @@ impl ShaderProgram {
                 .unwrap()
                 .to_path_buf();
             shader_dir.push("shaders");
-            let mut vtx_shader_file = std::path::PathBuf::from(shader_dir.to_str().unwrap());
-            vtx_shader_file.push(vs_file);
+            let mut vtx_shader_file = shader_dir.join(vs_file);
             let target = "vs_5_0";
             ShaderProgram::compile_shader(
                 &mut self.vertex_shader_byte_code as *mut *mut _,
-                vtx_shader_file.as_path().to_str().unwrap(),
+                vtx_shader_file.to_str().unwrap(),
                 target,
             )?;
 
@@ -179,13 +184,38 @@ impl ShaderProgram {
                     DxErrorType::ShaderCreate,
                 ));
             }
+            if let Some(geom_file) = geom_file {
+                let mut geom_shader_file = shader_dir.join(geom_file);
+                let target = "gs_5_0";
+                ShaderProgram::compile_shader(
+                    &mut self.geometry_shader_byte_code as *mut *mut _,
+                    geom_shader_file.to_str().unwrap(),
+                    target,
+                )?;
 
-            let mut px_shader_file = std::path::PathBuf::from(shader_dir.to_str().unwrap());
-            px_shader_file.push(ps_file);
+                let geom_buffer_ptr = unsafe { (*self.geometry_shader_byte_code).GetBufferPointer() };
+                let geom_buffer_size = unsafe { (*self.geometry_shader_byte_code).GetBufferSize() };
+                let res = unsafe {
+                    (*device).CreateGeometryShader(
+                        geom_buffer_ptr as *const _,
+                        geom_buffer_size,
+                        ptr::null_mut(),
+                        &mut self.geometry_shader as *mut *mut _,
+                    )                    
+                };
+                if res < S_OK {
+                    return Err(DxError::new(
+                        &format!("Geometry Shader creation failed! Err: {}", res),
+                        DxErrorType::ShaderCreate,
+                    ));
+                }
+            }
+
+            let mut px_shader_file = shader_dir.join(ps_file);
             let target = "ps_5_0";
             ShaderProgram::compile_shader(
                 &mut self.pixel_shader_byte_code as *mut *mut _,
-                px_shader_file.as_path().to_str().unwrap(),
+                px_shader_file.to_str().unwrap(),
                 target,
             )?;
 

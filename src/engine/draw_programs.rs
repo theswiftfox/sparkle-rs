@@ -5,22 +5,69 @@ use winapi::um::d3d11_1 as dx11_1;
 use super::d3d11::{cbuffer, shaders, textures, DxError, DxErrorType};
 use super::geometry::Light;
 
-struct DrawProgram {
-    program: shaders::ShaderProgram,
-}
-
-impl DrawProgram {
-    fn initialize_vs_ps(
-        vs_code: &str,
-        ps_code: &str,
-        input_desc: &[dx11::D3D11_INPUT_ELEMENT_DESC],
-        device: *mut dx11_1::ID3D11Device1,
-        context: *mut dx11_1::ID3D11DeviceContext1,
-    ) -> Result<DrawProgram, DxError> {
-        Ok(DrawProgram {
-            program: shaders::ShaderProgram::create(vs_code, ps_code, input_desc, device, context)?,
-        })
-    }
+fn vertex_input_desc() -> [dx11::D3D11_INPUT_ELEMENT_DESC; 6] {
+    let pos_name: &'static std::ffi::CStr = const_cstr!("SV_Position").as_cstr();
+    let norm_name: &'static std::ffi::CStr = const_cstr!("NORMAL").as_cstr();;
+    let tang_name: &'static std::ffi::CStr = const_cstr!("TANGENT").as_cstr();;
+    let bitang_name: &'static std::ffi::CStr = const_cstr!("BITANGENT").as_cstr();;
+    let uv_name: &'static std::ffi::CStr = const_cstr!("TEXCOORD").as_cstr();;
+    
+    [
+        dx11::D3D11_INPUT_ELEMENT_DESC {
+            SemanticName: pos_name.as_ptr() as *const _,
+            SemanticIndex: 0,
+            Format: dxgifmt::DXGI_FORMAT_R32G32B32_FLOAT,
+            InputSlot: 0,
+            AlignedByteOffset: 0,
+            InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
+            InstanceDataStepRate: 0,
+        },
+        dx11::D3D11_INPUT_ELEMENT_DESC {
+            SemanticName: norm_name.as_ptr() as *const _,
+            SemanticIndex: 0,
+            Format: dxgifmt::DXGI_FORMAT_R32G32B32_FLOAT,
+            InputSlot: 0,
+            AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
+            InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
+            InstanceDataStepRate: 0,
+        },
+        dx11::D3D11_INPUT_ELEMENT_DESC {
+            SemanticName: tang_name.as_ptr() as *const _,
+            SemanticIndex: 0,
+            Format: dxgifmt::DXGI_FORMAT_R32G32B32_FLOAT,
+            InputSlot: 0,
+            AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
+            InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
+            InstanceDataStepRate: 0,
+        },
+        dx11::D3D11_INPUT_ELEMENT_DESC {
+            SemanticName: bitang_name.as_ptr() as *const _,
+            SemanticIndex: 0,
+            Format: dxgifmt::DXGI_FORMAT_R32G32B32_FLOAT,
+            InputSlot: 0,
+            AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
+            InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
+            InstanceDataStepRate: 0,
+        },
+        dx11::D3D11_INPUT_ELEMENT_DESC {
+            SemanticName: uv_name.as_ptr() as *const _,
+            SemanticIndex: 0,
+            Format: dxgifmt::DXGI_FORMAT_R32G32_FLOAT,
+            InputSlot: 0,
+            AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
+            InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
+            InstanceDataStepRate: 0,
+        },
+        dx11::D3D11_INPUT_ELEMENT_DESC {
+            SemanticName: uv_name.as_ptr() as *const _,
+            SemanticIndex: 1,
+            Format: dxgifmt::DXGI_FORMAT_R32G32_FLOAT,
+            InputSlot: 0,
+            AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
+            InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
+            InstanceDataStepRate: 0,
+        },
+    ]
 }
 
 /**
@@ -37,13 +84,13 @@ struct ConstantsPxlMP {
 }
 
 pub(crate) struct MainPass {
-    program: DrawProgram,
+    program: shaders::ShaderProgram,
     vertex_shader_uniforms: cbuffer::CBuffer<ConstantsVtxMP>,
     pixel_shader_uniforms: cbuffer::CBuffer<ConstantsPxlMP>,
 }
 impl MainPass {
     pub fn prepare_draw(&mut self, ctx: *mut dx11_1::ID3D11DeviceContext1) {
-        self.program.program.activate();
+        self.program.activate();
 
         unsafe {
             (*ctx).VSSetConstantBuffers(
@@ -131,67 +178,8 @@ impl MainPass {
     ) -> Result<MainPass, DxError> {
         let vtx_shader = "mp_vertex.hlsl";
         let ps_shader = "mp_pixel.hlsl";
-        let pos_name: &'static std::ffi::CStr = const_cstr!("SV_Position").as_cstr();
-        let norm_name: &'static std::ffi::CStr = const_cstr!("NORMAL").as_cstr();
-        let tang_name: &'static std::ffi::CStr = const_cstr!("TANGENT").as_cstr();
-        let bitang_name: &'static std::ffi::CStr = const_cstr!("BITANGENT").as_cstr();
-        let tx_coord_name: &'static std::ffi::CStr = const_cstr!("TEXCOORD").as_cstr();
-        let input_element_description: [dx11::D3D11_INPUT_ELEMENT_DESC; 6] = [
-            dx11::D3D11_INPUT_ELEMENT_DESC {
-                SemanticName: pos_name.as_ptr() as *const _,
-                SemanticIndex: 0,
-                Format: dxgifmt::DXGI_FORMAT_R32G32B32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: 0,
-                InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-            dx11::D3D11_INPUT_ELEMENT_DESC {
-                SemanticName: norm_name.as_ptr() as *const _,
-                SemanticIndex: 0,
-                Format: dxgifmt::DXGI_FORMAT_R32G32B32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
-                InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-            dx11::D3D11_INPUT_ELEMENT_DESC {
-                SemanticName: tang_name.as_ptr() as *const _,
-                SemanticIndex: 0,
-                Format: dxgifmt::DXGI_FORMAT_R32G32B32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
-                InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-            dx11::D3D11_INPUT_ELEMENT_DESC {
-                SemanticName: bitang_name.as_ptr() as *const _,
-                SemanticIndex: 0,
-                Format: dxgifmt::DXGI_FORMAT_R32G32B32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
-                InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-            dx11::D3D11_INPUT_ELEMENT_DESC {
-                SemanticName: tx_coord_name.as_ptr() as *const _,
-                SemanticIndex: 0,
-                Format: dxgifmt::DXGI_FORMAT_R32G32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
-                InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-            dx11::D3D11_INPUT_ELEMENT_DESC {
-                SemanticName: tx_coord_name.as_ptr() as *const _,
-                SemanticIndex: 1,
-                Format: dxgifmt::DXGI_FORMAT_R32G32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
-                InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-        ];
+        
+        let input_element_description = vertex_input_desc();
 
         let vtx_uniforms = ConstantsVtxMP {
             view: glm::identity(),
@@ -215,9 +203,10 @@ impl MainPass {
         };
 
         Ok(MainPass {
-            program: DrawProgram::initialize_vs_ps(
+            program: shaders::ShaderProgram::create(
                 &vtx_shader,
                 &ps_shader,
+                None,
                 &input_element_description,
                 device,
                 context,
@@ -238,7 +227,7 @@ struct ConstantsVtxSM {
 }
 
 pub(crate) struct ShadowPass {
-    program: DrawProgram,
+    program: shaders::ShaderProgram,
     vertex_shader_uniforms: cbuffer::CBuffer<ConstantsVtxSM>,
     shadow_map: textures::Texture2D,
     //shadow_map_render_target: *mut dx11::ID3D11RenderTargetView,
@@ -263,7 +252,7 @@ impl ShadowPass {
     }
 
     pub fn prepare_draw(&mut self, ctx: *mut dx11_1::ID3D11DeviceContext1) {
-        self.program.program.activate();
+        self.program.activate();
         unsafe {
             (*ctx).VSSetConstantBuffers(
                 0,
@@ -291,73 +280,24 @@ impl ShadowPass {
         Ok(())
     }
 
-    pub fn create(
+    pub fn create_simple(
         device: *mut dx11_1::ID3D11Device1,
         context: *mut dx11_1::ID3D11DeviceContext1,
     ) -> Result<ShadowPass, DxError> {
-        let vtx_shader = "sm_vertex.hlsl";
-        let ps_shader = "sm_pixel.hlsl";
-        let pos_name: &'static std::ffi::CStr = const_cstr!("SV_Position").as_cstr();
-        let norm_name: &'static std::ffi::CStr = const_cstr!("NORMAL").as_cstr();
-        let tang_name: &'static std::ffi::CStr = const_cstr!("TANGENT").as_cstr();
-        let bitang_name: &'static std::ffi::CStr = const_cstr!("BITANGENT").as_cstr();
-        let tx_coord_name: &'static std::ffi::CStr = const_cstr!("TEXCOORD").as_cstr();
-        let input_element_description: [dx11::D3D11_INPUT_ELEMENT_DESC; 6] = [
-            dx11::D3D11_INPUT_ELEMENT_DESC {
-                SemanticName: pos_name.as_ptr() as *const _,
-                SemanticIndex: 0,
-                Format: dxgifmt::DXGI_FORMAT_R32G32B32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: 0,
-                InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-            dx11::D3D11_INPUT_ELEMENT_DESC {
-                SemanticName: norm_name.as_ptr() as *const _,
-                SemanticIndex: 0,
-                Format: dxgifmt::DXGI_FORMAT_R32G32B32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
-                InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-            dx11::D3D11_INPUT_ELEMENT_DESC {
-                SemanticName: tang_name.as_ptr() as *const _,
-                SemanticIndex: 0,
-                Format: dxgifmt::DXGI_FORMAT_R32G32B32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
-                InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-            dx11::D3D11_INPUT_ELEMENT_DESC {
-                SemanticName: bitang_name.as_ptr() as *const _,
-                SemanticIndex: 0,
-                Format: dxgifmt::DXGI_FORMAT_R32G32B32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
-                InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-            dx11::D3D11_INPUT_ELEMENT_DESC {
-                SemanticName: tx_coord_name.as_ptr() as *const _,
-                SemanticIndex: 0,
-                Format: dxgifmt::DXGI_FORMAT_R32G32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
-                InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-            dx11::D3D11_INPUT_ELEMENT_DESC {
-                SemanticName: tx_coord_name.as_ptr() as *const _,
-                SemanticIndex: 1,
-                Format: dxgifmt::DXGI_FORMAT_R32G32_FLOAT,
-                InputSlot: 0,
-                AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
-                InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-                InstanceDataStepRate: 0,
-            },
-        ];
+        let vt_file = "sm_vertex.hlsl";
+        let ps_file = "sm_pixel.hlsl";
+
+        ShadowPass::create(device, context, vt_file, None, ps_file)
+    }
+
+    fn create(
+        device: *mut dx11_1::ID3D11Device1,
+        context: *mut dx11_1::ID3D11DeviceContext1,
+        vertex_shader: &str,
+        geometry_shader: Option<&str>,
+        pixel_shader: &str,
+    ) -> Result<ShadowPass, DxError> {
+        let input_element_description = vertex_input_desc();        
 
         let vtx_uniforms = ConstantsVtxSM {
             light_space_matrix: glm::identity(),
@@ -367,44 +307,16 @@ impl ShadowPass {
             Err(e) => panic!(e),
         };
 
-        // let tex = textures::Texture2D::create_mutable_render_target(
-        //     SHADOW_MAP_SIZE,
-        //     SHADOW_MAP_SIZE,
-        //     dxgifmt::DXGI_FORMAT_R32_FLOAT, // depth component only
-        //     dx11::D3D11_TEXTURE_ADDRESS_WRAP,
-        //     dx11::D3D11_TEXTURE_ADDRESS_WRAP,
-        //     dx11::D3D11_FILTER_MIN_MAG_MIP_POINT,
-        //     1,
-        //     dx11::D3D11_BIND_RENDER_TARGET | dx11::D3D11_BIND_SHADER_RESOURCE,
-        //     device,
-        // )?;
-        // let mut rt_desc: dx11::D3D11_RENDER_TARGET_VIEW_DESC = Default::default();
-        // rt_desc.Format = tex.format;
-        // rt_desc.ViewDimension = dx11::D3D11_RTV_DIMENSION_TEXTURE2D;
-        // let mut rtv: *mut dx11::ID3D11RenderTargetView = std::ptr::null_mut();
-        // let res = unsafe {
-        //     (*device).CreateRenderTargetView(
-        //         tex.get_texture_handle() as *mut _,
-        //         &rt_desc as *const _,
-        //         &mut rtv as *mut *mut _,
-        //     )
-        // };
-        // if res < winapi::shared::winerror::S_OK {
-        //     return Err(DxError::new(
-        //         "Error creating render target view for texture",
-        //         DxErrorType::ResourceCreation,
-        //     ));
-        // }
-
         let mut depth_tex = textures::Texture2D::create_mutable_render_target(
             SHADOW_MAP_SIZE,
             SHADOW_MAP_SIZE,
             dxgifmt::DXGI_FORMAT_R24G8_TYPELESS, // depth component only
-            dx11::D3D11_TEXTURE_ADDRESS_WRAP,
-            dx11::D3D11_TEXTURE_ADDRESS_WRAP,
-            dx11::D3D11_FILTER_MIN_MAG_MIP_POINT,
+            dx11::D3D11_TEXTURE_ADDRESS_CLAMP,
+            dx11::D3D11_TEXTURE_ADDRESS_CLAMP,
+            dx11::D3D11_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT,
             1,
             dx11::D3D11_BIND_DEPTH_STENCIL | dx11::D3D11_BIND_SHADER_RESOURCE,
+            1,
             device,
         )?;
         let mut dt_desc: dx11::D3D11_DEPTH_STENCIL_VIEW_DESC = Default::default();
@@ -448,9 +360,10 @@ impl ShadowPass {
         }
 
         Ok(ShadowPass {
-            program: DrawProgram::initialize_vs_ps(
-                &vtx_shader,
-                &ps_shader,
+            program: shaders::ShaderProgram::create(
+                &vertex_shader,
+                &pixel_shader,
+                geometry_shader,
                 &input_element_description,
                 device,
                 context,

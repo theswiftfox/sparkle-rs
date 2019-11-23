@@ -84,6 +84,7 @@ impl Texture2D {
                         1,
                         dx11::D3D11_BIND_SHADER_RESOURCE,
                         dx11::D3D11_USAGE_IMMUTABLE,
+                        0,
                         device,
                         &data as *const _,
                     )?;
@@ -100,7 +101,7 @@ impl Texture2D {
                             DxErrorType::ResourceCreation,
                         ));
                     }
-                    return Ok(tex)
+                    return Ok(tex);
                 }
                 ((None, _), (Some(gray), fmt)) => {
                     let (width, height) = gray.dimensions();
@@ -116,6 +117,7 @@ impl Texture2D {
                         1,
                         dx11::D3D11_BIND_SHADER_RESOURCE,
                         dx11::D3D11_USAGE_IMMUTABLE,
+                        0,
                         device,
                         &data as *const _,
                     )?;
@@ -132,7 +134,7 @@ impl Texture2D {
                             DxErrorType::ResourceCreation,
                         ));
                     }
-                    return Ok(tex)
+                    return Ok(tex);
                 }
                 _ => {
                     return Err(DxError::new(
@@ -169,6 +171,7 @@ impl Texture2D {
             1,
             dx11::D3D11_BIND_SHADER_RESOURCE,
             dx11::D3D11_USAGE_IMMUTABLE,
+            0,
             device,
             &data as *const _,
         )?;
@@ -185,7 +188,7 @@ impl Texture2D {
                 DxErrorType::ResourceCreation,
             ));
         }
-        return Ok(tex)
+        return Ok(tex);
     }
 
     pub fn create_empty_mutable(
@@ -198,6 +201,7 @@ impl Texture2D {
         miplevels: u32,
         bind_flags: u32,
         usage: u32,
+        sampler_type: u32,
         device: *mut dx11_1::ID3D11Device1,
     ) -> Result<Texture2D, DxError> {
         Texture2D::create(
@@ -210,6 +214,7 @@ impl Texture2D {
             miplevels,
             bind_flags,
             usage,
+            sampler_type,
             device,
             std::ptr::null(),
         )
@@ -223,6 +228,7 @@ impl Texture2D {
         filter: u32,
         miplevels: u32,
         bind_flags: u32,
+        sampler_type: u32,
         device: *mut dx11_1::ID3D11Device1,
     ) -> Result<Texture2D, DxError> {
         Texture2D::create(
@@ -235,6 +241,7 @@ impl Texture2D {
             miplevels,
             bind_flags,
             dx11::D3D11_USAGE_DEFAULT,
+            sampler_type,
             device,
             std::ptr::null(),
         )
@@ -250,6 +257,7 @@ impl Texture2D {
         miplevels: u32,
         bind_flags: u32,
         usage: u32,
+        sampler_type: u32,
         device: *mut dx11_1::ID3D11Device1,
         image: *const dx11::D3D11_SUBRESOURCE_DATA,
     ) -> Result<Texture2D, DxError> {
@@ -267,7 +275,10 @@ impl Texture2D {
             desc.AddressU = address_u;
             desc.AddressV = address_v;
             desc.AddressW = address_v;
-            desc.ComparisonFunc = dx11::D3D11_COMPARISON_NEVER;
+            desc.ComparisonFunc = match sampler_type {
+                1 => dx11::D3D11_COMPARISON_LESS,
+                _ => dx11::D3D11_COMPARISON_NEVER,
+            };
             desc.MinLOD = 0.0f32;
             desc.MaxLOD = dx11::D3D11_FLOAT32_MAX;
             let res =
