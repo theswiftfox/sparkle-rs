@@ -103,7 +103,7 @@ impl Renderer {
                     }
                     //println!("{}", light_proj);
                     let light_view = glm::look_at(&dir, &glm::zero(), &up);
-                    println!("{}", light_view);
+                    // println!("{}", light_view);
                     let light_space_mat = light_proj * light_view;
                     renderer
                         .main_program
@@ -329,7 +329,7 @@ impl Renderer {
             self.backend.get_device(),
             self.backend.get_context(),
         )?);
-        self.shadow_program = Some(draw_programs::ShadowPass::create(
+        self.shadow_program = Some(draw_programs::ShadowPass::create_simple(
             self.backend.get_device(),
             self.backend.get_context(),
         )?);

@@ -5,7 +5,6 @@ pub(super) mod shaders;
 
 use crate::utils;
 
-use std::array::FixedSizeArray;
 use std::*;
 use winapi::ctypes::c_void;
 use winapi::shared;
@@ -345,7 +344,7 @@ impl D3D11Backend {
                         DxErrorType::Device,
                     ));
                 }
-                let desc_str = String::from_utf16_lossy(desc.Description.as_slice());
+                let desc_str = String::from_utf16_lossy(&desc.Description);
                 println!(
                     "Direct3D Adapter {}: VID: {} PID: {} MEM: {} - {}",
                     adapter_idx, desc.VendorId, desc.DeviceId, desc.DedicatedVideoMemory, desc_str
