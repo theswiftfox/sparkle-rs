@@ -15,6 +15,7 @@ use crate::window::Window;
 
 use d3d11::{D3D11Backend, DxError};
 use scenegraph::Scenegraph;
+use scenegraph::drawable::ObjType;
 use std::time::Instant;
 use winapi::um::d3d11 as dx11;
 
@@ -286,7 +287,7 @@ impl Renderer {
                 unsafe { (*ctx).OMSetRenderTargets(0, std::ptr::null(), depth_stencil) };
                 self.shadow_program.as_mut().unwrap().prepare_draw(ctx);
 
-                self.scene.draw();
+                self.scene.draw(ObjType::Any);
                 self.backend.pix_end_event();
             }
             None => {}
@@ -315,7 +316,7 @@ impl Renderer {
             None => (),
         };
 
-        self.scene.draw();
+        self.scene.draw(ObjType::Opaque);
 
         self.backend.pix_end_event();
 

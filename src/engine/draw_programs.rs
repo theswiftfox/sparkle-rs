@@ -176,8 +176,8 @@ impl MainPass {
         device: *mut dx11_1::ID3D11Device1,
         context: *mut dx11_1::ID3D11DeviceContext1,
     ) -> Result<MainPass, DxError> {
-        let vtx_shader = "mp_vertex.hlsl";
-        let ps_shader = "mp_pixel.hlsl";
+        let vtx_shader = "mp_vertex.cso";
+        let ps_shader = "mp_pixel.cso";
         
         let input_element_description = vertex_input_desc();
 
@@ -284,8 +284,8 @@ impl ShadowPass {
         device: *mut dx11_1::ID3D11Device1,
         context: *mut dx11_1::ID3D11DeviceContext1,
     ) -> Result<ShadowPass, DxError> {
-        let vt_file = "sm_vertex.hlsl";
-        let ps_file = "sm_pixel.hlsl";
+        let vt_file = "sm_vertex.cso";
+        let ps_file = "sm_pixel.cso";
 
         ShadowPass::create(device, context, vt_file, None, ps_file)
     }

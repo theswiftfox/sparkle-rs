@@ -43,9 +43,9 @@ impl Scenegraph {
         return &self.directional_light;
     }
 
-    pub fn draw(&self) {
+    pub fn draw(&self, object_type: drawable::ObjType) {
         if self.root.is_some() {
-            self.root.as_ref().unwrap().borrow().draw(self.transform);
+            self.root.as_ref().unwrap().borrow().draw(self.transform, object_type);
         }
     }
     pub fn get_node_named(&self, name: &str) -> Result<shared_ptr<RefCell<Node>>, SceneGraphError> {

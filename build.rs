@@ -25,57 +25,54 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Create destination path if necessary
     std::fs::create_dir_all(_out_dir_shaders)?;
 
-    let mut release = false;
-    #[cfg(debug_assertions)]
-    {
-        release = false;
-    }
-
     for entry in std::fs::read_dir("src/shaders")? {
         let entry = entry?;
-
+        
         if entry.file_type()?.is_file() {
+            println!("File: {}", entry.path().display());
             let p = entry.path();
             let name = p.file_stem().unwrap().to_string_lossy();
 
-            if release {
-                let shader = match name.as_ref() {
-                    "vertex" => Some("vs_5_0"),
-                    "pixel" => Some("ps_5_0"),
-                    _ => None,
-                };
-                if shader != None {
-                    #[cfg(target_os = "windows")]
-                    {
-                        if p.file_stem().unwrap() != "hlsl" {
-                            continue;
-                        }
-                        // compile shaders windows
-                        let cmd = Command::new("fxc")
-                            .args(&["/T", &shader.unwrap(), "/Fo"])
-                            .arg(&format!("{}/{}.cso", _out_dir_shaders, name))
-                            .arg(p.to_str().unwrap())
-                            .spawn()
-                            .unwrap();
-                        let output = cmd.wait_with_output().unwrap();
-                        if !output.status.success() {
-                            panic!(format!(
-                                "Shader compile failed for: {}",
-                                p.file_name().unwrap().to_string_lossy()
-                            ));
-                        }
-                    }
-                    #[cfg(target_os = "linux")]
-                    {
-                        // compile shaders linux
-                    }
+            let shader = {
+                let mut res = None;
+                if name.contains("pixel") {
+                    res = Some("ps_5_0");
+                } else if name.contains("vertex") {
+                    res = Some("vs_5_0");
+                } else if name.contains("geom") {
+                    res = Some("gs_5_0");
                 }
-            } else {
-                std::fs::copy(
-                    p.to_str().unwrap(),
-                    format!("{}/{}", _out_dir_shaders, p.file_name().unwrap().to_str().unwrap()),
-                )?;
+                res
+            };
+            println!("ShaderType: {}", shader.unwrap_or("None"));
+            if shader != None {
+                if p.extension().unwrap() != "hlsl" {
+                    println!("Skip.. {}", p.file_stem().unwrap().to_str().unwrap());
+                    continue;
+                }
+                // compile shaders windows
+                let cmd = Command::new("fxc")
+                    .args(&["/T", &shader.unwrap(), "/Fo"])
+                    .arg(&format!("{}/{}.cso", _out_dir_shaders, name))
+                    .arg(p.to_str().unwrap())
+                    .spawn()
+                    .unwrap();
+                let output = cmd.wait_with_output().unwrap();
+                println!("{}", String::from_utf8(output.stdout)?);
+                if !output.status.success() {
+                    println!("{}",  String::from_utf8(output.stderr)?);
+                    panic!(format!(
+                        "Shader compile failed for: {}",
+                        p.file_name().unwrap().to_string_lossy()
+                    ));
+                }
             }
+            // } else {
+            //     std::fs::copy(
+            //         p.to_str().unwrap(),
+            //         format!("{}/{}", _out_dir_shaders, p.file_name().unwrap().to_str().unwrap()),
+            //     )?;
+            // }
         }
     }
     Ok(())

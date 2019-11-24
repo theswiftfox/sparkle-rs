@@ -8,7 +8,7 @@ use winapi::um::d3d11_1 as dx11_1;
 
 use crate::engine::geometry::Vertex;
 use crate::engine::scenegraph::node::Node;
-use crate::engine::scenegraph::drawable::Drawable;
+use crate::engine::scenegraph::drawable::{Drawable,ObjType};
 use crate::engine::d3d11::drawable::DxDrawable;
 use crate::engine::d3d11::textures::Texture2D;
 
@@ -153,7 +153,7 @@ impl GltfImporter {
 					let filter = dx11::D3D11_FILTER_MIN_MAG_MIP_LINEAR;
 
 					// if alb.is_some() -> use alb tex, else use missing_tex placeholder
-					let tex_color = match alb {
+					let (tex_color, transparent) = match alb {
 						Some(info) => {
 							if let Some(it) = reader.read_tex_coords(info.tex_coord()) {
 								for uv in it.into_f32() {
@@ -165,14 +165,18 @@ impl GltfImporter {
 						}, 
 						None => {
 							let img = image::open("images/textures/missing_tex.png").unwrap();
-							Texture2D::create_from_image_obj(img, address_mode, address_mode, filter, self.device).expect("Unable to load default texture")
+							// let transparent = match img.color() {
+							// 	image::ColorType::GrayA(_) | image::ColorType::RGBA(_) | image::ColorType::BGRA(_) => true,
+							// 	_ => false,
+							// };
+							(Texture2D::create_from_image_obj(img, address_mode, address_mode, filter, self.device).expect("Unable to load default texture"), false)
 						}
 					};
 
 					let tex_mr = match pbr.metallic_roughness_texture() {
 						Some(info) => {
 							let tx = info.texture();
-							self.dx_tex_from_gltf(tx)
+							self.dx_tex_from_gltf(tx).0
 						},
 						None => {
 							let img = image::open("images/textures/missing_mr_tex.png").unwrap();
@@ -188,7 +192,7 @@ impl GltfImporter {
 								}
 							}
 							let tx = info.texture();
-							self.dx_tex_from_gltf(tx)
+							self.dx_tex_from_gltf(tx).0
 						},
 						None => {
 							let img = image::open("images/textures/missing_tex.png").unwrap();
@@ -291,7 +295,16 @@ impl GltfImporter {
 							tex_coord_normalmap: uv_nm,
 						});
 					}
-					let dx_prim = DxDrawable::from_verts(self.device, self.context, vertices, indices).expect("Initialization for DxPrimitive failed");
+					let dx_prim = DxDrawable::from_verts(
+						self.device, 
+						self.context, 
+						vertices, 
+						indices, 
+						match transparent {
+							true => ObjType::Transparent,
+							false => ObjType::Opaque,
+						}
+					).expect("Initialization for DxPrimitive failed");
 					dx_prim.borrow_mut().add_texture(0, tex_color);
 					dx_prim.borrow_mut().add_texture(1, tex_mr);
 					dx_prim.borrow_mut().add_texture(2, tex_norm);
@@ -308,7 +321,10 @@ impl GltfImporter {
 		Ok(())
 	}
 
-	fn dx_tex_from_gltf(&self, gltf_tex: gltf::Texture) -> Texture2D {
+	/***
+	 * returns a tuple (texture, transparent)
+	 */
+	fn dx_tex_from_gltf(&self, gltf_tex: gltf::Texture) -> (Texture2D, bool) {
 		let img = gltf_tex.source();
 		let img_raw = &self.images[img.index()];
 		let mut image_data : Vec<u8> = Vec::new();
@@ -319,6 +335,7 @@ impl GltfImporter {
 			(Some(min), Some(mag)) => gltf_filter_to_dx(min, mag),
 			_ => dx11::D3D11_FILTER_MIN_MAG_MIP_LINEAR,
 		};
+		let mut transparent = false;
 		use winapi::shared::dxgiformat as dx_format;
 		let (img_data, fmt, channels) = match img_raw.format {
 			gltf::image::Format::R8 => (&img_raw.pixels, dx_format::DXGI_FORMAT_R8_UNORM, 1),
@@ -327,14 +344,26 @@ impl GltfImporter {
 				image_data = convert_3ch_to_4ch_img(img_raw);
 				(&image_data, dx_format::DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, 4)
 			},
-			gltf::image::Format::R8G8B8A8 => (&img_raw.pixels, dx_format::DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, 4),
+			gltf::image::Format::R8G8B8A8 => {
+				transparent = true;
+				(&img_raw.pixels, dx_format::DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, 4)
+			},
 			gltf::image::Format::B8G8R8 => {
 				image_data = convert_3ch_to_4ch_img(img_raw);
 				(&image_data, dx_format::DXGI_FORMAT_B8G8R8X8_UNORM_SRGB, 4)
 			},
-			gltf::image::Format::B8G8R8A8 => (&img_raw.pixels, dx_format::DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, 4),
+			gltf::image::Format::B8G8R8A8 => {
+				transparent = true;
+				(&img_raw.pixels, dx_format::DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, 4)
+			},
 		};
-		Texture2D::create_from_image_data(img_data, img_raw.width, img_raw.height, fmt, channels, wrap_u, wrap_v, filter, self.device).expect(&format!("Unable to load texture with index {}", gltf_tex.index()))
+		(Texture2D::create_from_image_data(
+			img_data, img_raw.width, 
+			img_raw.height, 
+			fmt, channels, 
+			wrap_u, wrap_v, 
+			filter, self.device).expect(&format!("Unable to load texture with index {}", gltf_tex.index())),
+			transparent)
 	}
 }
 
