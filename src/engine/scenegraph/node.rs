@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc; // shared_ptr
 
-use super::drawable::Drawable;
+use super::drawable::{Drawable, ObjType};
 use super::{ErrorCause, SceneGraphError};
 
 #[derive(Clone)]
@@ -157,14 +157,14 @@ impl Node {
         self.model = glm::scale(&self.model, &glm::vec3(s, s, s));
     }
     pub fn get_bounding_volume(&self) {}
-    pub fn draw(&self, model: glm::Mat4) {
+    pub fn draw(&self, model: glm::Mat4, object_type: ObjType) {
         let me = self.apply_pre_transform(model);
         let me_ref = me.borrow();
         for drawable in &me_ref.drawables {
-            drawable.borrow_mut().draw(me_ref.model);
+            drawable.borrow_mut().draw(me_ref.model, object_type);
         }
         for (_, c) in &me_ref.children {
-            c.borrow().draw(me_ref.model);
+            c.borrow().draw(me_ref.model, object_type);
         }
     }
 }

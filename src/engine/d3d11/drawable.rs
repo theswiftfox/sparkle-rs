@@ -1,8 +1,8 @@
-use super::{DxError, DxErrorType};
+use super::super::geometry::Vertex;
+use super::super::scenegraph::drawable::{Drawable, ObjType};
 use super::cbuffer::CBuffer;
 use super::textures::Texture2D;
-use super::super::geometry::Vertex;
-use super::super::scenegraph::drawable::Drawable;
+use super::{DxError, DxErrorType};
 
 use winapi::shared::dxgiformat::DXGI_FORMAT_R32_UINT;
 use winapi::shared::winerror::S_OK;
@@ -18,10 +18,14 @@ pub struct DxDrawable {
     index_count: u32,
     cbuffer: CBuffer<glm::Mat4>,
     textures: Vec<(u32, Texture2D)>, // (slot, tex)
+    object_type: ObjType,
 }
 
 impl Drawable for DxDrawable {
-    fn draw(&mut self, model: glm::Mat4) {
+    fn draw(&mut self, model: glm::Mat4, object_type: ObjType) {
+        if self.object_type != object_type {
+            return
+        }
         self.cbuffer.data = model;
         match self.cbuffer.update() {
             Ok(_) => {}
@@ -41,7 +45,11 @@ impl Drawable for DxDrawable {
 
             for (slot, tex) in &self.textures {
                 (*self.context).PSSetSamplers(*slot, 1, &tex.get_sampler() as *const *mut _);
-                (*self.context).PSSetShaderResources(*slot, 1, &tex.get_texture_view() as *const *mut _);
+                (*self.context).PSSetShaderResources(
+                    *slot,
+                    1,
+                    &tex.get_texture_view() as *const *mut _,
+                );
             }
 
             (*self.context).DrawIndexed(self.index_count, 0, 0);
@@ -59,6 +67,7 @@ impl DxDrawable {
         context: *mut dx11_1::ID3D11DeviceContext1,
         vertices: Vec<Vertex>,
         indices: Vec<u32>,
+        object_type: ObjType,
     ) -> Result<std::rc::Rc<std::cell::RefCell<DxDrawable>>, DxError> {
         let mut vertex_buffer: *mut dx11::ID3D11Buffer = std::ptr::null_mut();
         let vtx_stride = std::mem::size_of::<Vertex>() as u32;
@@ -127,6 +136,7 @@ impl DxDrawable {
             index_count: indices.len() as u32,
             cbuffer: cbuffer,
             textures: Vec::<(u32, Texture2D)>::new(),
+            object_type: object_type,
         })))
     }
 }
