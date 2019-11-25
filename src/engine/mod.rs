@@ -15,6 +15,7 @@ use crate::window::Window;
 
 use d3d11::{D3D11Backend, DxError};
 use scenegraph::Scenegraph;
+use scenegraph::drawable::ObjType;
 use std::time::Instant;
 use winapi::um::d3d11 as dx11;
 
@@ -86,6 +87,48 @@ impl Renderer {
                         "Loaded scene in {} ms",
                         renderer.clock.elapsed().as_millis()
                     );
+<<<<<<< HEAD
+=======
+                    let light = renderer.scene.get_directional_light();
+                    let shadow_dist = 15.0;
+                    let light_proj = glm::ortho_zo(
+                        -shadow_dist,
+                        shadow_dist,
+                        -shadow_dist,
+                        shadow_dist,
+                        1.0,
+                        100.0,
+                    );
+                    let dir = light.direction.xyz() * (-1.0);
+                    let mut up = glm::vec3(0.0, 1.0, 0.0);
+                    if (up.dot(&dir.normalize()) - 1.0).abs() <= 0.0000001 {
+                        up = glm::vec3(0.0, 0.0, 1.0);
+                    }
+                    //println!("{}", light_proj);
+                    let light_view = glm::look_at(&dir, &glm::zero(), &up);
+                    // println!("{}", light_view);
+                    let light_space_mat = light_proj * light_view;
+                    renderer
+                        .main_program
+                        .as_mut()
+                        .unwrap()
+                        .set_directional_light((*light).clone(), false)
+                        .expect("Impossible");
+                    renderer
+                        .main_program
+                        .as_mut()
+                        .unwrap()
+                        .set_light_space_matrix(light_space_mat, false)
+                        .expect("Impossible");
+                    match &mut renderer.shadow_program {
+                        Some(p) => {
+                            p.set_light_space(light_space_mat, true)
+                                .expect("Internal error when setting light space matrix");
+                        }
+                        None => (),
+                    };
+
+>>>>>>> 51b447feeff3ec5e8fcfd957be395939c8641a65
                     renderer.clock = Instant::now();
                 }
                 Err(_) => {
@@ -280,7 +323,7 @@ impl Renderer {
                 unsafe { (*ctx).OMSetRenderTargets(0, std::ptr::null(), depth_stencil) };
                 self.shadow_program.as_mut().unwrap().prepare_draw(ctx);
 
-                self.scene.draw();
+                self.scene.draw(ObjType::Any);
                 self.backend.pix_end_event();
             }
             None => {}
@@ -309,7 +352,7 @@ impl Renderer {
             None => (),
         };
 
-        self.scene.draw();
+        self.scene.draw(ObjType::Opaque);
 
         self.backend.pix_end_event();
 
@@ -323,7 +366,7 @@ impl Renderer {
             self.backend.get_device(),
             self.backend.get_context(),
         )?);
-        self.shadow_program = Some(draw_programs::ShadowPass::create(
+        self.shadow_program = Some(draw_programs::ShadowPass::create_simple(
             self.backend.get_device(),
             self.backend.get_context(),
         )?);
