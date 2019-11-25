@@ -10,6 +10,7 @@ use super::geometry::Light;
 pub struct Scenegraph {
     transform: glm::Mat4,
     directional_light: Light,
+    light_proj: glm::Mat4,
     root: Option<shared_ptr<RefCell<Node>>>,
 }
 
@@ -22,6 +23,14 @@ impl Scenegraph {
                 direction: glm::zero(),
                 color: glm::zero(),
             },
+            light_proj: glm::ortho_zo(
+                -25.0,
+                25.0,
+                -25.0,
+                25.0,
+                1.0,
+                70.0,
+            ),
         }
     }
     pub fn set_root(&mut self, node: shared_ptr<RefCell<Node>>) {
@@ -41,6 +50,9 @@ impl Scenegraph {
 
     pub fn get_directional_light(&self) -> &Light {
         return &self.directional_light;
+    }
+    pub fn get_light_proj(&self) -> &glm::Mat4 {
+        return &self.light_proj
     }
 
     pub fn draw(&self, object_type: drawable::ObjType) {

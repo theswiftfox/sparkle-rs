@@ -14,8 +14,8 @@ use crate::input::Camera;
 use crate::window::Window;
 
 use d3d11::{D3D11Backend, DxError};
-use scenegraph::Scenegraph;
 use scenegraph::drawable::ObjType;
+use scenegraph::Scenegraph;
 use std::time::Instant;
 use winapi::um::d3d11 as dx11;
 
@@ -87,45 +87,6 @@ impl Renderer {
                         "Loaded scene in {} ms",
                         renderer.clock.elapsed().as_millis()
                     );
-                    let light = renderer.scene.get_directional_light();
-                    let shadow_dist = 15.0;
-                    let light_proj = glm::ortho_zo(
-                        -shadow_dist,
-                        shadow_dist,
-                        -shadow_dist,
-                        shadow_dist,
-                        1.0,
-                        100.0,
-                    );
-                    let dir = light.direction.xyz() * (-1.0);
-                    let mut up = glm::vec3(0.0, 1.0, 0.0);
-                    if (up.dot(&dir.normalize()) - 1.0).abs() <= 0.0000001 {
-                        up = glm::vec3(0.0, 0.0, 1.0);
-                    }
-                    //println!("{}", light_proj);
-                    let light_view = glm::look_at(&dir, &glm::zero(), &up);
-                    // println!("{}", light_view);
-                    let light_space_mat = light_proj * light_view;
-                    renderer
-                        .main_program
-                        .as_mut()
-                        .unwrap()
-                        .set_directional_light((*light).clone(), false)
-                        .expect("Impossible");
-                    renderer
-                        .main_program
-                        .as_mut()
-                        .unwrap()
-                        .set_light_space_matrix(light_space_mat, false)
-                        .expect("Impossible");
-                    match &mut renderer.shadow_program {
-                        Some(p) => {
-                            p.set_light_space(light_space_mat, true)
-                                .expect("Internal error when setting light space matrix");
-                        }
-                        None => (),
-                    };
-
                     renderer.clock = Instant::now();
                 }
                 Err(_) => {
@@ -154,6 +115,18 @@ impl Renderer {
             match &self.camera {
                 Some(c) => {
                     c.borrow_mut().update(dt);
+                    let light = self.scene.get_directional_light();
+                    let dir = light.direction.xyz() * (-1.0);
+                    let mut up = glm::vec3(0.0, 1.0, 0.0);
+                    if (up.dot(&dir.normalize()) - 1.0).abs() <= 0.0000001 {
+                        up = glm::vec3(0.0, 0.0, 1.0);
+                    }
+                    //println!("{}", light_proj);
+                    let pos = &c.borrow().position();
+                    let light_view = glm::look_at(&(pos + dir), &pos, &up);
+                    //println!("{}", light_view);
+                    let light_space_mat = self.scene.get_light_proj() * light_view;
+
                     match &self.main_program {
                         Some(_) => {
                             &self
@@ -168,9 +141,30 @@ impl Renderer {
                                 .unwrap()
                                 .set_camera_pos(glm::vec3_to_vec4(&c.borrow().position()), false)
                                 .expect("Error setting camera pos");
+
+                            &self
+                                .main_program
+                                .as_mut()
+                                .unwrap()
+                                .set_directional_light((*light).clone(), false)
+                                .expect("Impossible");
+                            &self
+                                .main_program
+                                .as_mut()
+                                .unwrap()
+                                .set_light_space_matrix(light_space_mat, false)
+                                .expect("Impossible");
+
                             &self.main_program.as_mut().unwrap().update();
                         }
                         _ => (),
+                    };
+                    match &mut self.shadow_program {
+                        Some(p) => {
+                            p.set_light_space(light_space_mat, true)
+                                .expect("Internal error when setting light space matrix");
+                        }
+                        None => (),
                     };
                 }
                 None => {}
