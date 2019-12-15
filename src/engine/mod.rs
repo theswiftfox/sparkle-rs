@@ -87,8 +87,6 @@ impl Renderer {
                         "Loaded scene in {} ms",
                         renderer.clock.elapsed().as_millis()
                     );
-<<<<<<< HEAD
-=======
                     let light = renderer.scene.get_directional_light();
                     let shadow_dist = 15.0;
                     let light_proj = glm::ortho_zo(
@@ -128,7 +126,6 @@ impl Renderer {
                         None => (),
                     };
 
->>>>>>> 51b447feeff3ec5e8fcfd957be395939c8641a65
                     renderer.clock = Instant::now();
                 }
                 Err(_) => {
@@ -352,7 +349,7 @@ impl Renderer {
             None => (),
         };
 
-        self.scene.draw(ObjType::Opaque);
+        self.scene.draw(ObjType::Any);
 
         self.backend.pix_end_event();
 

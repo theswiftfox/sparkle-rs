@@ -43,6 +43,7 @@ PS_OUT main(PS_IN input) {
 	float metallic = 32.0;//mr_tex.r;
 	float shadowed = shadow(input.posLS, input.pos.xyz, input.normal, normalize(-directionalLight.direction.xyz));
 	float3 color = blinn_phong(directionalLight, cameraPos.xyz, input.worldPos, input.normal, alb.rgb, metallic, shadowed);
+	color = pow(color, 1/2.2);
 	output.color = float4(color, alb.a);
 
 	return output;
