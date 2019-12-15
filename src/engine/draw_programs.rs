@@ -7,10 +7,10 @@ use super::geometry::Light;
 
 fn vertex_input_desc() -> [dx11::D3D11_INPUT_ELEMENT_DESC; 6] {
     let pos_name: &'static std::ffi::CStr = const_cstr!("SV_Position").as_cstr();
-    let norm_name: &'static std::ffi::CStr = const_cstr!("NORMAL").as_cstr();;
-    let tang_name: &'static std::ffi::CStr = const_cstr!("TANGENT").as_cstr();;
-    let bitang_name: &'static std::ffi::CStr = const_cstr!("BITANGENT").as_cstr();;
-    let uv_name: &'static std::ffi::CStr = const_cstr!("TEXCOORD").as_cstr();;
+    let norm_name: &'static std::ffi::CStr = const_cstr!("NORMAL").as_cstr();
+    let tang_name: &'static std::ffi::CStr = const_cstr!("TANGENT").as_cstr();
+    let bitang_name: &'static std::ffi::CStr = const_cstr!("BITANGENT").as_cstr();
+    let uv_name: &'static std::ffi::CStr = const_cstr!("TEXCOORD").as_cstr();
     
     [
         dx11::D3D11_INPUT_ELEMENT_DESC {

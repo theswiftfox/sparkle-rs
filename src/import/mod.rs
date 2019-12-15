@@ -331,10 +331,11 @@ impl GltfImporter {
 		let sampler = gltf_tex.sampler();
 		let wrap_u = gltf_address_mode_to_dx(sampler.wrap_s());
 		let wrap_v = gltf_address_mode_to_dx(sampler.wrap_t());
-		let filter = match (sampler.min_filter(), sampler.mag_filter()) {
-			(Some(min), Some(mag)) => gltf_filter_to_dx(min, mag),
-			_ => dx11::D3D11_FILTER_MIN_MAG_MIP_LINEAR,
-		};
+		// let filter = match (sampler.min_filter(), sampler.mag_filter()) {
+		// 	(Some(min), Some(mag)) => gltf_filter_to_dx(min, mag),
+		// 	_ => dx11::D3D11_FILTER_ANISOTROPIC, //dx11::D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+		// };
+		let filter = dx11::D3D11_FILTER_ANISOTROPIC;
 		let mut transparent = false;
 		use winapi::shared::dxgiformat as dx_format;
 		let (img_data, fmt, channels) = match img_raw.format {
