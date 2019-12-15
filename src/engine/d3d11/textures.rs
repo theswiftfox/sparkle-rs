@@ -272,6 +272,9 @@ impl Texture2D {
         if is_shader_resource {
             let mut desc: dx11::D3D11_SAMPLER_DESC = Default::default();
             desc.Filter = filter;
+            if filter == dx11::D3D11_FILTER_ANISOTROPIC {
+                desc.MaxAnisotropy = 16; // todo: settings?
+            }
             desc.AddressU = address_u;
             desc.AddressV = address_v;
             desc.AddressW = address_v;
