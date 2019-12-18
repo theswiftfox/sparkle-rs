@@ -2,12 +2,10 @@
 
 struct PS_IN {
 	float4 pos : SV_Position;
-	float4 posLS : POSITION_LIGHT_SPACE;
 	float3 worldPos : POSITION_WORLD;
 	float3 normal : NORMAL;
 	float2 txCoord : TEXCOORD0;
 	float2 txCoordNM : TEXCOORD1;
-	float3x3 TBN : TBN_MATRIX;
 };
 
 struct PS_OUT {
@@ -43,13 +41,13 @@ PS_OUT main(PS_IN input) {
 	float4 albedo = txDiffuse.Sample(samplerLinear, input.txCoord);
 	//float4 normal;
 	//if ((materialFeatures & SPARKLE_MAT_NORMAL_MAP) == SPARKLE_MAT_NORMAL_MAP) {
-	float4 normal = 2.0 * txNormal.Sample(samplerNormal, input.txCoordNM) - 1.0;
+	// float4 normal = 2.0 * txNormal.Sample(samplerNormal, input.txCoordNM) - 1.0;
 	//} else {
 	//	normal = float4(input.normal, 0.0);
 	//}
 
-	float3 n = mul(normalize(normal.xyz), input.TBN);
-	output.normal = float4(n * 0.5 + 0.5, 0.0);
+	//float3 n = mul(normalize(normal.xyz), input.TBN);
+	output.normal = float4(input.normal * 0.5 + 0.5, 0.0);
 
 
 	// packing - not working, idk. i'm stupid? maybe use clear value of uint32_t?

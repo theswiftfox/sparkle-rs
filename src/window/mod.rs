@@ -49,9 +49,14 @@ pub struct Window {
 
     last_x: i32,
     last_y: i32,
+
+    title: String,
 }
 
 impl Window {
+    pub fn get_resolution(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
     pub fn get_width(&self) -> u32 {
         self.width
     }
@@ -62,12 +67,13 @@ impl Window {
         self.handle
     }
 
-    pub fn create_window(
-        width: u32,
-        height: u32,
-        name: &str,
-        title: &str,
-    ) -> Rc<RefCell<Window>> {
+    pub fn set_title(&mut self, title: &str) -> bool {
+        let combined = format!("{} {}", self.title, title);
+        let title_w = utils::to_wide_str(&combined);
+        unsafe { SetWindowTextW(self.handle, title_w.as_ptr()) != 0 }
+    }
+
+    pub fn create_window(width: u32, height: u32, name: &str, title: &str) -> Rc<RefCell<Window>> {
         let wnd = Rc::new(RefCell::new(Window {
             handle: ptr::null_mut(),
             width: width,
@@ -77,6 +83,7 @@ impl Window {
             snap_mouse: false,
             last_x: std::i32::MIN,
             last_y: std::i32::MIN,
+            title: title.to_string(),
         }));
         wnd.borrow_mut().create(width, height, name, title);
         return wnd;

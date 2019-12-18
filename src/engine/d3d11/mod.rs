@@ -1,7 +1,7 @@
 pub(super) mod cbuffer;
 pub(crate) mod drawable;
-pub(crate) mod textures;
 pub(super) mod shaders;
+pub(crate) mod textures;
 
 use crate::utils;
 
@@ -105,6 +105,19 @@ impl D3D11Backend {
     }
     pub fn get_viewport(&self) -> &dx11::D3D11_VIEWPORT {
         &self.viewport
+    }
+
+    pub fn disable_blend(&self) {
+        unsafe {
+            let factor = [1.0f32, 1.0f32, 1.0f32, 1.0f32];
+            (*self.context).OMSetBlendState(std::ptr::null_mut(), &factor, 0xffffffff);
+        }
+    }
+    pub fn enable_blend(&self) {
+        unsafe {
+            let blend_factor = [1.0f32, 1.0f32, 1.0f32, 1.0f32];
+            (*self.context).OMSetBlendState(self.blend_state as *mut _, &blend_factor, 0xffffffff);
+        }
     }
 
     pub fn init(
