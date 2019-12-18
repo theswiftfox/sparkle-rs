@@ -6,4 +6,5 @@ pub trait Camera {
     fn view_mat(&self) -> glm::Mat4;
     fn projection_mat(&self) -> glm::Mat4;
     fn position(&self) -> glm::Vec3;
+    fn near_far(&self) -> (f32, f32);
 }

@@ -24,7 +24,7 @@ pub struct DxDrawable {
 impl Drawable for DxDrawable {
     fn draw(&mut self, model: glm::Mat4, object_type: ObjType) {
         if self.object_type != object_type {
-            return
+            return;
         }
         self.cbuffer.data = model;
         match self.cbuffer.update() {
@@ -138,5 +138,108 @@ impl DxDrawable {
             textures: Vec::<(u32, Texture2D)>::new(),
             object_type: object_type,
         })))
+    }
+}
+
+pub struct ScreenQuad {
+    vertex_buffer: *mut dx11::ID3D11Buffer,
+    vertex_buffer_stride: u32,
+    index_buffer: *mut dx11::ID3D11Buffer,
+    index_buffer_stride: u32,
+    index_count: u32,
+}
+
+impl ScreenQuad {
+    pub fn create(device: *mut dx11_1::ID3D11Device1) -> Result<ScreenQuad, DxError> {
+        let mut vertices = vec![
+            Vertex::default(),
+            Vertex::default(),
+            Vertex::default(),
+            Vertex::default(),
+        ];
+        vertices[1].position.x = 1.0f32;
+        vertices[2].position.y = 1.0f32;
+        vertices[3].position.x = 1.0f32;
+        vertices[3].position.y = 1.0f32;
+        let indices = vec![2, 1, 0, 1, 2, 3];
+        let mut vertex_buffer: *mut dx11::ID3D11Buffer = std::ptr::null_mut();
+        let vtx_stride = std::mem::size_of::<Vertex>() as u32;
+        {
+            let vertex_buffer_data = vertices.as_ptr();
+            let mut initial_data: dx11::D3D11_SUBRESOURCE_DATA = Default::default();
+            initial_data.pSysMem = vertex_buffer_data as *const _;
+
+            let mut buffer_desc: dx11::D3D11_BUFFER_DESC = Default::default();
+            buffer_desc.ByteWidth = vtx_stride * vertices.len() as u32;
+            buffer_desc.Usage = dx11::D3D11_USAGE_IMMUTABLE;
+            buffer_desc.BindFlags = dx11::D3D11_BIND_VERTEX_BUFFER;
+            buffer_desc.StructureByteStride = vtx_stride;
+
+            let res = unsafe {
+                (*device).CreateBuffer(
+                    &buffer_desc,
+                    &initial_data,
+                    &mut vertex_buffer as *mut *mut _,
+                )
+            };
+
+            if res < S_OK {
+                return Err(DxError::new(
+                    "Vertex Buffer creation failed!",
+                    DxErrorType::ResourceCreation,
+                ));
+            }
+        }
+
+        let mut index_buffer: *mut dx11::ID3D11Buffer = std::ptr::null_mut();
+        let idx_stride = std::mem::size_of::<u32>() as u32;
+        {
+            let index_buffer_data = indices.as_ptr();
+            let mut initial_data: dx11::D3D11_SUBRESOURCE_DATA = Default::default();
+            initial_data.pSysMem = index_buffer_data as *const _;
+
+            let mut buffer_desc: dx11::D3D11_BUFFER_DESC = Default::default();
+            buffer_desc.ByteWidth = idx_stride * indices.len() as u32;
+            buffer_desc.Usage = dx11::D3D11_USAGE_IMMUTABLE;
+            buffer_desc.BindFlags = dx11::D3D11_BIND_INDEX_BUFFER;
+            buffer_desc.StructureByteStride = idx_stride;
+
+            let res = unsafe {
+                (*device).CreateBuffer(
+                    &buffer_desc,
+                    &initial_data,
+                    &mut index_buffer as *mut *mut _,
+                )
+            };
+
+            if res < S_OK {
+                return Err(DxError::new(
+                    "Index Buffer creation failed!",
+                    DxErrorType::ResourceCreation,
+                ));
+            }
+        }
+        Ok(ScreenQuad {
+            vertex_buffer: vertex_buffer,
+            vertex_buffer_stride: vtx_stride,
+            index_buffer: index_buffer,
+            index_buffer_stride: idx_stride,
+            index_count: indices.len() as u32,
+        })
+    }
+
+    pub fn draw(&self, ctx: *mut dx11_1::ID3D11DeviceContext1) {
+        let offset = 0 as u32;
+        unsafe {
+            (*ctx).IASetVertexBuffers(
+                0,
+                1,
+                &self.vertex_buffer as *const *mut _,
+                &self.vertex_buffer_stride,
+                &offset,
+            );
+            (*ctx).IASetIndexBuffer(self.index_buffer, DXGI_FORMAT_R32_UINT, 0);
+            (*ctx).DrawIndexed(self.index_count, 0, 0);
+        }
     }
 }

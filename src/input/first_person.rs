@@ -18,6 +18,8 @@ pub struct FPSController {
     h_angle_deg: f32,
     v_angle_deg: f32,
     projection_mat: glm::Mat4,
+    near_plane: f32,
+    far_plane: f32,
 
     keybinds: HashMap<Key, ActionCallback>,
     mousebinds: HashMap<Button, ActionCallback>,
@@ -53,6 +55,9 @@ impl Camera for FPSController {
     }
     fn position(&self) -> glm::Vec3 {
         self.pos
+    }
+    fn near_far(&self) -> (f32, f32) {
+        (self.near_plane, self.far_plane)
     }
 }
 
@@ -129,6 +134,8 @@ impl FPSController {
             h_angle_deg: -90.0f32,
             v_angle_deg: 0.0f32,
             projection_mat: proj,
+            near_plane: near,
+            far_plane: far,
             keybinds: FPSController::default_keybinds(),
             mousebinds: FPSController::default_mousebinds(),
             aiming: false,
