@@ -16,18 +16,24 @@ use crate::window::Window;
 use d3d11::{D3D11Backend, DxError};
 use scenegraph::drawable::ObjType;
 use scenegraph::Scenegraph;
+use scenegraph::Scenegraph;
 use std::time::Instant;
 use winapi::um::d3d11 as dx11;
 
 pub struct Renderer {
     scene: Scenegraph,
-    main_program: Option<draw_programs::MainPass>,
+    screen_quad: d3d11::drawable::ScreenQuad,
+    forward_program: Option<draw_programs::ForwardPass>,
+    deferred_program_pre: Option<draw_programs::DeferredPassPre>,
+    deferred_program_light: Option<draw_programs::DeferredPassLight>,
     shadow_program: Option<draw_programs::ShadowPass>,
     input_handler: Option<std::rc::Rc<std::cell::RefCell<dyn InputHandler>>>,
     camera: Option<std::rc::Rc<std::cell::RefCell<dyn Camera>>>,
     backend: D3D11Backend,
     window: std::rc::Rc<std::cell::RefCell<Window>>,
     clock: Instant,
+    frame_counter: u32,
+    frame_time: f32,
 }
 
 impl Renderer {
@@ -46,15 +52,22 @@ impl Renderer {
             Ok(b) => b,
             Err(e) => panic!(format!("{}", e)),
         };
+        let quad = d3d11::drawable::ScreenQuad::create(backend.get_device())
+            .expect("Error generating ScreenQuad");
         let mut renderer = Renderer {
             backend: backend,
             window: window,
-            main_program: None,
+            forward_program: None,
+            deferred_program_pre: None,
+            deferred_program_light: None,
             shadow_program: None,
             scene: Scenegraph::empty(),
+            screen_quad: quad,
             input_handler: None,
             camera: None,
             clock: Instant::now(),
+            frame_counter: 0,
+            frame_time: 0.0f32,
         };
 
         let mut renderer = match renderer.init_draw_program() {
@@ -71,12 +84,26 @@ impl Renderer {
 
         renderer.change_input_handler(input_handler.clone());
         renderer.change_camera(input_handler.clone());
+
+        // TODO: handle optional values here correctly?
         renderer
-            .main_program
+            .forward_program
             .as_mut()
             .unwrap()
             .set_proj(input_handler.borrow().projection_mat(), false)
             .expect("Impossible");
+        renderer
+            .deferred_program_pre
+            .as_mut()
+            .unwrap()
+            .set_camera_planes(input_handler.borrow().near_far(), false)
+            .expect("Error updating shader constants");
+        renderer
+            .deferred_program_pre
+            .as_mut()
+            .unwrap()
+            .set_proj(input_handler.borrow().projection_mat(), false)
+            .expect("Error setting projection matrix");
 
         println!("DX Setup took {} ms", renderer.clock.elapsed().as_millis());
         renderer.clock = Instant::now();
@@ -107,13 +134,13 @@ impl Renderer {
                     // println!("{}", light_view);
                     let light_space_mat = light_proj * light_view;
                     renderer
-                        .main_program
+                        .forward_program
                         .as_mut()
                         .unwrap()
                         .set_directional_light((*light).clone(), false)
                         .expect("Impossible");
                     renderer
-                        .main_program
+                        .forward_program
                         .as_mut()
                         .unwrap()
                         .set_light_space_matrix(light_space_mat, false)
@@ -144,7 +171,19 @@ impl Renderer {
     pub fn update(&mut self) -> Result<bool, Box<dyn std::error::Error>> {
         let dt = self.clock.elapsed().as_millis() as f32 / 1000f32;
         self.clock = Instant::now();
-        let ok = self.window.borrow_mut().update();
+
+        let mut ok = true;
+        if self.frame_time >= 1.0f32 {
+            ok = self
+                .window
+                .borrow_mut()
+                .set_title(&format!("{} FPS", self.frame_counter));
+            self.frame_counter = 0;
+            self.frame_time = 0.0f32;
+        }
+        if ok {
+            ok = self.window.borrow_mut().update();
+        }
 
         if ok {
             match &self.input_handler {
@@ -166,38 +205,55 @@ impl Renderer {
                     //println!("{}", light_view);
                     let light_space_mat = self.scene.get_light_proj() * light_view;
 
-                    match &self.main_program {
+                    match &self.forward_program {
                         Some(_) => {
                             &self
-                                .main_program
+                                .forward_program
                                 .as_mut()
                                 .unwrap()
                                 .set_view(c.borrow().view_mat(), false)
                                 .expect("Error setting view mat");
                             &self
-                                .main_program
+                                .forward_program
                                 .as_mut()
                                 .unwrap()
                                 .set_camera_pos(glm::vec3_to_vec4(&c.borrow().position()), false)
                                 .expect("Error setting camera pos");
 
                             &self
-                                .main_program
+                                .forward_program
                                 .as_mut()
                                 .unwrap()
                                 .set_directional_light((*light).clone(), false)
                                 .expect("Impossible");
                             &self
-                                .main_program
+                                .forward_program
                                 .as_mut()
                                 .unwrap()
                                 .set_light_space_matrix(light_space_mat, false)
                                 .expect("Impossible");
-
-                            &self.main_program.as_mut().unwrap().update();
+                            &self.forward_program.as_mut().unwrap().update();
                         }
                         _ => (),
                     };
+                    if let Some(deferred_pre) = &mut self.deferred_program_pre {
+                        deferred_pre
+                            .set_view(c.borrow().view_mat(), false)
+                            .expect("Error updating view matrix");
+                        deferred_pre.update()?;
+                    }
+                    if let Some(deferred_light) = &mut self.deferred_program_light {
+                        deferred_light
+                            .set_camera_pos(glm::vec3_to_vec4(&c.borrow().position()), false)
+                            .expect("Error setting camera pos");
+                        deferred_light
+                            .set_directional_light((*light).clone(), false)
+                            .expect("Impossible");
+                        deferred_light
+                            .set_light_space_matrix(light_space_mat, false)
+                            .expect("Error updating LS matrix");
+                        deferred_light.update()?;
+                    }
                     match &mut self.shadow_program {
                         Some(p) => {
                             p.set_light_space(light_space_mat, true)
@@ -210,6 +266,8 @@ impl Renderer {
             };
             self.render()?;
         }
+        self.frame_counter = self.frame_counter + 1;
+        self.frame_time = self.frame_time + dt;
         Ok(ok)
     }
 
@@ -289,6 +347,22 @@ impl Renderer {
                     0,
                 );
             }
+        }
+        if let Some(dp) = &self.deferred_program_pre {
+            let targets = dp.get_render_targets();
+            for tv in &targets {
+                unsafe { (*ctx).ClearRenderTargetView(*tv, &color) };
+            }
+            unsafe {
+                (*ctx).ClearDepthStencilView(
+                    dp.get_depth_target(),
+                    dx11::D3D11_CLEAR_DEPTH | dx11::D3D11_CLEAR_STENCIL,
+                    1.0f32,
+                    0,
+                )
+            };
+        }
+        unsafe {
             (*ctx).ClearDepthStencilView(
                 depth_stencil,
                 dx11::D3D11_CLEAR_DEPTH | dx11::D3D11_CLEAR_STENCIL,
@@ -304,6 +378,7 @@ impl Renderer {
         self.clear();
 
         let ctx = self.backend.get_context();
+        self.backend.disable_blend();
         match &mut self.shadow_program {
             Some(sp) => {
                 self.backend.pix_begin_event("Shadow Mapping");
@@ -312,8 +387,8 @@ impl Renderer {
                 unsafe {
                     let null_sampler: [*mut dx11::ID3D11SamplerState; 1] = [std::ptr::null_mut()];
                     let null_srv: [*mut dx11::ID3D11ShaderResourceView; 1] = [std::ptr::null_mut()];
-                    (*ctx).PSSetSamplers(3, 1, null_sampler.as_ptr());
-                    (*ctx).PSSetShaderResources(3, 1, null_srv.as_ptr());
+                    (*ctx).PSSetSamplers(5, 1, null_sampler.as_ptr());
+                    (*ctx).PSSetShaderResources(5, 1, null_srv.as_ptr());
                 };
                 //let render_target = sp.get_render_target_view();
                 let depth_stencil = sp.get_depth_stencil_view();
@@ -326,32 +401,114 @@ impl Renderer {
             None => {}
         }
 
-        let render_target = self.backend.get_render_target_view();
-        let depth_stencil = self.backend.get_depth_stencil_view();
         let viewport = self.backend.get_viewport();
         unsafe { (*ctx).RSSetViewports(1, viewport) };
+        let depth_stencil = self.backend.get_depth_stencil_view();
 
-        self.backend.pix_begin_event("Main Pass");
-        unsafe { (*ctx).OMSetRenderTargets(1, &render_target, depth_stencil) };
-        match &mut self.main_program {
-            Some(mp) => mp.prepare_draw(ctx),
-            None => {}
-        };
+        if let Some(deferred_pre) = &mut self.deferred_program_pre {
+            self.backend.pix_begin_event("Deferred Pre Pass");
+            deferred_pre.prepare_draw(ctx);
 
-        match &self.shadow_program {
-            Some(sp) => {
+            let null_sampler: [*mut dx11::ID3D11SamplerState; 5] = [
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            ];
+            let null_srv: [*mut dx11::ID3D11ShaderResourceView; 5] = [
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            ];
+            unsafe {
+                (*ctx).PSSetSamplers(0, 5, null_sampler.as_ptr());
+                (*ctx).PSSetShaderResources(0, 5, null_srv.as_ptr());
+            }
+            let targets = deferred_pre.get_render_targets();
+            // let depth_stencil = deferred_pre.get_depth_target();
+            unsafe {
+                (*ctx).OMSetRenderTargets(targets.len() as _, targets.as_ptr(), depth_stencil)
+            };
+
+            self.scene.draw(ObjType::Opaque);
+
+            self.backend.pix_end_event();
+        }
+
+        let render_target = self.backend.get_render_target_view();
+        if let Some(deferred_light) = &mut self.deferred_program_light {
+            self.backend.pix_begin_event("Deferred Light Pass");
+            deferred_light.prepare_draw(ctx);
+
+            if let Some(sp) = &self.shadow_program {
                 let tex = sp.get_shadow_map();
                 unsafe {
-                    (*ctx).PSSetSamplers(3, 1, &tex.get_sampler() as *const *mut _);
-                    (*ctx).PSSetShaderResources(3, 1, &tex.get_texture_view() as *const *mut _);
+                    (*ctx).PSSetSamplers(5, 1, &tex.get_sampler() as *const *mut _);
+                    (*ctx).PSSetShaderResources(5, 1, &tex.get_texture_view() as *const *mut _);
                 }
             }
-            None => (),
+            //  let depth_stencil = self.backend.get_depth_stencil_view();
+            unsafe {
+                (*ctx).OMSetRenderTargets(
+                    1,
+                    &render_target,
+                    /*depth_stencil*/ std::ptr::null_mut(),
+                )
+            };
+
+            if let Some(dp) = &self.deferred_program_pre {
+                let pos = dp.positions();
+                // let pos_ls = dp.positions_ls();
+                let normals = dp.normals();
+                let albedo = dp.albedo();
+                let mr = dp.metallic_roughness();
+
+                let texs = [
+                    pos.get_texture_view(),
+                    //    pos_ls.get_texture_view(),
+                    normals.get_texture_view(),
+                    albedo.get_texture_view(),
+                    mr.get_texture_view(),
+                ];
+                let smpls = [
+                    pos.get_sampler(),
+                    //    pos_ls.get_sampler(),
+                    normals.get_sampler(),
+                    albedo.get_sampler(),
+                    mr.get_sampler(),
+                ];
+                unsafe {
+                    (*ctx).PSSetSamplers(0, 4, smpls.as_ptr());
+                    (*ctx).PSSetShaderResources(0, 4, texs.as_ptr());
+                }
+
+                self.screen_quad.draw(ctx);
+                self.backend.pix_end_event();
+            }
+        }
+
+        if let Some(fwd) = &mut self.forward_program {
+            self.backend.enable_blend();
+            self.backend.pix_begin_event("Main Pass");
+
+            unsafe { (*ctx).OMSetRenderTargets(1, &render_target, depth_stencil) };
+            fwd.prepare_draw(ctx);
+            match &self.shadow_program {
+                Some(sp) => {
+                    let tex = sp.get_shadow_map();
+                    unsafe {
+                        (*ctx).PSSetSamplers(5, 1, &tex.get_sampler() as *const *mut _);
+                        (*ctx).PSSetShaderResources(5, 1, &tex.get_texture_view() as *const *mut _);
+                    }
+                }
+                None => (),
+            };
+            self.scene.draw(ObjType::Transparent);
+            self.backend.pix_end_event();
         };
-
-        self.scene.draw(ObjType::Any);
-
-        self.backend.pix_end_event();
 
         self.backend.present()?;
 
@@ -359,7 +516,16 @@ impl Renderer {
     }
 
     fn init_draw_program(&mut self) -> Result<(), DxError> {
-        self.main_program = Some(draw_programs::MainPass::create(
+        self.forward_program = Some(draw_programs::ForwardPass::create(
+            self.backend.get_device(),
+            self.backend.get_context(),
+        )?);
+        self.deferred_program_pre = Some(draw_programs::DeferredPassPre::create(
+            self.window.borrow().get_resolution(),
+            self.backend.get_device(),
+            self.backend.get_context(),
+        )?);
+        self.deferred_program_light = Some(draw_programs::DeferredPassLight::create(
             self.backend.get_device(),
             self.backend.get_context(),
         )?);

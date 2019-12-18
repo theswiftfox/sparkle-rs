@@ -36,12 +36,12 @@ PS_OUT main(PS_IN input) {
 	float3 normal = txNormal.Sample(samplerNormal, input.txCoordNM).xyz;
 
 	// transform to range [-1,1]
-	normal = normalize((normal * 2.0) - 1.0);
+	//normal = normalize((normal * 2.0) - 1.0);
 	// move into world space
-	float3 N = normalize(mul(normal, input.TBN));
+	//float3 N = normalize(mul(normal, input.TBN));
 
 	float metallic = 32.0;//mr_tex.r;
-	float shadowed = shadow(input.posLS, input.pos.xyz, input.normal, normalize(-directionalLight.direction.xyz));
+	float shadowed = shadow(input.posLS, input.normal, normalize(-directionalLight.direction.xyz));
 	float3 color = blinn_phong(directionalLight, cameraPos.xyz, input.worldPos, input.normal, alb.rgb, metallic, shadowed);
 	color = pow(color, 1/2.2);
 	output.color = float4(color, alb.a);
