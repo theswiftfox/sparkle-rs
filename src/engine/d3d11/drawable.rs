@@ -22,15 +22,18 @@ pub struct DxDrawable {
 }
 
 impl Drawable for DxDrawable {
-    fn draw(&mut self, model: glm::Mat4, object_type: ObjType) {
-        if self.object_type != object_type {
-            return;
-        }
-        self.cbuffer.data = model;
+    fn update_model(&mut self, model: &glm::Mat4) {
+        self.cbuffer.data = model.clone();
         match self.cbuffer.update() {
             Ok(_) => {}
             Err(e) => println!("{}", e),
         };
+    }
+    fn draw(&self, object_type: ObjType) {
+        if self.object_type != object_type {
+            return;
+        }
+        
         let offset = 0 as u32;
         unsafe {
             (*self.context).IASetVertexBuffers(

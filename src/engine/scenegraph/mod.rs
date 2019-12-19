@@ -55,9 +55,15 @@ impl Scenegraph {
         return &self.light_proj
     }
 
+    pub fn build_matrices(&mut self) {
+        if let Some(root) = &mut self.root {
+            root.borrow_mut().build_model(&self.transform);
+        }
+    }
+
     pub fn draw(&self, object_type: drawable::ObjType) {
         if self.root.is_some() {
-            self.root.as_ref().unwrap().borrow().draw(self.transform, object_type);
+            self.root.as_ref().unwrap().borrow().draw(object_type);
         }
     }
     pub fn get_node_named(&self, name: &str) -> Result<shared_ptr<RefCell<Node>>, SceneGraphError> {
@@ -85,7 +91,7 @@ impl Scenegraph {
                 .as_ref()
                 .unwrap()
                 .borrow()
-                .traverse(self.transform);
+                .traverse();
             if nodes.is_empty() {
                 Err(SceneGraphError::err_empty("Root has no children"))
             } else {
