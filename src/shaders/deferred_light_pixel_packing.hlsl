@@ -27,14 +27,9 @@ PS_OUT main(PS_IN input, float4 screenPos : SV_Position) {
 	uint4 pos_pack = positionTex.Load(int3(screenPos.xy, 0));
     uint4 alb_pack = albedoTex.Load(int3(screenPos.xy, 0));
 
-	//uint lower = 0x00000000FFFFFFFF;
-	//uint4 phalf = uint4(pos_pack.r >> 16, pos_pack.r & lower, pos_pack.g >> 16, pos_pack.g & lower);
-	//uint4 nhalf = uint4(pos_pack.b >> 16, pos_pack.b & lower, pos_pack.a >> 16, pos_pack.a & lower);
-
 	float4 pos = float4(f16tof32(pos_pack.r >> 16), f16tof32(pos_pack.r), f16tof32(pos_pack.g >> 16), f16tof32(pos_pack.g));
 	float3 normal = float3(f16tof32(pos_pack.b >> 16), f16tof32(pos_pack.b), f16tof32(pos_pack.a >> 16)) * 2.0 - 1.0;
 
-	// uint4 chalf = uint4(alb_pack.r >> 16, alb_pack.r & lower, alb_pack.g >> 16, alb_pack.g & lower);
 	float4 albedo = float4(f16tof32(alb_pack.r >> 16), f16tof32(alb_pack.r), f16tof32(alb_pack.g >> 16), f16tof32(alb_pack.g));
 	
 	if (length(pos.rgb) == 0.0) {
@@ -42,10 +37,6 @@ PS_OUT main(PS_IN input, float4 screenPos : SV_Position) {
 		return output;
 	}
     float4 posLS = 	posLS = mul(lightSpace, float4(pos.xyz, 1.0));
-	//float3 normal = normalsTex.Sample(normSampler, input.uv).rgb * 2.0 - 1.0;
-
-	//float4 albedo = albedoTex.Sample(albSampler, input.uv);
-	//float4 metallicRoughness = metallicRoughnessTex.Sample(mrSampler, input.uv);
 
     float metallic = 32.0;//mr_tex.r;
 	float shadowed = shadow(posLS, normal, normalize(-directionalLight.direction.xyz));
