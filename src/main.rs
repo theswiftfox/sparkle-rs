@@ -25,7 +25,7 @@ fn pause() {
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    pause();
+    //pause();
     let mut renderer = engine::Renderer::create("Sparkle-rs");
     loop {
         if !renderer.update()? {

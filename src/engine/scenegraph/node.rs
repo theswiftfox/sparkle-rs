@@ -10,6 +10,7 @@ pub struct Node {
     uuid: u64,
     pub name: Option<String>,
     model: glm::Mat4,
+    model_orig: glm::Mat4,
     children: HashMap<String, Rc<RefCell<Node>>>,
 
     drawables: Vec<Rc<RefCell<dyn Drawable>>>,
@@ -28,6 +29,7 @@ impl Node {
                 None => None
             },
             model: model,
+            model_orig: model,
             drawables: Vec::new(),
             children: HashMap::new(),
         }));
@@ -67,19 +69,14 @@ impl Node {
     pub fn get_drawables(&self) -> Vec<Rc<RefCell<dyn Drawable>>> {
         return self.drawables.clone()
     }
-    pub fn apply_pre_transform(&self, model: glm::Mat4) -> Rc<RefCell<Node>> {
-        let node = Rc::from(RefCell::from(self.clone()));
-        node.borrow_mut().model = model * self.model;
-        return node;
-    }
-    pub fn traverse(&self, model: glm::Mat4) -> Vec<Rc<RefCell<Node>>> {
+
+    pub fn traverse(&self) -> Vec<Rc<RefCell<Node>>> {
         let mut nodes: Vec<Rc<RefCell<Node>>> = Vec::new();
-        let me = self.apply_pre_transform(model);
         for (_, c) in &self.children {
-            let mut others = c.borrow().traverse(me.borrow().model);
+            nodes.push(c.clone());
+            let mut others = c.borrow().traverse();
             nodes.append(&mut others);
         }
-        nodes.push(me);
         return nodes;
     }
     pub fn add_child(&mut self, node: Rc<RefCell<Node>>) -> Result<(), SceneGraphError> {
@@ -157,14 +154,23 @@ impl Node {
         self.model = glm::scale(&self.model, &glm::vec3(s, s, s));
     }
     pub fn get_bounding_volume(&self) {}
-    pub fn draw(&self, model: glm::Mat4, object_type: ObjType) {
-        let me = self.apply_pre_transform(model);
-        let me_ref = me.borrow();
-        for drawable in &me_ref.drawables {
-            drawable.borrow_mut().draw(me_ref.model, object_type);
+
+    pub fn build_model(&mut self, model: &glm::Mat4) {
+        self.model = model * self.model_orig;
+        for drawable in &self.drawables {
+            drawable.borrow_mut().update_model(&self.model);
         }
-        for (_, c) in &me_ref.children {
-            c.borrow().draw(me_ref.model, object_type);
+        for (_, c) in &self.children {
+            c.borrow_mut().build_model(&self.model);
+        }
+    }
+
+    pub fn draw(&self, object_type: ObjType) {
+        for drawable in &self.drawables {
+            drawable.borrow().draw(object_type);
+        }
+        for (_, c) in &self.children {
+            c.borrow().draw(object_type);
         }
     }
 }

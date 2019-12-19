@@ -17,5 +17,6 @@ impl PartialEq for ObjType {
 }
 
 pub trait Drawable {
-    fn draw(&mut self, model: glm::Mat4, object_type: ObjType);
+    fn draw(&self, object_type: ObjType);
+    fn update_model(&mut self, model: &glm::Mat4);
 }
