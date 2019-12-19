@@ -169,7 +169,7 @@ impl GltfImporter {
 							// 	image::ColorType::GrayA(_) | image::ColorType::RGBA(_) | image::ColorType::BGRA(_) => true,
 							// 	_ => false,
 							// };
-							(Texture2D::create_from_image_obj(img, address_mode, address_mode, filter, self.device).expect("Unable to load default texture"), false)
+							(Texture2D::create_from_image_obj(img, address_mode, address_mode, filter, self.device, self.context).expect("Unable to load default texture"), false)
 						}
 					};
 
@@ -180,7 +180,7 @@ impl GltfImporter {
 						},
 						None => {
 							let img = image::open("images/textures/missing_mr_tex.png").unwrap();
-							Texture2D::create_from_image_obj(img, address_mode, address_mode, filter, self.device).expect("Unable to load default texture")
+							Texture2D::create_from_image_obj(img, address_mode, address_mode, filter, self.device, self.context).expect("Unable to load default texture")
 						}
 					};
 
@@ -196,7 +196,7 @@ impl GltfImporter {
 						},
 						None => {
 							let img = image::open("images/textures/missing_tex.png").unwrap();
-							Texture2D::create_from_image_obj(img, address_mode, address_mode, filter, self.device).expect("Unable to load default texture")
+							Texture2D::create_from_image_obj(img, address_mode, address_mode, filter, self.device, self.context).expect("Unable to load default texture")
 						}
 					};
 
@@ -363,7 +363,7 @@ impl GltfImporter {
 			img_raw.height, 
 			fmt, channels, 
 			wrap_u, wrap_v, 
-			filter, self.device).expect(&format!("Unable to load texture with index {}", gltf_tex.index())),
+			filter, self.device, self.context).expect(&format!("Unable to load texture with index {}", gltf_tex.index())),
 			transparent)
 	}
 }
