@@ -114,14 +114,14 @@ impl Renderer {
                         renderer.clock.elapsed().as_millis()
                     );
                     let light = renderer.scene.get_directional_light();
-                    let shadow_dist = 15.0;
+                    let shadow_dist = 10.0;
                     let light_proj = glm::ortho_zo(
                         -shadow_dist,
                         shadow_dist,
                         -shadow_dist,
                         shadow_dist,
                         1.0,
-                        100.0,
+                        70.0,
                     );
                     let dir = light.direction.xyz() * (-1.0);
                     let mut up = glm::vec3(0.0, 1.0, 0.0);
@@ -292,6 +292,7 @@ impl Renderer {
             direction: glm::vec4(-15.0, -50.0, -5.0, 1.0),
             color: glm::vec4(0.3, 0.3, 0.3, 1.0),
         });
+        self.scene.build_matrices();
         // todo: err handling
         Ok(())
     }
@@ -352,14 +353,6 @@ impl Renderer {
             for tv in &targets {
                 unsafe { (*ctx).ClearRenderTargetView(*tv, &color) };
             }
-            unsafe {
-                (*ctx).ClearDepthStencilView(
-                    dp.get_depth_target(),
-                    dx11::D3D11_CLEAR_DEPTH | dx11::D3D11_CLEAR_STENCIL,
-                    1.0f32,
-                    0,
-                )
-            };
         }
         unsafe {
             (*ctx).ClearDepthStencilView(
@@ -389,7 +382,6 @@ impl Renderer {
                     (*ctx).PSSetSamplers(5, 1, null_sampler.as_ptr());
                     (*ctx).PSSetShaderResources(5, 1, null_srv.as_ptr());
                 };
-                //let render_target = sp.get_render_target_view();
                 let depth_stencil = sp.get_depth_stencil_view();
                 unsafe { (*ctx).OMSetRenderTargets(0, std::ptr::null(), depth_stencil) };
                 self.shadow_program.as_mut().unwrap().prepare_draw(ctx);
@@ -408,26 +400,12 @@ impl Renderer {
             self.backend.pix_begin_event("Deferred Pre Pass");
             deferred_pre.prepare_draw(ctx);
 
-            let null_sampler: [*mut dx11::ID3D11SamplerState; 5] = [
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            ];
-            let null_srv: [*mut dx11::ID3D11ShaderResourceView; 5] = [
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            ];
+            let null_srv: [*mut dx11::ID3D11ShaderResourceView; 2] =
+                [std::ptr::null_mut(), std::ptr::null_mut()];
             unsafe {
-                (*ctx).PSSetSamplers(0, 5, null_sampler.as_ptr());
-                (*ctx).PSSetShaderResources(0, 5, null_srv.as_ptr());
+                (*ctx).PSSetShaderResources(0, 2, null_srv.as_ptr());
             }
             let targets = deferred_pre.get_render_targets();
-           // let depth_stencil = deferred_pre.get_depth_target();
             unsafe {
                 (*ctx).OMSetRenderTargets(targets.len() as _, targets.as_ptr(), depth_stencil)
             };
@@ -460,28 +438,11 @@ impl Renderer {
 
             if let Some(dp) = &self.deferred_program_pre {
                 let pos = dp.positions();
-               // let pos_ls = dp.positions_ls();
-                let normals = dp.normals();
                 let albedo = dp.albedo();
-                let mr = dp.metallic_roughness();
 
-                let texs = [
-                    pos.get_texture_view(),
-                //    pos_ls.get_texture_view(),
-                    normals.get_texture_view(),
-                    albedo.get_texture_view(),
-                    mr.get_texture_view(),
-                ];
-                let smpls = [
-                    pos.get_sampler(),
-                //    pos_ls.get_sampler(),
-                    normals.get_sampler(),
-                    albedo.get_sampler(),
-                    mr.get_sampler(),
-                ];
+                let texs = [pos.get_texture_view(), albedo.get_texture_view()];
                 unsafe {
-                    (*ctx).PSSetSamplers(0, 4, smpls.as_ptr());
-                    (*ctx).PSSetShaderResources(0, 4, texs.as_ptr());
+                    (*ctx).PSSetShaderResources(0, 2, texs.as_ptr());
                 }
 
                 self.screen_quad.draw(ctx);
