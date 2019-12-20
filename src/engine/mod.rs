@@ -268,13 +268,16 @@ impl Renderer {
                     };
                     if let Some(sky_prog) = &mut self.skybox_program {
                         sky_prog
-                            .set_view(c.borrow().view_mat(), true)
+                            .set_view(
+                                glm::mat3_to_mat4(&glm::mat4_to_mat3(&c.borrow().view_mat())),
+                                true,
+                            )
                             .expect("Error updating view matrix [SkyBox]");
                     }
-                    if let Some(sky) = &mut self.skybox {
-                        let model = glm::translate(&glm::identity(), &c.borrow().position());
-                        sky.update(&model);
-                    }
+                    // if let Some(sky) = &mut self.skybox {
+                    //     let model = glm::translate(&glm::identity(), &c.borrow().position());
+                    //     sky.update(&model);
+                    // }
                 }
                 None => {}
             };
@@ -313,13 +316,8 @@ impl Renderer {
 
         println!("Loading skybox...");
         self.skybox = Some(
-            SkyBox::new(
-                10,
-                10,
-                self.backend.get_device(),
-                self.backend.get_context(),
-            )
-            .expect("Error loading skybox"),
+            SkyBox::new(self.backend.get_device(), self.backend.get_context())
+                .expect("Error loading skybox"),
         );
 
         // todo: err handling
@@ -445,6 +443,7 @@ impl Renderer {
         }
 
         let render_target = self.backend.get_render_target_view();
+        unsafe { (*ctx).OMSetRenderTargets(1, &render_target, std::ptr::null_mut()) };
         if let Some(deferred_light) = &mut self.deferred_program_light {
             self.backend.pix_begin_event("Deferred Light Pass");
             deferred_light.prepare_draw(ctx);
@@ -456,14 +455,6 @@ impl Renderer {
                     (*ctx).PSSetShaderResources(5, 1, &tex.get_texture_view() as *const *mut _);
                 }
             }
-            //  let depth_stencil = self.backend.get_depth_stencil_view();
-            unsafe {
-                (*ctx).OMSetRenderTargets(
-                    1,
-                    &render_target,
-                    /*depth_stencil*/ std::ptr::null_mut(),
-                )
-            };
 
             if let Some(dp) = &self.deferred_program_pre {
                 let pos = dp.positions();
@@ -498,6 +489,7 @@ impl Renderer {
             self.scene.draw(ObjType::Transparent);
             self.backend.pix_end_event();
         };
+
         if let Some(skbp) = &mut self.skybox_program {
             if let Some(sky) = &self.skybox {
                 self.backend.pix_begin_event("Skybox");
@@ -507,7 +499,6 @@ impl Renderer {
                 self.backend.pix_end_event();
             }
         }
-
         self.backend.present()?;
 
         Ok(())
