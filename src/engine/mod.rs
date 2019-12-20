@@ -13,19 +13,20 @@ use crate::input::input_handler::InputHandler;
 use crate::input::Camera;
 use crate::window::Window;
 
-use d3d11::{D3D11Backend, DxError};
-use d3d11::drawable::ObjType;
+use d3d11::{drawable::ObjType, skybox::SkyBox, D3D11Backend, DxError};
 use scenegraph::Scenegraph;
 use std::time::Instant;
 use winapi::um::d3d11 as dx11;
 
 pub struct Renderer {
     scene: Scenegraph,
+    skybox: Option<SkyBox>,
     screen_quad: d3d11::drawable::ScreenQuad,
     forward_program: Option<draw_programs::ForwardPass>,
     deferred_program_pre: Option<draw_programs::DeferredPassPre>,
     deferred_program_light: Option<draw_programs::DeferredPassLight>,
     shadow_program: Option<draw_programs::ShadowPass>,
+    skybox_program: Option<draw_programs::SkyBoxPass>,
     input_handler: Option<std::rc::Rc<std::cell::RefCell<dyn InputHandler>>>,
     camera: Option<std::rc::Rc<std::cell::RefCell<dyn Camera>>>,
     backend: D3D11Backend,
@@ -60,7 +61,9 @@ impl Renderer {
             deferred_program_pre: None,
             deferred_program_light: None,
             shadow_program: None,
+            skybox_program: None,
             scene: Scenegraph::empty(),
+            skybox: None,
             screen_quad: quad,
             input_handler: None,
             camera: None,
@@ -103,6 +106,12 @@ impl Renderer {
             .unwrap()
             .set_proj(input_handler.borrow().projection_mat(), false)
             .expect("Error setting projection matrix");
+        renderer
+            .skybox_program
+            .as_mut()
+            .unwrap()
+            .set_proj(input_handler.borrow().projection_mat(), false)
+            .expect("Error setting projection matrix [SkyBox]");
 
         println!("DX Setup took {} ms", renderer.clock.elapsed().as_millis());
         renderer.clock = Instant::now();
@@ -253,13 +262,19 @@ impl Renderer {
                             .expect("Error updating LS matrix");
                         deferred_light.update()?;
                     }
-                    match &mut self.shadow_program {
-                        Some(p) => {
-                            p.set_light_space(light_space_mat, true)
-                                .expect("Internal error when setting light space matrix");
-                        }
-                        None => (),
+                    if let Some(p) = &mut self.shadow_program {
+                        p.set_light_space(light_space_mat, true)
+                            .expect("Internal error when setting light space matrix");
                     };
+                    if let Some(sky_prog) = &mut self.skybox_program {
+                        sky_prog
+                            .set_view(c.borrow().view_mat(), true)
+                            .expect("Error updating view matrix [SkyBox]");
+                    }
+                    if let Some(sky) = &mut self.skybox {
+                        let model = glm::translate(&glm::identity(), &c.borrow().position());
+                        sky.update(&model);
+                    }
                 }
                 None => {}
             };
@@ -279,6 +294,7 @@ impl Renderer {
     }
 
     pub fn load_scene(&mut self, scene_file: &str) -> Result<(), ()> {
+        println!("Reading scene file...");
         let node = import::load_gltf(
             //"assets/sponza_glTF/Sponza.gltf",
             scene_file,
@@ -287,12 +303,25 @@ impl Renderer {
         )
         .expect("Unable to load scene");
         //let node = import::load_gltf("assets/gltf_uv_test/TextureCoordinateTest.gltf", renderer.backend.get_device(), renderer.backend.get_context()).expect("Unable to load scene");
+        println!("Processing scene...");
         self.scene.set_root(node);
         self.scene.set_directional_light(geometry::Light {
             direction: glm::vec4(-15.0, -50.0, -5.0, 1.0),
             color: glm::vec4(0.3, 0.3, 0.3, 1.0),
         });
         self.scene.build_matrices();
+
+        println!("Loading skybox...");
+        self.skybox = Some(
+            SkyBox::new(
+                10,
+                10,
+                self.backend.get_device(),
+                self.backend.get_context(),
+            )
+            .expect("Error loading skybox"),
+        );
+
         // todo: err handling
         Ok(())
     }
@@ -469,6 +498,15 @@ impl Renderer {
             self.scene.draw(ObjType::Transparent);
             self.backend.pix_end_event();
         };
+        if let Some(skbp) = &mut self.skybox_program {
+            if let Some(sky) = &self.skybox {
+                self.backend.pix_begin_event("Skybox");
+                skbp.prepare_draw(ctx);
+
+                sky.draw();
+                self.backend.pix_end_event();
+            }
+        }
 
         self.backend.present()?;
 
@@ -490,6 +528,10 @@ impl Renderer {
             self.backend.get_context(),
         )?);
         self.shadow_program = Some(draw_programs::ShadowPass::create_simple(
+            self.backend.get_device(),
+            self.backend.get_context(),
+        )?);
+        self.skybox_program = Some(draw_programs::SkyBoxPass::create(
             self.backend.get_device(),
             self.backend.get_context(),
         )?);
