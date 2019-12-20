@@ -1,15 +1,65 @@
 use super::super::geometry::Vertex;
-use super::super::scenegraph::drawable::{Drawable, ObjType};
 use super::cbuffer::CBuffer;
 use super::textures::Texture2D;
 use super::{DxError, DxErrorType};
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::atomic::AtomicUsize;
 
 use winapi::shared::dxgiformat::DXGI_FORMAT_R32_UINT;
 use winapi::shared::winerror::S_OK;
 use winapi::um::d3d11 as dx11;
 use winapi::um::d3d11_1 as dx11_1;
 
+static DRAWABLE_ID: AtomicUsize = AtomicUsize::new(0);
+
+pub struct Material {
+    textures: HashMap<u32, Rc<RefCell<Texture2D>>>,
+}
+
+impl Material {
+    fn new() -> Material {
+        Material {
+            textures: HashMap::new(),
+        }
+    }
+
+    pub fn bind(&self, context: *mut dx11_1::ID3D11DeviceContext1) {
+        for (slot, tex) in &self.textures {
+            unsafe {
+                (*context).PSSetSamplers(*slot, 1, &tex.borrow().get_sampler() as *const *mut _);
+                (*context).PSSetShaderResources(
+                    *slot,
+                    1,
+                    &tex.borrow().get_texture_view() as *const *mut _,
+                );
+            }
+        }
+    }
+}
+
+impl PartialEq for Material {
+    fn eq(&self, other: &Material) -> bool {
+        let mut eq = true;
+        for (slot, tex) in &self.textures {
+            if let Some(o_tex) = other.textures.get(slot) {
+                if tex.borrow().id != o_tex.borrow().id {
+                    eq = false;
+                    break;
+                }
+            } else {
+                eq = false;
+                break;
+            }
+        }
+        return eq;
+    }
+}
+
 pub struct DxDrawable {
+    id: usize,
     context: *mut dx11_1::ID3D11DeviceContext1,
     vertex_buffer: *mut dx11::ID3D11Buffer,
     vertex_buffer_stride: u32,
@@ -17,23 +67,19 @@ pub struct DxDrawable {
     index_buffer_stride: u32,
     index_count: u32,
     cbuffer: CBuffer<glm::Mat4>,
-    textures: Vec<(u32, Texture2D)>, // (slot, tex)
+    material: Material,
     object_type: ObjType,
 }
 
-impl Drawable for DxDrawable {
-    fn update_model(&mut self, model: &glm::Mat4) {
+impl DxDrawable {
+    pub fn update_model(&mut self, model: &glm::Mat4) {
         self.cbuffer.data = model.clone();
         match self.cbuffer.update() {
             Ok(_) => {}
             Err(e) => println!("{}", e),
         };
     }
-    fn draw(&self, object_type: ObjType) {
-        if self.object_type != object_type {
-            return;
-        }
-        
+    pub fn draw(&self, bind_material: bool) {
         let offset = 0 as u32;
         unsafe {
             (*self.context).IASetVertexBuffers(
@@ -46,23 +92,24 @@ impl Drawable for DxDrawable {
             (*self.context).IASetIndexBuffer(self.index_buffer, DXGI_FORMAT_R32_UINT, 0);
             (*self.context).VSSetConstantBuffers(1, 1, &self.cbuffer.buffer_ptr() as *const *mut _);
 
-            for (slot, tex) in &self.textures {
-                (*self.context).PSSetSamplers(*slot, 1, &tex.get_sampler() as *const *mut _);
-                (*self.context).PSSetShaderResources(
-                    *slot,
-                    1,
-                    &tex.get_texture_view() as *const *mut _,
-                );
+            if bind_material {
+                self.material.bind(self.context);
             }
 
             (*self.context).DrawIndexed(self.index_count, 0, 0);
         }
     }
-}
 
-impl DxDrawable {
-    pub fn add_texture(&mut self, slot: u32, tex: Texture2D) {
-        self.textures.push((slot, tex))
+    pub fn material(&self) -> &Material {
+        &self.material
+    }
+
+    pub fn object_type(&self) -> ObjType {
+        self.object_type
+    }
+
+    pub fn add_texture(&mut self, slot: u32, tex: Rc<RefCell<Texture2D>>) {
+        self.material.textures.insert(slot, tex);
     }
 
     pub fn from_verts(
@@ -131,6 +178,7 @@ impl DxDrawable {
         }
         let cbuffer: CBuffer<glm::Mat4> = CBuffer::create(glm::identity(), context, device)?;
         Ok(std::rc::Rc::new(std::cell::RefCell::new(DxDrawable {
+            id: DRAWABLE_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
             context: context,
             vertex_buffer: vertex_buffer,
             vertex_buffer_stride: vtx_stride,
@@ -138,9 +186,30 @@ impl DxDrawable {
             index_buffer_stride: idx_stride,
             index_count: indices.len() as u32,
             cbuffer: cbuffer,
-            textures: Vec::<(u32, Texture2D)>::new(),
+            material: Material::new(),
             object_type: object_type,
         })))
+    }
+}
+
+impl PartialEq for DxDrawable {
+    fn eq(&self, other: &DxDrawable) -> bool {
+        self.id == other.id
+    }
+}
+use std::cmp::Ordering;
+impl PartialOrd for DxDrawable {
+    fn partial_cmp(&self, other: &DxDrawable) -> Option<Ordering> {
+        if self.id == other.id {
+            return Some(Ordering::Equal);
+        }
+        if self.material.eq(&other.material) {
+            return Some(Ordering::Equal);
+        }
+        if self.id < other.id {
+            return Some(Ordering::Less);
+        }
+        Some(Ordering::Greater)
     }
 }
 
@@ -243,6 +312,24 @@ impl ScreenQuad {
             );
             (*ctx).IASetIndexBuffer(self.index_buffer, DXGI_FORMAT_R32_UINT, 0);
             (*ctx).DrawIndexed(self.index_count, 0, 0);
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ObjType {
+    Opaque,
+    Transparent,
+    Any, // use only for draw call to match all objects. never assign to object!
+}
+
+impl PartialEq for ObjType {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (_, ObjType::Any) => true,
+            (ObjType::Opaque, ObjType::Opaque) => true,
+            (ObjType::Transparent, ObjType::Transparent) => true,
+            _ => false,
         }
     }
 }
