@@ -1,7 +1,8 @@
 pub(super) mod cbuffer;
 pub(crate) mod drawable;
-pub(crate) mod textures;
 pub(super) mod shaders;
+pub(crate) mod skybox;
+pub(crate) mod textures;
 
 use crate::utils;
 
@@ -49,6 +50,7 @@ pub struct D3D11Backend {
     depth_stencil: *mut dx11::ID3D11Texture2D,
     viewport: dx11::D3D11_VIEWPORT,
     rasterizer_state: *mut dx11_1::ID3D11RasterizerState1,
+    depth_stencil_state: *mut dx11::ID3D11DepthStencilState,
     blend_state: *mut dx11_1::ID3D11BlendState1,
     initialized: bool,
 }
@@ -80,6 +82,7 @@ impl Default for D3D11Backend {
             depth_stencil: ptr::null_mut(),
             viewport: Default::default(),
             rasterizer_state: ptr::null_mut(),
+            depth_stencil_state: ptr::null_mut(),
             blend_state: ptr::null_mut(),
             backbuffer_format: dxgifmt::DXGI_FORMAT_B8G8R8A8_UNORM,
             backbuffer_count: 2,
@@ -105,6 +108,19 @@ impl D3D11Backend {
     }
     pub fn get_viewport(&self) -> &dx11::D3D11_VIEWPORT {
         &self.viewport
+    }
+
+    pub fn disable_blend(&self) {
+        unsafe {
+            let factor = [1.0f32, 1.0f32, 1.0f32, 1.0f32];
+            (*self.context).OMSetBlendState(std::ptr::null_mut(), &factor, 0xffffffff);
+        }
+    }
+    pub fn enable_blend(&self) {
+        unsafe {
+            let blend_factor = [1.0f32, 1.0f32, 1.0f32, 1.0f32];
+            (*self.context).OMSetBlendState(self.blend_state as *mut _, &blend_factor, 0xffffffff);
+        }
     }
 
     pub fn init(
@@ -646,6 +662,44 @@ impl D3D11Backend {
                     ));
                 }
                 (*self.context).RSSetState(self.rasterizer_state as *mut _);
+            }
+
+            let depth_state_desc = dx11::D3D11_DEPTH_STENCIL_DESC {
+                DepthEnable: 1,
+                DepthWriteMask: dx11::D3D11_DEPTH_WRITE_MASK_ALL,
+                DepthFunc: dx11::D3D11_COMPARISON_LESS_EQUAL,
+                StencilEnable: 1,
+                StencilReadMask: 0xFF,
+                StencilWriteMask: 0xFF,
+                // Stencil operations if pixel is front-facing
+                FrontFace: dx11::D3D11_DEPTH_STENCILOP_DESC {
+                    StencilFailOp: dx11::D3D11_STENCIL_OP_KEEP,
+                    StencilDepthFailOp: dx11::D3D11_STENCIL_OP_INCR,
+                    StencilPassOp: dx11::D3D11_STENCIL_OP_KEEP,
+                    StencilFunc: dx11::D3D11_COMPARISON_ALWAYS,
+                },
+                // Stencil operations if pixel is back-facing
+                BackFace: dx11::D3D11_DEPTH_STENCILOP_DESC {
+                    StencilFailOp: dx11::D3D11_STENCIL_OP_KEEP,
+                    StencilDepthFailOp: dx11::D3D11_STENCIL_OP_DECR,
+                    StencilPassOp: dx11::D3D11_STENCIL_OP_KEEP,
+                    StencilFunc: dx11::D3D11_COMPARISON_ALWAYS,
+                },
+            };
+
+            unsafe {
+                let res = (*self.device).CreateDepthStencilState(
+                    &depth_state_desc,
+                    &mut self.depth_stencil_state as *mut *mut _,
+                );
+                if res < S_OK {
+                    println!("Unable to setup rasterizer");
+                    return Err(DxError::new(
+                        "DepthStencil init failed!",
+                        DxErrorType::ResourceCreation,
+                    ));
+                }
+                (*self.context).OMSetDepthStencilState(self.depth_stencil_state as *mut _, 1);
             }
 
             let mut blend_state_desc: dx11_1::D3D11_BLEND_DESC1 = unsafe { std::mem::zeroed() };
