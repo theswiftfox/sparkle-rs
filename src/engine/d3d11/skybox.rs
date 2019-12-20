@@ -1,5 +1,4 @@
 use std::cell::RefCell;
-use std::f32::consts::PI;
 use std::rc::Rc;
 
 use winapi::um::d3d11 as dx11;
@@ -15,99 +14,117 @@ use crate::engine::{
 };
 
 pub(crate) struct SkyBox {
-    scale: glm::Mat4,
     drawable: Rc<RefCell<DxDrawable>>,
 }
 
 impl SkyBox {
     pub fn update(&mut self, model: &glm::Mat4) {
-        let mvp = self.scale * model;
-        self.drawable.borrow_mut().update_model(&mvp);
+        self.drawable.borrow_mut().update_model(&model);
     }
     pub fn draw(&self) {
         self.drawable.borrow().draw(true);
     }
 
     pub fn new(
-        lat_lines: u32,
-        long_lines: u32,
         device: *mut dx11_1::ID3D11Device1,
         context: *mut dx11_1::ID3D11DeviceContext1,
     ) -> Result<SkyBox, DxError> {
-        let num_verts = ((lat_lines - 2) * long_lines) + 2;
-        // let num_faces = ((lat_lines - 3) * long_lines * 2) + (long_lines * 2);
-
-        let mut yaw = 0.0;
-        let mut pitch = 0.0;
-
         let mut vertices = Vec::<Vertex>::new();
-        vertices.push(Vertex {
-            position: glm::vec3(0.0, 0.0, 1.0),
-            normal: glm::zero(),
-            tex_coord: glm::zero(),
-        });
-
-        let rot_base = glm::Mat4::identity();
-        for i in 0..(lat_lines - 2) {
-            pitch = ((i + 1) as f32) * (PI / ((lat_lines - 1) as f32));
-            let rot_x = glm::rotate(&rot_base, pitch, &glm::vec3(1.0, 0.0, 0.0));
-            for j in 0..long_lines {
-                yaw = (j as f32) * (2.0 * PI / (long_lines as f32));
-                let rot_y = glm::rotate(&rot_base, yaw, &glm::vec3(0.0, 0.0, 1.0));
-                let rot = glm::mat4_to_mat3(&rot_x) * (glm::mat4_to_mat3(&rot_y));
-                let vtx_pos = (rot * glm::vec3(0.0, 0.0, 1.0)).normalize();
-                vertices.push(Vertex {
-                    position: vtx_pos,
-                    normal: glm::zero(),
-                    tex_coord: glm::zero(),
-                });
-            }
-        }
-        vertices.push(Vertex {
-            position: glm::vec3(0.0, 0.0, -1.0),
-            normal: glm::zero(),
-            tex_coord: glm::zero(),
-        });
-
         let mut indices = Vec::<u32>::new();
-        for i in 0..(long_lines - 1) {
-            indices.push(0);
-            indices.push(i + 1);
-            indices.push(i + 2);
-        }
-        indices.push(0);
-        indices.push(long_lines);
-        indices.push(1);
 
-        for i in 0..(lat_lines - 3) {
-            for j in 0..(long_lines - 1) {
-                // quad
-                indices.push(i * long_lines + j + 1);
-                indices.push(i * long_lines + j + 2);
-                indices.push((i + 1) * long_lines + j + 1);
+        // 0
+        vertices.push(Vertex {
+            position: glm::vec3(1.0, 1.0, 1.0),
+            normal: glm::zero(),
+            tex_coord: glm::zero(),
+        });
+        // 1
+        vertices.push(Vertex {
+            position: glm::vec3(1.0, -1.0, 1.0),
+            normal: glm::zero(),
+            tex_coord: glm::zero(),
+        });
+        // 2
+        vertices.push(Vertex {
+            position: glm::vec3(-1.0, 1.0, 1.0),
+            normal: glm::zero(),
+            tex_coord: glm::zero(),
+        });
+        // 3
+        vertices.push(Vertex {
+            position: glm::vec3(-1.0, -1.0, 1.0),
+            normal: glm::zero(),
+            tex_coord: glm::zero(),
+        });
+        // 4
+        vertices.push(Vertex {
+            position: glm::vec3(1.0, 1.0, -1.0),
+            normal: glm::zero(),
+            tex_coord: glm::zero(),
+        });
+        // 5
+        vertices.push(Vertex {
+            position: glm::vec3(1.0, -1.0, -1.0),
+            normal: glm::zero(),
+            tex_coord: glm::zero(),
+        });
+        // 6
+        vertices.push(Vertex {
+            position: glm::vec3(-1.0, 1.0, -1.0),
+            normal: glm::zero(),
+            tex_coord: glm::zero(),
+        });
+        // 7
+        vertices.push(Vertex {
+            position: glm::vec3(-1.0, -1.0, -1.0),
+            normal: glm::zero(),
+            tex_coord: glm::zero(),
+        });
 
-                indices.push((i + 1) * long_lines + j + 1);
-                indices.push(i * long_lines + j + 2);
-                indices.push((i + 1) * long_lines + j + 2);
-            }
-
-            indices.push(i * long_lines + long_lines);
-            indices.push(i * long_lines + 1);
-            indices.push((i + 1) * long_lines + long_lines);
-            indices.push((i + 1) * long_lines + long_lines);
-            indices.push(i * long_lines + 1);
-            indices.push((i + 1) * long_lines + 1);
-        }
-
-        for i in 0..(long_lines - 1) {
-            indices.push(num_verts - 1);
-            indices.push(num_verts - i - 2);
-            indices.push(num_verts - i - 3);
-        }
-
-        indices.push(num_verts - 1);
-        indices.push(num_verts - 1 - long_lines);
-        indices.push(num_verts - 2);
+        indices = vec![
+            // -1.0f,  1.0f, -1.0f,
+            // -1.0f, -1.0f, -1.0f,
+            //  1.0f, -1.0f, -1.0f,
+            //  1.0f, -1.0f, -1.0f,
+            //  1.0f,  1.0f, -1.0f,
+            // -1.0f,  1.0f, -1.0f,
+            6, 7, 5, 5, 4, 6,
+            // -1.0f, -1.0f,  1.0f,
+            // -1.0f, -1.0f, -1.0f,
+            // -1.0f,  1.0f, -1.0f,
+            // -1.0f,  1.0f, -1.0f,
+            // -1.0f,  1.0f,  1.0f,
+            // -1.0f, -1.0f,  1.0f,
+            3, 7, 6, 6, 2, 3,
+            // 1.0f, -1.0f, -1.0f,
+            // 1.0f, -1.0f,  1.0f,
+            // 1.0f,  1.0f,  1.0f,
+            // 1.0f,  1.0f,  1.0f,
+            // 1.0f,  1.0f, -1.0f,
+            // 1.0f, -1.0f, -1.0f,
+            5, 1, 0, 0, 4, 5,
+            // -1.0f, -1.0f,  1.0f,
+            // -1.0f,  1.0f,  1.0f,
+            //  1.0f,  1.0f,  1.0f,
+            //  1.0f,  1.0f,  1.0f,
+            //  1.0f, -1.0f,  1.0f,
+            // -1.0f, -1.0f,  1.0f,
+            3, 2, 0, 0, 1, 3,
+            // -1.0f,  1.0f, -1.0f,
+            //  1.0f,  1.0f, -1.0f,
+            //  1.0f,  1.0f,  1.0f,
+            //  1.0f,  1.0f,  1.0f,
+            // -1.0f,  1.0f,  1.0f,
+            // -1.0f,  1.0f, -1.0f,
+            6, 4, 0, 0, 2, 6,
+            // -1.0f, -1.0f, -1.0f,
+            // -1.0f, -1.0f,  1.0f,
+            //  1.0f, -1.0f, -1.0f,
+            //  1.0f, -1.0f, -1.0f,
+            // -1.0f, -1.0f,  1.0f,
+            //  1.0f, -1.0f,  1.0f
+            7, 3, 5, 5, 3, 1,
+        ];
 
         let drawable = DxDrawable::from_verts(device, context, vertices, indices, ObjType::Any)?;
 
@@ -130,10 +147,9 @@ impl SkyBox {
             )?,
         ));
         drawable.borrow_mut().add_texture(0, tex);
-        let scale = glm::scale(&glm::identity(), &glm::vec3(5.0, 5.0, 5.0));
-        Ok(SkyBox {
-            drawable: drawable,
-            scale: scale,
-        })
+        let rot = glm::rotate(&glm::identity(), 4.78, &glm::vec3(0.0, 1.0, 0.0));
+        let rot = glm::rotate(&rot, 1.571, &glm::vec3(0.0, 0.0, -1.0));
+        drawable.borrow_mut().update_model(&rot);
+        Ok(SkyBox { drawable: drawable })
     }
 }
