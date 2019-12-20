@@ -1,5 +1,5 @@
-Texture2D txShadowMap : register(t3);
-SamplerComparisonState samplerShadowMap : register(s3);
+Texture2D txShadowMap : register(t5);
+SamplerComparisonState samplerShadowMap : register(s5);
 
 struct Light {
 	float4 direction;
@@ -47,7 +47,7 @@ float random(float3 seed3, int i) {
     return frac(sin(dot_product) * 43758.5453);
 }
 
-float shadow(float4 fragmentLS, float3 fragmentWS, float3 normal, float3 lightDir) {
+float shadow(float4 fragmentLS, float3 normal, float3 lightDir) {
 	int sampleCount = 16;
 	float2 shadowTexCoords;
 	shadowTexCoords.x = 0.5f + (fragmentLS.x / fragmentLS.w * 0.5f);
@@ -61,7 +61,7 @@ float shadow(float4 fragmentLS, float3 fragmentWS, float3 normal, float3 lightDi
 			visibility = 0.0;
 			float bias = max(0.05 * (1.0 - dot(normal, lightDir)), 0.005);
 			for (int i = 0; i < sampleCount; i++) {
-				int index = i; //int(float(sampleCount) * random(fragmentWS, i)) % sampleCount;
+				int index = i;
 				visibility += clamp(txShadowMap.SampleCmpLevelZero(samplerShadowMap, shadowTexCoords + poissonDisk[index]/900.0, pixelDepth - bias), 0.0, 1.0) / float(sampleCount);
 			}
 	}
