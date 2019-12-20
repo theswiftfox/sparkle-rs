@@ -1,3 +1,6 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
+static TEXTURE_ID: AtomicUsize = AtomicUsize::new(0);
+
 use super::{DxError, DxErrorType};
 
 use winapi::shared::dxgiformat as fmt;
@@ -8,11 +11,13 @@ use image::ColorType;
 use image::DynamicImage;
 use image::GenericImageView;
 
+
 pub struct Texture2D {
     pub format: u32,
     sampler: *mut dx11::ID3D11SamplerState,
     handle: *mut dx11::ID3D11Texture2D,
     pub shader_view: *mut dx11::ID3D11ShaderResourceView,
+    pub id: usize,
 }
 
 impl Texture2D {
@@ -262,6 +267,7 @@ impl Texture2D {
             sampler: std::ptr::null_mut(),
             handle: std::ptr::null_mut(),
             shader_view: std::ptr::null_mut(),
+            id: TEXTURE_ID.fetch_add(1, Ordering::SeqCst),
         };
         if bind_flags & dx11::D3D11_BIND_SHADER_RESOURCE == dx11::D3D11_BIND_SHADER_RESOURCE {
             //is_shader_resource

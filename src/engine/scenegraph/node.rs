@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc; // shared_ptr
 
-use super::drawable::{Drawable, ObjType};
+use crate::engine::d3d11::drawable::{DxDrawable, ObjType};
 use super::{ErrorCause, SceneGraphError};
 
 #[derive(Clone)]
@@ -13,14 +13,14 @@ pub struct Node {
     model_orig: glm::Mat4,
     children: HashMap<String, Rc<RefCell<Node>>>,
 
-    drawables: Vec<Rc<RefCell<dyn Drawable>>>,
+    drawables: Vec<Rc<RefCell<DxDrawable>>>,
 }
 
 impl Node {
     pub fn create(
         name: Option<&str>,
         model: glm::Mat4,
-        drawable: Option<Vec<Rc<RefCell<dyn Drawable>>>>,
+        drawable: Option<Vec<Rc<RefCell<DxDrawable>>>>,
     ) -> Rc<RefCell<Node>> {
         let n = Rc::new(RefCell::new(Node {
             uuid: 0, // TODO
@@ -66,7 +66,7 @@ impl Node {
         }
         Err(SceneGraphError::new(name, &ErrorCause::NotFound))
     }
-    pub fn get_drawables(&self) -> Vec<Rc<RefCell<dyn Drawable>>> {
+    pub fn get_drawables(&self) -> Vec<Rc<RefCell<DxDrawable>>> {
         return self.drawables.clone()
     }
 
@@ -140,7 +140,7 @@ impl Node {
         }
         false
     }
-    pub fn add_drawable(&mut self, drawable: Rc<RefCell<dyn Drawable>>) {
+    pub fn add_drawable(&mut self, drawable: Rc<RefCell<DxDrawable>>) {
         self.drawables.push(drawable)
     }
     pub fn translate(&mut self, t: glm::Vec3) {
@@ -167,7 +167,10 @@ impl Node {
 
     pub fn draw(&self, object_type: ObjType) {
         for drawable in &self.drawables {
-            drawable.borrow().draw(object_type);
+            if drawable.borrow().object_type() != object_type {
+                continue;
+            }
+            drawable.borrow().draw(true);
         }
         for (_, c) in &self.children {
             c.borrow().draw(object_type);
