@@ -14,7 +14,7 @@ use crate::input::Camera;
 use crate::window::Window;
 
 use d3d11::{D3D11Backend, DxError};
-use scenegraph::drawable::ObjType;
+use d3d11::drawable::ObjType;
 use scenegraph::Scenegraph;
 use scenegraph::Scenegraph;
 use std::time::Instant;
