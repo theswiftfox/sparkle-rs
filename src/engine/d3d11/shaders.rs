@@ -23,7 +23,7 @@ impl ShaderProgram {
         vs_file: &str,
         ps_file: &str,
         gs_file: Option<&str>,
-        input_desc: &[dx11::D3D11_INPUT_ELEMENT_DESC],
+        input_desc: Option<&[dx11::D3D11_INPUT_ELEMENT_DESC]>,
         device: *mut dx11_1::ID3D11Device1,
         context: *mut dx11_1::ID3D11DeviceContext1,
     ) -> Result<ShaderProgram, DxError> {
@@ -60,20 +60,22 @@ impl ShaderProgram {
                 ));
             }
 
-            let res = unsafe {
-                (*device).CreateInputLayout(
-                    input_desc.as_ptr(),
-                    input_desc.len() as u32,
-                    vs_data.as_ptr() as *const _,
-                    vs_data.len(),
-                    &mut shader_program.input_layout as *mut *mut _,
-                )
-            };
-            if res < S_OK {
-                return Err(DxError::new(
-                    "Input Layout creation failed!",
-                    DxErrorType::ResourceCreation,
-                ));
+            if let Some(input_desc) = input_desc {
+                let res = unsafe {
+                    (*device).CreateInputLayout(
+                        input_desc.as_ptr(),
+                        input_desc.len() as u32,
+                        vs_data.as_ptr() as *const _,
+                        vs_data.len(),
+                        &mut shader_program.input_layout as *mut *mut _,
+                    )
+                };
+                if res < S_OK {
+                    return Err(DxError::new(
+                        "Input Layout creation failed!",
+                        DxErrorType::ResourceCreation,
+                    ));
+                }
             }
         }
         if let Some(gs_file) = gs_file {
@@ -113,8 +115,10 @@ impl ShaderProgram {
             }
         }
 
-        unsafe {
-            (*context).IASetInputLayout(shader_program.input_layout);
+        if !shader_program.input_layout.is_null() {
+            unsafe {
+                (*context).IASetInputLayout(shader_program.input_layout);
+            }
         }
 
         Ok(shader_program)
