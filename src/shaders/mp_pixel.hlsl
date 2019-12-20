@@ -6,8 +6,8 @@ struct PS_IN {
 	float3 worldPos : POSITION_WORLD;
 	float3 normal : NORMAL;
 	float2 txCoord : TEXCOORD0;
-	float2 txCoordNM : TEXCOORD1;
-	float3x3 TBN : TBN_MATRIX;
+	// float2 txCoordNM : TEXCOORD1;
+	// float3x3 TBN : TBN_MATRIX;
 };
 
 struct PS_OUT {
@@ -33,7 +33,7 @@ PS_OUT main(PS_IN input) {
 		discard; // discard fully transparent fragments
 	}
 	float2 mr_tex = txMetallicRoughness.Sample(samplerMR, input.txCoord).gb;
-	float3 normal = txNormal.Sample(samplerNormal, input.txCoordNM).xyz;
+	float3 normal = txNormal.Sample(samplerNormal, input.txCoord).xyz;
 
 	// transform to range [-1,1]
 	//normal = normalize((normal * 2.0) - 1.0);

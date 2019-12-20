@@ -5,11 +5,11 @@ use winapi::um::d3d11_1 as dx11_1;
 use super::d3d11::{cbuffer, shaders, textures, DxError, DxErrorType};
 use super::geometry::Light;
 
-fn vertex_input_desc() -> [dx11::D3D11_INPUT_ELEMENT_DESC; 6] {
+fn vertex_input_desc() -> [dx11::D3D11_INPUT_ELEMENT_DESC; 3] {
     let pos_name: &'static std::ffi::CStr = const_cstr!("SV_Position").as_cstr();
     let norm_name: &'static std::ffi::CStr = const_cstr!("NORMAL").as_cstr();
-    let tang_name: &'static std::ffi::CStr = const_cstr!("TANGENT").as_cstr();
-    let bitang_name: &'static std::ffi::CStr = const_cstr!("BITANGENT").as_cstr();
+    // let tang_name: &'static std::ffi::CStr = const_cstr!("TANGENT").as_cstr();
+    // let bitang_name: &'static std::ffi::CStr = const_cstr!("BITANGENT").as_cstr();
     let uv_name: &'static std::ffi::CStr = const_cstr!("TEXCOORD").as_cstr();
     [
         dx11::D3D11_INPUT_ELEMENT_DESC {
@@ -30,24 +30,24 @@ fn vertex_input_desc() -> [dx11::D3D11_INPUT_ELEMENT_DESC; 6] {
             InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
             InstanceDataStepRate: 0,
         },
-        dx11::D3D11_INPUT_ELEMENT_DESC {
-            SemanticName: tang_name.as_ptr() as *const _,
-            SemanticIndex: 0,
-            Format: dxgifmt::DXGI_FORMAT_R32G32B32_FLOAT,
-            InputSlot: 0,
-            AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
-            InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-            InstanceDataStepRate: 0,
-        },
-        dx11::D3D11_INPUT_ELEMENT_DESC {
-            SemanticName: bitang_name.as_ptr() as *const _,
-            SemanticIndex: 0,
-            Format: dxgifmt::DXGI_FORMAT_R32G32B32_FLOAT,
-            InputSlot: 0,
-            AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
-            InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-            InstanceDataStepRate: 0,
-        },
+        // dx11::D3D11_INPUT_ELEMENT_DESC {
+        //     SemanticName: tang_name.as_ptr() as *const _,
+        //     SemanticIndex: 0,
+        //     Format: dxgifmt::DXGI_FORMAT_R32G32B32_FLOAT,
+        //     InputSlot: 0,
+        //     AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
+        //     InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
+        //     InstanceDataStepRate: 0,
+        // },
+        // dx11::D3D11_INPUT_ELEMENT_DESC {
+        //     SemanticName: bitang_name.as_ptr() as *const _,
+        //     SemanticIndex: 0,
+        //     Format: dxgifmt::DXGI_FORMAT_R32G32B32_FLOAT,
+        //     InputSlot: 0,
+        //     AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
+        //     InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
+        //     InstanceDataStepRate: 0,
+        // },
         dx11::D3D11_INPUT_ELEMENT_DESC {
             SemanticName: uv_name.as_ptr() as *const _,
             SemanticIndex: 0,
@@ -57,15 +57,15 @@ fn vertex_input_desc() -> [dx11::D3D11_INPUT_ELEMENT_DESC; 6] {
             InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
             InstanceDataStepRate: 0,
         },
-        dx11::D3D11_INPUT_ELEMENT_DESC {
-            SemanticName: uv_name.as_ptr() as *const _,
-            SemanticIndex: 1,
-            Format: dxgifmt::DXGI_FORMAT_R32G32_FLOAT,
-            InputSlot: 0,
-            AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
-            InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-            InstanceDataStepRate: 0,
-        },
+        // dx11::D3D11_INPUT_ELEMENT_DESC {
+        //     SemanticName: uv_name.as_ptr() as *const _,
+        //     SemanticIndex: 1,
+        //     Format: dxgifmt::DXGI_FORMAT_R32G32_FLOAT,
+        //     InputSlot: 0,
+        //     AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
+        //     InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
+        //     InstanceDataStepRate: 0,
+        // },
     ]
 }
 
@@ -355,6 +355,7 @@ impl DeferredPassPre {
             1,
             dx11::D3D11_BIND_RENDER_TARGET | dx11::D3D11_BIND_SHADER_RESOURCE,
             0,
+            0,
             device,
         )?;
         {
@@ -407,6 +408,7 @@ impl DeferredPassPre {
             dx11::D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT,
             1,
             dx11::D3D11_BIND_RENDER_TARGET | dx11::D3D11_BIND_SHADER_RESOURCE,
+            0,
             0,
             device,
         )?;
@@ -677,6 +679,7 @@ impl ShadowPass {
             dx11::D3D11_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT,
             1,
             dx11::D3D11_BIND_DEPTH_STENCIL | dx11::D3D11_BIND_SHADER_RESOURCE,
+            0,
             1,
             device,
         )?;
@@ -741,6 +744,85 @@ impl ShadowPass {
                 MinDepth: 0.0,
                 MaxDepth: 1.0,
             },
+        })
+    }
+}
+
+pub struct SkyBoxPass {
+    program: shaders::ShaderProgram,
+    vertex_shader_uniforms: cbuffer::CBuffer<ConstantsVtxDeferredPre>,
+}
+
+impl SkyBoxPass {
+    pub fn prepare_draw(&mut self, ctx: *mut dx11_1::ID3D11DeviceContext1) {
+        self.program.activate();
+        unsafe {
+            (*ctx).VSSetConstantBuffers(
+                0,
+                1,
+                &self.vertex_shader_uniforms.buffer_ptr() as *const *mut _,
+            );
+        };
+    }
+
+    pub fn update(&mut self) -> Result<(), DxError> {
+        self.vertex_shader_uniforms.update()
+    }
+
+    pub fn set_view(&mut self, view: glm::Mat4, instant_update: bool) -> Result<(), DxError> {
+        self.vertex_shader_uniforms.data.view = view;
+        if instant_update {
+            self.vertex_shader_uniforms.update()?
+        }
+        Ok(())
+    }
+    pub fn set_proj(&mut self, proj: glm::Mat4, instant_update: bool) -> Result<(), DxError> {
+        self.vertex_shader_uniforms.data.proj = proj;
+        if instant_update {
+            self.vertex_shader_uniforms.update()?
+        }
+        Ok(())
+    }
+    pub fn set_view_proj(
+        &mut self,
+        view: glm::Mat4,
+        proj: glm::Mat4,
+        instant_update: bool,
+    ) -> Result<(), DxError> {
+        self.set_view(view, false)?;
+        self.set_proj(proj, false)?;
+        if instant_update {
+            self.vertex_shader_uniforms.update()?
+        }
+        Ok(())
+    }
+
+    pub fn create(
+        device: *mut dx11_1::ID3D11Device1,
+        context: *mut dx11_1::ID3D11DeviceContext1,
+    ) -> Result<SkyBoxPass, DxError> {
+        let vtx_shader = "skybox_vertex.cso";
+        let ps_shader = "skybox_pixel.cso";
+
+        let vtx_uniforms = ConstantsVtxDeferredPre {
+            view: glm::identity(),
+            proj: glm::identity(),
+        };
+        let vtx_cbuff = match cbuffer::CBuffer::create(vtx_uniforms, context, device) {
+            Ok(b) => b,
+            Err(e) => panic!(e),
+        };
+
+        Ok(SkyBoxPass {
+            program: shaders::ShaderProgram::create(
+                &vtx_shader,
+                &ps_shader,
+                None,
+                None,
+                device,
+                context,
+            )?,
+            vertex_shader_uniforms: vtx_cbuff,
         })
     }
 }

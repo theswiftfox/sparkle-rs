@@ -58,6 +58,7 @@ pub fn load_gltf(
 			dx11::D3D11_TEXTURE_ADDRESS_CLAMP,
 			dx11::D3D11_TEXTURE_ADDRESS_CLAMP,
 			dx11::D3D11_FILTER_MIN_MAG_MIP_POINT,
+			0,
 			device,
 			context,
 		)
@@ -161,8 +162,8 @@ impl GltfImporter {
 					let mut indices: Vec<u32> = Vec::new();
 					let mut normals: Vec<glm::Vec3> = Vec::new();
 					let mut tex_coords: Vec<glm::Vec2> = Vec::new();
-					let mut tex_coords_normalmap: Vec<glm::Vec2> = Vec::new();
-					let mut tangents_raw: Vec<glm::Vec4> = Vec::new();
+					// let mut tex_coords_normalmap: Vec<glm::Vec2> = Vec::new();
+					// let mut tangents_raw: Vec<glm::Vec4> = Vec::new();
 					{
 						let reader = primitive.reader(|buffer| Some(&self.buffers[buffer.index()]));
 						if let Some(it) = reader.read_positions() {
@@ -181,23 +182,23 @@ impl GltfImporter {
 							}
 						};
 
-						tangents_raw = match reader.read_tangents() {
-							Some(it) => {
-								let mut trvec: Vec<glm::Vec4> = Vec::new();
-								for tang in it {
-									trvec.push(glm::vec4(tang[0], tang[1], tang[2], tang[3]));
-								}
-								trvec
-							}
-							None => Vec::new(),
-						};
-						if let Some(info) = mat.normal_texture() {
-							if let Some(it) = reader.read_tex_coords(info.tex_coord()) {
-								for uv in it.into_f32() {
-									tex_coords_normalmap.push(glm::vec2(uv[0], uv[1]));
-								}
-							}
-						}
+						// tangents_raw = match reader.read_tangents() {
+						// 	Some(it) => {
+						// 		let mut trvec: Vec<glm::Vec4> = Vec::new();
+						// 		for tang in it {
+						// 			trvec.push(glm::vec4(tang[0], tang[1], tang[2], tang[3]));
+						// 		}
+						// 		trvec
+						// 	}
+						// 	None => Vec::new(),
+						// };
+						// if let Some(info) = mat.normal_texture() {
+						// 	if let Some(it) = reader.read_tex_coords(info.tex_coord()) {
+						// 		for uv in it.into_f32() {
+						// 			tex_coords_normalmap.push(glm::vec2(uv[0], uv[1]));
+						// 		}
+						// 	}
+						// }
 						if let Some(info) = &alb {
 							if let Some(it) = reader.read_tex_coords(info.tex_coord()) {
 								for uv in it.into_f32() {
@@ -232,69 +233,69 @@ impl GltfImporter {
 						None => self.missing_tex.clone(),
 					};
 
-					let tangents_raw = match tangents_raw.len() > 0 {
-						true => tangents_raw,
-						false => {
-							let mut trvec: Vec<glm::Vec4> = Vec::new();
-							// calculate tangents - bugged
-							if tex_coords.len() != positions.len() {
-								panic!("No UV Coordinates provided!");
-							}
-							let mut index = 0;
-							for _ in 0..(indices.len() / 3) {
-								let i0 = indices[index] as usize;
-								let i1 = indices[index + 1] as usize;
-								let i2 = indices[index + 2] as usize;
+					// let tangents_raw = match tangents_raw.len() > 0 {
+					// 	true => tangents_raw,
+					// 	false => {
+					// 		let mut trvec: Vec<glm::Vec4> = Vec::new();
+					// 		// calculate tangents - bugged
+					// 		if tex_coords.len() != positions.len() {
+					// 			panic!("No UV Coordinates provided!");
+					// 		}
+					// 		let mut index = 0;
+					// 		for _ in 0..(indices.len() / 3) {
+					// 			let i0 = indices[index] as usize;
+					// 			let i1 = indices[index + 1] as usize;
+					// 			let i2 = indices[index + 2] as usize;
 
-								let v0 = positions[i0];
-								let v1 = positions[i1];
-								let v2 = positions[i2];
+					// 			let v0 = positions[i0];
+					// 			let v1 = positions[i1];
+					// 			let v2 = positions[i2];
 
-								let w0 = tex_coords[i0];
-								let w1 = tex_coords[i1];
-								let w2 = tex_coords[i2];
+					// 			let w0 = tex_coords[i0];
+					// 			let w1 = tex_coords[i1];
+					// 			let w2 = tex_coords[i2];
 
-								let x0 = v1.x - v0.x;
-								let x1 = v2.x - v0.x;
-								let y0 = v1.y - v0.y;
-								let y1 = v2.y - v0.y;
-								let z0 = v1.z - v0.z;
-								let z1 = v2.z - v0.z;
+					// 			let x0 = v1.x - v0.x;
+					// 			let x1 = v2.x - v0.x;
+					// 			let y0 = v1.y - v0.y;
+					// 			let y1 = v2.y - v0.y;
+					// 			let z0 = v1.z - v0.z;
+					// 			let z1 = v2.z - v0.z;
 
-								let s0 = w1.x - w0.x;
-								let s1 = w2.x - w0.x;
-								let t0 = w1.y - w0.y;
-								let t1 = w2.y - w0.y;
+					// 			let s0 = w1.x - w0.x;
+					// 			let s1 = w2.x - w0.x;
+					// 			let t0 = w1.y - w0.y;
+					// 			let t1 = w2.y - w0.y;
 
-								let r = 1.0f32 / (s0 * t1 - s1 * t0);
-								let sdir = glm::vec3(
-									(t1 * x0 - t0 * x1) * r,
-									(t1 * y0 - t0 * y1) * r,
-									(t1 * z0 - t0 * z1) * r,
-								);
-								let tdir = glm::vec3(
-									(s0 * x1 - s1 * x0) * r,
-									(s0 * y1 - s1 * y0) * r,
-									(s0 * z1 - s1 * z0) * r,
-								);
-								let normal = normals[i0];
-								// Gram-Schmidt orthogonalize
-								let t = (sdir - normal * normal.dot(&sdir)).normalize();
-								let w = match normal.cross(&sdir).dot(&tdir) < 0.0f32 {
-									true => -1.0f32,
-									false => 1.0f32,
-								};
-								let tangent = glm::vec4(t.x, t.y, t.z, w);
+					// 			let r = 1.0f32 / (s0 * t1 - s1 * t0);
+					// 			let sdir = glm::vec3(
+					// 				(t1 * x0 - t0 * x1) * r,
+					// 				(t1 * y0 - t0 * y1) * r,
+					// 				(t1 * z0 - t0 * z1) * r,
+					// 			);
+					// 			let tdir = glm::vec3(
+					// 				(s0 * x1 - s1 * x0) * r,
+					// 				(s0 * y1 - s1 * y0) * r,
+					// 				(s0 * z1 - s1 * z0) * r,
+					// 			);
+					// 			let normal = normals[i0];
+					// 			// Gram-Schmidt orthogonalize
+					// 			let t = (sdir - normal * normal.dot(&sdir)).normalize();
+					// 			let w = match normal.cross(&sdir).dot(&tdir) < 0.0f32 {
+					// 				true => -1.0f32,
+					// 				false => 1.0f32,
+					// 			};
+					// 			let tangent = glm::vec4(t.x, t.y, t.z, w);
 
-								trvec.push(tangent);
-								trvec.push(tangent);
-								trvec.push(tangent);
+					// 			trvec.push(tangent);
+					// 			trvec.push(tangent);
+					// 			trvec.push(tangent);
 
-								index = index + 3;
-							}
-							trvec
-						}
-					};
+					// 			index = index + 3;
+					// 		}
+					// 		trvec
+					// 	}
+					// };
 
 					let mut vertices: Vec<Vertex> = Vec::new();
 					for i in 0..positions.len() {
@@ -307,22 +308,22 @@ impl GltfImporter {
 							true => tex_coords[i],
 							false => glm::zero(),
 						};
-						let t = match i < tangents_raw.len() {
-							true => tangents_raw[i],
-							false => glm::zero(),
-						};
-						let bt = n.cross(&t.xyz()) * t.w;
-						let uv_nm = match i < tex_coords_normalmap.len() {
-							true => tex_coords_normalmap[i],
-							false => glm::zero(),
-						};
+						// let t = match i < tangents_raw.len() {
+						// 	true => tangents_raw[i],
+						// 	false => glm::zero(),
+						// };
+						// let bt = n.cross(&t.xyz()) * t.w;
+						// let uv_nm = match i < tex_coords_normalmap.len() {
+						// 	true => tex_coords_normalmap[i],
+						// 	false => glm::zero(),
+						// };
 						vertices.push(Vertex {
 							position: p,
 							normal: n,
-							tangent: t.xyz() * t.w,
-							bitangent: bt,
+							//			tangent: t.xyz() * t.w,
+							//			bitangent: bt,
 							tex_coord: uv,
-							tex_coord_normalmap: uv_nm,
+							//			tex_coord_normalmap: uv_nm,
 						});
 					}
 					let dx_prim = DxDrawable::from_verts(
@@ -417,6 +418,7 @@ impl GltfImporter {
 					wrap_u,
 					wrap_v,
 					filter,
+					0,
 					self.device,
 					self.context,
 				)

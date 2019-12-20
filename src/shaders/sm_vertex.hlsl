@@ -1,10 +1,10 @@
 struct VS_IN {
 	float3 pos			: SV_Position;
 	float3 normal		: NORMAL;
-	float3 tangent		: TANGENT0;
-	float3 bitangent	: BITANGENT0;
+	// float3 tangent		: TANGENT0;
+	// float3 bitangent	: BITANGENT0;
 	float2 txCoord 		: TEXCOORD0;
-	float2 txCoordNM	: TEXCOORD1;
+	// float2 txCoordNM	: TEXCOORD1;
 };
 
 struct VS_OUT {
