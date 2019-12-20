@@ -5,7 +5,7 @@ struct PS_IN {
 	float3 worldPos : POSITION_WORLD;
 	float3 normal : NORMAL;
 	float2 txCoord : TEXCOORD0;
-	float2 txCoordNM : TEXCOORD1;
+	// float2 txCoordNM : TEXCOORD1;
 };
 
 struct PS_OUT {
