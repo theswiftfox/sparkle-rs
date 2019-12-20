@@ -1,16 +1,17 @@
-pub mod drawable;
 pub mod node;
 
 use node::Node;
 use std::cell::RefCell;
-use std::rc::Rc as shared_ptr;
+use std::rc::Rc;
 
 use super::geometry::Light;
+use super::d3d11::drawable::{ObjType, DxDrawable};
 
 pub struct Scenegraph {
     transform: glm::Mat4,
     directional_light: Light,
-    root: Option<shared_ptr<RefCell<Node>>>,
+    light_proj: glm::Mat4,
+    root: Option<Rc<RefCell<Node>>>,
 }
 
 impl Scenegraph {
@@ -22,9 +23,10 @@ impl Scenegraph {
                 direction: glm::zero(),
                 color: glm::zero(),
             },
+            light_proj: glm::ortho_zo(-25.0, 25.0, -25.0, 25.0, 1.0, 70.0),
         }
     }
-    pub fn set_root(&mut self, node: shared_ptr<RefCell<Node>>) {
+    pub fn set_root(&mut self, node: Rc<RefCell<Node>>) {
         self.root = Some(node)
     }
 
@@ -42,13 +44,37 @@ impl Scenegraph {
     pub fn get_directional_light(&self) -> &Light {
         return &self.directional_light;
     }
+    pub fn get_light_proj(&self) -> &glm::Mat4 {
+        return &self.light_proj;
+    }
 
-    pub fn draw(&self, object_type: drawable::ObjType) {
-        if self.root.is_some() {
-            self.root.as_ref().unwrap().borrow().draw(self.transform, object_type);
+    pub fn build_matrices(&mut self) {
+        if let Some(root) = &mut self.root {
+            root.borrow_mut().build_model(&self.transform);
         }
     }
-    pub fn get_node_named(&self, name: &str) -> Result<shared_ptr<RefCell<Node>>, SceneGraphError> {
+
+    pub fn draw(&self, object_type: ObjType) {
+        // if self.root.is_some() {
+        //     self.root.as_ref().unwrap().borrow().draw(object_type);
+        // }
+        if let Ok(drawables) = self.traverse() {
+            for i in 0..drawables.len() {
+                let drawable = &drawables[i];
+                if drawable.borrow().object_type() != object_type {
+                    continue;
+                }
+                let drawable = drawable.borrow();
+                let mat = drawable.material();
+                let mut rebind_material = false;
+                if i == 0 || !&drawables[i - 1].borrow().material().eq(mat) {
+                    rebind_material = true;
+                }
+                drawable.draw(rebind_material);
+            }
+        }
+    }
+    pub fn get_node_named(&self, name: &str) -> Result<Rc<RefCell<Node>>, SceneGraphError> {
         if self.root.is_none() {
             Err(SceneGraphError::err_empty("Root node is empty"))
         } else {
@@ -64,20 +90,20 @@ impl Scenegraph {
         }
     }
 
-    pub fn traverse(&self) -> Result<Vec<shared_ptr<RefCell<Node>>>, SceneGraphError> {
+    pub fn traverse(&self) -> Result<Vec<Rc<RefCell<DxDrawable>>>, SceneGraphError> {
         if self.root.is_none() {
             Err(SceneGraphError::new("", &ErrorCause::Empty))
         } else {
-            let nodes = self
-                .root
-                .as_ref()
-                .unwrap()
-                .borrow()
-                .traverse(self.transform);
+            let nodes = self.root.as_ref().unwrap().borrow().traverse();
             if nodes.is_empty() {
                 Err(SceneGraphError::err_empty("Root has no children"))
             } else {
-                Ok(nodes)
+                let mut drawables : Vec<Rc<RefCell<DxDrawable>>> = Vec::new();
+                for node in &nodes {
+                    drawables.append(&mut node.borrow().get_drawables())
+                }
+                drawables.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                Ok(drawables)
             }
         }
     }
@@ -85,7 +111,7 @@ impl Scenegraph {
     pub fn get_drawables_named(
         &self,
         name: &str,
-    ) -> Option<Vec<shared_ptr<RefCell<dyn drawable::Drawable>>>> {
+    ) -> Option<Vec<Rc<RefCell<DxDrawable>>>> {
         let node = match self.get_node_named(name) {
             Ok(n) => Some(n),
             Err(_) => None,
