@@ -583,7 +583,7 @@ impl DeferredPassLight {
 /**
  * Section Shadow Mapping
  */
-const SHADOW_MAP_SIZE: u32 = 4096;
+const SHADOW_MAP_SIZE: u32 = /*2048; */4096;
 
 struct ConstantsVtxSM {
     pub light_space_matrix: glm::Mat4,
