@@ -57,7 +57,7 @@ impl Renderer {
         let quad = d3d11::drawable::ScreenQuad::create(backend.get_device())
             .expect("Error generating ScreenQuad");
         let mut renderer = Renderer {
-            shadow_dist: 70.0,
+            shadow_dist: 30.0,
             backend: backend,
             window: window,
             forward_program: None,
@@ -126,14 +126,14 @@ impl Renderer {
                         renderer.clock.elapsed().as_millis()
                     );
                     let light = renderer.scene.get_directional_light();
-                    let shadow_dist = 10.0;
+                    let shadow_dist = 15.0;
                     let light_proj = glm::ortho_zo(
                         -shadow_dist,
                         shadow_dist,
                         -shadow_dist,
                         shadow_dist,
                         1.0,
-                        100.0,
+                        2.0 * renderer.shadow_dist,
                     );
                     let dir = light.direction.xyz() * (-1.0) * renderer.shadow_dist;
                     let mut up = glm::vec3(0.0, 1.0, 0.0);
@@ -405,6 +405,7 @@ impl Renderer {
         match &mut self.shadow_program {
             Some(sp) => {
                 self.backend.pix_begin_event("Shadow Mapping");
+                self.backend.cull_front();
                 let viewport = sp.get_shadow_map_viewport();
                 unsafe { (*ctx).RSSetViewports(1, viewport) };
                 unsafe {
@@ -418,6 +419,7 @@ impl Renderer {
                 self.shadow_program.as_mut().unwrap().prepare_draw(ctx);
 
                 self.scene.draw(ObjType::Any);
+                self.backend.cull_back();
                 self.backend.pix_end_event();
             }
             None => {}

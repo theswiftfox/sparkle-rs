@@ -49,7 +49,8 @@ pub struct D3D11Backend {
     render_target: *mut dx11::ID3D11Texture2D,
     depth_stencil: *mut dx11::ID3D11Texture2D,
     viewport: dx11::D3D11_VIEWPORT,
-    rasterizer_state: *mut dx11_1::ID3D11RasterizerState1,
+    rasterzer_state_back_face: *mut dx11_1::ID3D11RasterizerState1,
+    rasterzer_state_front_face: *mut dx11_1::ID3D11RasterizerState1,
     depth_stencil_state: *mut dx11::ID3D11DepthStencilState,
     blend_state: *mut dx11_1::ID3D11BlendState1,
     initialized: bool,
@@ -81,7 +82,8 @@ impl Default for D3D11Backend {
             depth_stencil_view: ptr::null_mut(),
             depth_stencil: ptr::null_mut(),
             viewport: Default::default(),
-            rasterizer_state: ptr::null_mut(),
+            rasterzer_state_back_face: ptr::null_mut(),
+            rasterzer_state_front_face: ptr::null_mut(),
             depth_stencil_state: ptr::null_mut(),
             blend_state: ptr::null_mut(),
             backbuffer_format: dxgifmt::DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -120,6 +122,17 @@ impl D3D11Backend {
         unsafe {
             let blend_factor = [1.0f32, 1.0f32, 1.0f32, 1.0f32];
             (*self.context).OMSetBlendState(self.blend_state as *mut _, &blend_factor, 0xffffffff);
+        }
+    }
+
+    pub fn cull_back(&self) {
+        unsafe {
+            (*self.context).RSSetState(self.rasterzer_state_back_face as *mut _);
+        }
+    }
+    pub fn cull_front(&self) {
+        unsafe {
+            (*self.context).RSSetState(self.rasterzer_state_front_face as *mut _);
         }
     }
 
@@ -636,7 +649,7 @@ impl D3D11Backend {
                 MinDepth: dx11::D3D11_MIN_DEPTH,
             };
 
-            let rasterizer_state = dx11_1::D3D11_RASTERIZER_DESC1 {
+            let mut rasterizer_state = dx11_1::D3D11_RASTERIZER_DESC1 {
                 FillMode: dx11::D3D11_FILL_SOLID,
                 CullMode: dx11::D3D11_CULL_BACK,
                 FrontCounterClockwise: TRUE,
@@ -652,7 +665,7 @@ impl D3D11Backend {
             unsafe {
                 let res = (*self.device).CreateRasterizerState(
                     &rasterizer_state,
-                    &mut self.rasterizer_state as *mut *mut _,
+                    &mut self.rasterzer_state_back_face as *mut *mut _,
                 );
                 if res < S_OK {
                     println!("Unable to setup rasterizer");
@@ -661,7 +674,21 @@ impl D3D11Backend {
                         DxErrorType::ResourceCreation,
                     ));
                 }
-                (*self.context).RSSetState(self.rasterizer_state as *mut _);
+                (*self.context).RSSetState(self.rasterzer_state_back_face as *mut _);
+            }
+            rasterizer_state.CullMode = dx11::D3D11_CULL_FRONT;
+            unsafe {
+                let res = (*self.device).CreateRasterizerState(
+                    &rasterizer_state,
+                    &mut self.rasterzer_state_front_face as *mut *mut _,
+                );
+                if res < S_OK {
+                    println!("Unable to setup rasterizer");
+                    return Err(DxError::new(
+                        "ShadowMap Rasterizer init failed!",
+                        DxErrorType::ResourceCreation,
+                    ));
+                }
             }
 
             let depth_state_desc = dx11::D3D11_DEPTH_STENCIL_DESC {

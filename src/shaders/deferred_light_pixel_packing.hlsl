@@ -37,7 +37,7 @@ PS_OUT main(PS_IN input, float4 screenPos : SV_Position) {
 		output.color = 0.0;
 		return output;
 	}
-    float4 posLS = 	posLS = mul(lightSpace, float4(pos.xyz, 1.0));
+    float4 posLS = 	posLS = mul(lightSpace, pos);//float4(pos.xyz, 1.0));
 
     float metallic = 16.0;//mr_tex.r;
 	float shadowed = shadow(posLS, normal, normalize(-directionalLight.direction.xyz));
