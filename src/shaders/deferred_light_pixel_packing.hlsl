@@ -29,16 +29,17 @@ PS_OUT main(PS_IN input, float4 screenPos : SV_Position) {
 
 	float4 pos = float4(f16tof32(pos_pack.r >> 16), f16tof32(pos_pack.r), f16tof32(pos_pack.g >> 16), f16tof32(pos_pack.g));
 	float3 normal = float3(f16tof32(pos_pack.b >> 16), f16tof32(pos_pack.b), f16tof32(pos_pack.a >> 16)) * 2.0 - 1.0;
-
+	// float3 surface_normal = float3(f16tof32(pos_pack.a), f16tof32(alb_pack.b >> 16), f16tof32(alb_pack.b)) * 2.0 - 1.0;
 	float4 albedo = float4(f16tof32(alb_pack.r >> 16), f16tof32(alb_pack.r), f16tof32(alb_pack.g >> 16), f16tof32(alb_pack.g));
-	
+	// output.color = float4(normal, 1.0);
+	// return output;
 	if (length(pos.rgb) == 0.0) {
 		output.color = 0.0;
 		return output;
 	}
     float4 posLS = 	posLS = mul(lightSpace, float4(pos.xyz, 1.0));
 
-    float metallic = 32.0;//mr_tex.r;
+    float metallic = 16.0;//mr_tex.r;
 	float shadowed = shadow(posLS, normal, normalize(-directionalLight.direction.xyz));
 	float3 color = blinn_phong(directionalLight, cameraPos.xyz, pos.xyz, normal, albedo.rgb, metallic, shadowed);
 	color = pow(color, 1/2.2);

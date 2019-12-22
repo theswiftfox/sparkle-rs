@@ -29,10 +29,13 @@ static float2 poissonDisk[64] = {
 float3 blinn_phong(Light light, float3 view_pos, float3 world_pos, float3 normal, float3 albedo, float metallic, float shadowed) {
 	float3 ld = normalize(-light.direction.xyz);
 	float3 vd = normalize(view_pos - world_pos);
-	float3 hwd = normalize(ld + vd);
 
-	float spec = pow(max(dot(normal, hwd), 0.0), metallic);
-	float3 specular = light.color.rgb * spec;
+	float3 specular = float3(0.0, 0.0, 0.0);
+	if (dot(normal, ld)) {
+		float3 hwd = normalize(ld + vd);
+		float spec = pow(max(dot(normal, hwd), 0.0), metallic);
+		specular = light.color.rgb * spec;
+	}
 
 	float diff = max(dot(ld, normal), 0.0);
 	float3 diffuse = diff * albedo;
