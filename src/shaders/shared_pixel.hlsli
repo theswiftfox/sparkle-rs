@@ -40,7 +40,7 @@ float3 blinn_phong(Light light, float3 view_pos, float3 world_pos, float3 normal
 	float diff = max(dot(ld, normal), 0.0);
 	float3 diffuse = diff * albedo;
 
-	float3 ambient = 0.25 * albedo;
+	float3 ambient = 0.05 * albedo;
 	return ambient + max(shadowed, 0.0) * (diffuse + specular);
 }
 
@@ -62,10 +62,10 @@ float shadow(float4 fragmentLS, float3 normal, float3 lightDir) {
     	(saturate(shadowTexCoords.y) == shadowTexCoords.y) &&
     	(pixelDepth > 0)) {
 			visibility = 0.0;
-			float bias = max(0.05 * (1.0 - dot(normal, lightDir)), 0.005);
+			float bias = max(0.005 * (1.0 - dot(normal, lightDir)), 0.0005);
 			for (int i = 0; i < sampleCount; i++) {
 				int index = i;
-				visibility += clamp(txShadowMap.SampleCmpLevelZero(samplerShadowMap, shadowTexCoords + poissonDisk[index]/900.0, pixelDepth - bias), 0.0, 1.0) / float(sampleCount);
+				visibility += clamp(txShadowMap.SampleCmpLevelZero(samplerShadowMap, shadowTexCoords + poissonDisk[index]/1000.0, pixelDepth /*- bias*/), 0.0, 1.0) / float(sampleCount);
 			}
 	}
 	return visibility;

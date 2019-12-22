@@ -10,7 +10,7 @@ struct VS_IN {
 
 struct VS_OUT {
 	float4 pos			: SV_Position;
-	float3 worldPos 	: POSITION_WORLD;
+	float4 worldPos 	: POSITION_WORLD;
 	float3 normal		: NORMAL;
 	float2 txCoord 		: TEXCOORD0;
 	// float2 txCoordNM	: TEXCOORD1;
@@ -29,7 +29,7 @@ cbuffer PerInstance : register(b1) {
 VS_OUT main(VS_IN input) {
 	VS_OUT output;
 	float4 worldPos = mul(model, float4(input.pos, 1.0));
-	output.worldPos = worldPos.xyz;
+	output.worldPos = worldPos;//.xyz;
 	output.pos = mul(proj, mul(view , worldPos));
 	output.txCoord = input.txCoord;
 	// output.txCoordNM = input.txCoordNM;
