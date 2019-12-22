@@ -36,48 +36,64 @@ impl SkyBox {
         vertices.push(Vertex {
             position: glm::vec3(1.0, 1.0, 1.0),
             normal: glm::zero(),
+            tangent: glm::zero(),
+            bitangent: glm::zero(),
             tex_coord: glm::zero(),
         });
         // 1
         vertices.push(Vertex {
             position: glm::vec3(1.0, -1.0, 1.0),
             normal: glm::zero(),
+            tangent: glm::zero(),
+            bitangent: glm::zero(),
             tex_coord: glm::zero(),
         });
         // 2
         vertices.push(Vertex {
             position: glm::vec3(-1.0, 1.0, 1.0),
             normal: glm::zero(),
+            tangent: glm::zero(),
+            bitangent: glm::zero(),
             tex_coord: glm::zero(),
         });
         // 3
         vertices.push(Vertex {
             position: glm::vec3(-1.0, -1.0, 1.0),
             normal: glm::zero(),
+            tangent: glm::zero(),
+            bitangent: glm::zero(),
             tex_coord: glm::zero(),
         });
         // 4
         vertices.push(Vertex {
             position: glm::vec3(1.0, 1.0, -1.0),
             normal: glm::zero(),
+            tangent: glm::zero(),
+            bitangent: glm::zero(),
             tex_coord: glm::zero(),
         });
         // 5
         vertices.push(Vertex {
             position: glm::vec3(1.0, -1.0, -1.0),
             normal: glm::zero(),
+            tangent: glm::zero(),
+            bitangent: glm::zero(),
             tex_coord: glm::zero(),
         });
         // 6
         vertices.push(Vertex {
             position: glm::vec3(-1.0, 1.0, -1.0),
             normal: glm::zero(),
+            tangent: glm::zero(),
+            bitangent: glm::zero(),
             tex_coord: glm::zero(),
         });
         // 7
         vertices.push(Vertex {
             position: glm::vec3(-1.0, -1.0, -1.0),
             normal: glm::zero(),
+            tangent: glm::zero(),
+            bitangent: glm::zero(),
             tex_coord: glm::zero(),
         });
 
