@@ -4,8 +4,8 @@ use node::Node;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use super::d3d11::drawable::{DxDrawable, ObjType};
 use super::geometry::Light;
-use super::d3d11::drawable::{ObjType, DxDrawable};
 
 pub struct Scenegraph {
     transform: glm::Mat4,
@@ -98,7 +98,7 @@ impl Scenegraph {
             if nodes.is_empty() {
                 Err(SceneGraphError::err_empty("Root has no children"))
             } else {
-                let mut drawables : Vec<Rc<RefCell<DxDrawable>>> = Vec::new();
+                let mut drawables: Vec<Rc<RefCell<DxDrawable>>> = Vec::new();
                 for node in &nodes {
                     drawables.append(&mut node.borrow().get_drawables())
                 }
@@ -108,10 +108,7 @@ impl Scenegraph {
         }
     }
 
-    pub fn get_drawables_named(
-        &self,
-        name: &str,
-    ) -> Option<Vec<Rc<RefCell<DxDrawable>>>> {
+    pub fn get_drawables_named(&self, name: &str) -> Option<Vec<Rc<RefCell<DxDrawable>>>> {
         let node = match self.get_node_named(name) {
             Ok(n) => Some(n),
             Err(_) => None,

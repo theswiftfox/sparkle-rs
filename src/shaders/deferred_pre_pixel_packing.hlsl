@@ -6,6 +6,7 @@ struct PS_IN {
 	float3 normal : NORMAL;
 	float2 txCoord : TEXCOORD0;
 	// float2 txCoordNM : TEXCOORD1;
+	float3x3 TBN : TBN_MATRIX;
 };
 
 struct PS_OUT {
@@ -37,14 +38,24 @@ PS_OUT main(PS_IN input) {
 	float4 albedo = txDiffuse.Sample(samplerLinear, input.txCoord);
     float4 pos = float4(input.worldPos, calcLinearDepth(input.pos.z));
 
-	float4 normal = float4(input.normal * 0.5 + 0.5, 0.0);
-	uint4 phalf = f32tof16(pos);
+	// float3 normal_out = input.normal;
+	float3 normal = txNormal.Sample(samplerNormal, input.txCoord).xyz;
+	// transform to range [-1,1]
+	normal = normalize((normal * 2.0) - 1.0);
+	// normal.y = normal.y * -1.0;
+	// move into world space
+	float3 normal_out = normalize(mul(normal, input.TBN));
+	// normal_out.y = -normal_out.y;
+	normal_out = normal_out * 0.5 + 0.5;
 
+	uint4 phalf = f32tof16(pos);
 	output.position.r = (phalf.r << 16) | phalf.g;
 	output.position.g = (phalf.b << 16) | phalf.a;
-	uint4 nhalf = f32tof16(normal);
+	uint3 nhalf = f32tof16(normal_out);
+	// uint3 nhalf_surf = f32tof16(input.normal * 0.5 + 0.5);
 	output.position.b = (nhalf.r << 16) | nhalf.g;
-	output.position.a = (nhalf.b << 16) | nhalf.a;
+	output.position.a = (nhalf.b << 16) | 0; //nhalf_surf.r;
+	// output.albedo.b = (nhalf_surf.g << 16) | nhalf_surf.b;
 	
 	uint4 chalf = f32tof16(albedo);
 	output.albedo.r = (chalf.r << 16) | chalf.g;
