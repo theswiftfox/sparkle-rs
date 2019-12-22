@@ -2,7 +2,7 @@
 
 struct PS_IN {
 	float4 pos : SV_Position;
-	float3 worldPos : POSITION_WORLD;
+	float4 worldPos : POSITION_WORLD;
 	float3 normal : NORMAL;
 	float2 txCoord : TEXCOORD0;
 	// float2 txCoordNM : TEXCOORD1;
@@ -36,7 +36,7 @@ PS_OUT main(PS_IN input) {
     PS_OUT output;
 
 	float4 albedo = txDiffuse.Sample(samplerLinear, input.txCoord);
-    float4 pos = float4(input.worldPos, calcLinearDepth(input.pos.z));
+    float4 pos = input.worldPos;//float4(input.worldPos, calcLinearDepth(input.pos.z));
 
 	// float3 normal_out = input.normal;
 	float3 normal = txNormal.Sample(samplerNormal, input.txCoord).xyz;
