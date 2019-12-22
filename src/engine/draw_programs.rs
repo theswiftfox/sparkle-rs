@@ -5,11 +5,11 @@ use winapi::um::d3d11_1 as dx11_1;
 use super::d3d11::{cbuffer, shaders, textures, DxError, DxErrorType};
 use super::geometry::Light;
 
-fn vertex_input_desc() -> [dx11::D3D11_INPUT_ELEMENT_DESC; 3] {
+fn vertex_input_desc() -> [dx11::D3D11_INPUT_ELEMENT_DESC; 5] {
     let pos_name: &'static std::ffi::CStr = const_cstr!("SV_Position").as_cstr();
     let norm_name: &'static std::ffi::CStr = const_cstr!("NORMAL").as_cstr();
-    // let tang_name: &'static std::ffi::CStr = const_cstr!("TANGENT").as_cstr();
-    // let bitang_name: &'static std::ffi::CStr = const_cstr!("BITANGENT").as_cstr();
+    let tang_name: &'static std::ffi::CStr = const_cstr!("TANGENT").as_cstr();
+    let bitang_name: &'static std::ffi::CStr = const_cstr!("BITANGENT").as_cstr();
     let uv_name: &'static std::ffi::CStr = const_cstr!("TEXCOORD").as_cstr();
     [
         dx11::D3D11_INPUT_ELEMENT_DESC {
@@ -30,24 +30,24 @@ fn vertex_input_desc() -> [dx11::D3D11_INPUT_ELEMENT_DESC; 3] {
             InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
             InstanceDataStepRate: 0,
         },
-        // dx11::D3D11_INPUT_ELEMENT_DESC {
-        //     SemanticName: tang_name.as_ptr() as *const _,
-        //     SemanticIndex: 0,
-        //     Format: dxgifmt::DXGI_FORMAT_R32G32B32_FLOAT,
-        //     InputSlot: 0,
-        //     AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
-        //     InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-        //     InstanceDataStepRate: 0,
-        // },
-        // dx11::D3D11_INPUT_ELEMENT_DESC {
-        //     SemanticName: bitang_name.as_ptr() as *const _,
-        //     SemanticIndex: 0,
-        //     Format: dxgifmt::DXGI_FORMAT_R32G32B32_FLOAT,
-        //     InputSlot: 0,
-        //     AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
-        //     InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-        //     InstanceDataStepRate: 0,
-        // },
+        dx11::D3D11_INPUT_ELEMENT_DESC {
+            SemanticName: tang_name.as_ptr() as *const _,
+            SemanticIndex: 0,
+            Format: dxgifmt::DXGI_FORMAT_R32G32B32_FLOAT,
+            InputSlot: 0,
+            AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
+            InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
+            InstanceDataStepRate: 0,
+        },
+        dx11::D3D11_INPUT_ELEMENT_DESC {
+            SemanticName: bitang_name.as_ptr() as *const _,
+            SemanticIndex: 0,
+            Format: dxgifmt::DXGI_FORMAT_R32G32B32_FLOAT,
+            InputSlot: 0,
+            AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
+            InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
+            InstanceDataStepRate: 0,
+        },
         dx11::D3D11_INPUT_ELEMENT_DESC {
             SemanticName: uv_name.as_ptr() as *const _,
             SemanticIndex: 0,
