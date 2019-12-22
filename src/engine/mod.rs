@@ -22,6 +22,7 @@ use winapi::um::d3d11 as dx11;
 pub struct Renderer {
     scene: Scenegraph,
     skybox: Option<SkyBox>,
+    shadow_dist: f32,
     screen_quad: d3d11::drawable::ScreenQuad,
     forward_program: Option<draw_programs::ForwardPass>,
     deferred_program_pre: Option<draw_programs::DeferredPassPre>,
@@ -56,6 +57,7 @@ impl Renderer {
         let quad = d3d11::drawable::ScreenQuad::create(backend.get_device())
             .expect("Error generating ScreenQuad");
         let mut renderer = Renderer {
+            shadow_dist: 70.0,
             backend: backend,
             window: window,
             forward_program: None,
@@ -131,9 +133,9 @@ impl Renderer {
                         -shadow_dist,
                         shadow_dist,
                         1.0,
-                        70.0,
+                        100.0,
                     );
-                    let dir = light.direction.xyz() * (-1.0);
+                    let dir = light.direction.xyz() * (-1.0) * renderer.shadow_dist;
                     let mut up = glm::vec3(0.0, 1.0, 0.0);
                     if (up.dot(&dir.normalize()) - 1.0).abs() <= 0.0000001 {
                         up = glm::vec3(0.0, 0.0, 1.0);
@@ -203,7 +205,7 @@ impl Renderer {
                 Some(c) => {
                     c.borrow_mut().update(dt);
                     let light = self.scene.get_directional_light();
-                    let dir = light.direction.xyz() * (-1.0);
+                    let dir = light.direction.xyz() * (-1.0) * self.shadow_dist;
                     let mut up = glm::vec3(0.0, 1.0, 0.0);
                     if (up.dot(&dir.normalize()) - 1.0).abs() <= 0.0000001 {
                         up = glm::vec3(0.0, 0.0, 1.0);
@@ -310,7 +312,8 @@ impl Renderer {
         println!("Processing scene...");
         self.scene.set_root(node);
         self.scene.set_directional_light(geometry::Light {
-            direction: glm::vec4(-15.0, -50.0, -5.0, 1.0),
+            direction: glm::vec4(-0.15, -0.5, -0.05, 1.0).normalize(),
+            // direction: glm::vec4(0.0, -1.5, -1.5, 1.0).normalize(),
             color: glm::vec4(0.3, 0.3, 0.3, 1.0),
         });
         self.scene.build_matrices();
