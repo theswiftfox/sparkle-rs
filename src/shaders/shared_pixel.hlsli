@@ -1,3 +1,5 @@
+Texture2D ssaoTex : register(t4);
+SamplerState samplerSSAO: register(s4);
 Texture2D txShadowMap : register(t5);
 SamplerComparisonState samplerShadowMap : register(s5);
 
@@ -26,7 +28,7 @@ static float2 poissonDisk[64] = {
     float2(-0.620106,-0.328104), float2( 0.789239,-0.419965), float2(-0.545396, 0.538133), float2(-0.178564,-0.596057)
 };
 
-float3 blinn_phong(Light light, float3 view_pos, float3 world_pos, float3 normal, float3 albedo, float metallic, float shadowed) {
+float3 blinn_phong(Light light, float3 view_pos, float3 world_pos, float3 normal, float3 albedo, float metallic, float shadowed, float ambientOcclusion) {
 	float3 ld = normalize(-light.direction.xyz);
 	float3 vd = normalize(view_pos - world_pos);
 
@@ -40,7 +42,7 @@ float3 blinn_phong(Light light, float3 view_pos, float3 world_pos, float3 normal
 	float diff = max(dot(ld, normal), 0.0);
 	float3 diffuse = diff * albedo;
 
-	float3 ambient = 0.05 * albedo;
+	float3 ambient = 0.15 * albedo * ambientOcclusion;
 	return ambient + max(shadowed, 0.0) * (diffuse + specular);
 }
 
