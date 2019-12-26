@@ -40,7 +40,8 @@ PS_OUT main(PS_IN input, float4 screenPos : SV_Position) {
 	}
     float4 posLS = mul(lightSpace, pos);//float4(pos.xyz, 1.0));
 
-	float ambientOcclusion = ssao ? ssaoTex.Sample(samplerSSAO, screenPos.xy).r : 1.0;
+	float4 ao = ssaoTex.Load(int3(screenPos.xy, 0));
+	float ambientOcclusion = ssao ? ao.r : 1.0;
 
     float metallic = 16.0;//mr_tex.r;
 	float shadowed = shadow(posLS, normal, normalize(-directionalLight.direction.xyz));

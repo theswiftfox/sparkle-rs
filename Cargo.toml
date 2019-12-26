@@ -21,6 +21,10 @@ const-cstr = "0.1"
 image = "0.22.2"
 gltf = "0.14"
 rust-ini = "0.13.0"
+rand = "0.7.2"
+
+[build-dependencies]
+bindgen = "0.52.0"
 
 # From doc.rust-lang.org:
 # The development profile, used for `cargo build`.
@@ -53,7 +57,7 @@ overflow-checks = true # use overflow checks for integer arithmetic.
 # for `cargo test --release`, including the local library or binary).
 [profile.release]
 opt-level = 3
-debug = false
+debug = true
 rpath = false
 lto = false
 debug-assertions = false
