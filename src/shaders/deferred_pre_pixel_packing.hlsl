@@ -3,18 +3,14 @@
 struct PS_IN {
 	float4 pos : SV_Position;
 	float4 worldPos : POSITION_WORLD;
-	float4 viewPos : POSITION_VIEW;
 	float3 normal : NORMAL;
-	float3 normalVS : NORMAL_VIEW;
 	float2 txCoord : TEXCOORD0;
-	// float2 txCoordNM : TEXCOORD1;
 	float3x3 TBN : TBN_MATRIX;
 };
 
 struct PS_OUT {
 	uint4 position : SV_Target0;
 	uint4 albedo : SV_Target1;
-	uint4 view	: SV_Target2;
 };
 
 cbuffer ubo : register(b0) {
@@ -37,14 +33,6 @@ SamplerState samplerNormal: register(s2);
 
 PS_OUT main(PS_IN input) {
     PS_OUT output = (PS_OUT)0;
-
-	float3 normal_vs_out = input.normalVS * 0.5 + 0.5;
-	uint4 phalf_vs = f32tof16(float4(input.viewPos.xyz, calcLinearDepth(input.viewPos.z)));
-	uint3 nhalf_vs = f32tof16(normal_vs_out);// * 2.0) - 1.0);
-	output.view.r = (phalf_vs.r << 16) | phalf_vs.g;
-	output.view.g = (phalf_vs.b << 16) | phalf_vs.a;
-	output.view.b = (nhalf_vs.r << 16) | nhalf_vs.g;
-	output.view.a = nhalf_vs.b;
 
 	float4 albedo = txDiffuse.Sample(samplerLinear, input.txCoord);
     float4 pos = input.worldPos;//float4(input.worldPos, calcLinearDepth(input.pos.z));

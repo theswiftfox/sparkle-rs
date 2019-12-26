@@ -58,7 +58,7 @@ impl Renderer {
             .expect("Error generating ScreenQuad");
         let mut renderer = Renderer {
             settings: settings,
-            shadow_dist: 30.0,
+            shadow_dist: 50.0,
             backend: backend,
             window: window,
             forward_program: None,

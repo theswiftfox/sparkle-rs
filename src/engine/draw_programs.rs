@@ -166,7 +166,6 @@ impl ForwardPass {
         }
         Ok(())
     }
-    
     pub fn set_ssao(&mut self, ssao: u32, instant_update: bool) -> Result<(), DxError> {
         self.pixel_shader_uniforms.data.ssao = ssao;
         if instant_update {
@@ -242,16 +241,10 @@ pub(crate) struct DeferredPassPre {
     positions_render_target: *mut dx11::ID3D11RenderTargetView,
     albedo: textures::Texture2D,
     albedo_render_target: *mut dx11::ID3D11RenderTargetView,
-    positions_vs: textures::Texture2D,
-    positions_vs_target: *mut dx11::ID3D11RenderTargetView,
 }
 impl DeferredPassPre {
-    pub fn get_render_targets(&self) -> [*mut dx11::ID3D11RenderTargetView; 3] {
-        [
-            self.positions_render_target,
-            self.albedo_render_target,
-            self.positions_vs_target,
-        ]
+    pub fn get_render_targets(&self) -> [*mut dx11::ID3D11RenderTargetView; 2] {
+        [self.positions_render_target, self.albedo_render_target]
     }
 
     pub fn positions(&self) -> &textures::Texture2D {
@@ -259,9 +252,6 @@ impl DeferredPassPre {
     }
     pub fn albedo(&self) -> &textures::Texture2D {
         &self.albedo
-    }
-    pub fn positions_vs(&self) -> &textures::Texture2D {
-        &self.positions_vs
     }
 
     pub fn prepare_draw(&mut self, ctx: *mut dx11_1::ID3D11DeviceContext1) {
@@ -465,60 +455,7 @@ impl DeferredPassPre {
                 ));
             }
         }
-        // render target positions view space
-        let mut pos_vs_tv: *mut dx11::ID3D11RenderTargetView = std::ptr::null_mut();
-        let mut pos_vs_tex = textures::Texture2D::create_mutable_render_target(
-            res_x,
-            res_y,
-            dxgifmt::DXGI_FORMAT_R32G32B32A32_UINT,
-            dx11::D3D11_TEXTURE_ADDRESS_CLAMP,
-            dx11::D3D11_TEXTURE_ADDRESS_CLAMP,
-            dx11::D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT,
-            1,
-            dx11::D3D11_BIND_RENDER_TARGET | dx11::D3D11_BIND_SHADER_RESOURCE,
-            0,
-            0,
-            device,
-        )?;
-        {
-            let mut dt_desc: dx11::D3D11_RENDER_TARGET_VIEW_DESC = Default::default();
-            dt_desc.Format = dxgifmt::DXGI_FORMAT_R32G32B32A32_UINT;
-            dt_desc.ViewDimension = dx11::D3D11_RTV_DIMENSION_TEXTURE2D;
-            unsafe { dt_desc.u.Texture2D_mut().MipSlice = 0 };
-            let res = unsafe {
-                (*device).CreateRenderTargetView(
-                    pos_vs_tex.get_texture_handle() as *mut _,
-                    &dt_desc,
-                    &mut pos_vs_tv as *mut *mut _,
-                )
-            };
-            if res < winapi::shared::winerror::S_OK {
-                return Err(DxError::new(
-                    "Error creating depth target view for texture",
-                    DxErrorType::ResourceCreation,
-                ));
-            }
-            let mut pos_tar_rv_desc: dx11::D3D11_SHADER_RESOURCE_VIEW_DESC = Default::default();
-            pos_tar_rv_desc.Format = dxgifmt::DXGI_FORMAT_R32G32B32A32_UINT;
-            pos_tar_rv_desc.ViewDimension = dx11::D3D11_RTV_DIMENSION_TEXTURE2D;
-            unsafe {
-                pos_tar_rv_desc.u.Texture2D_mut().MostDetailedMip = 0;
-                pos_tar_rv_desc.u.Texture2D_mut().MipLevels = 1;
-            };
-            let res = unsafe {
-                (*device).CreateShaderResourceView(
-                    pos_vs_tex.get_texture_handle() as *mut _,
-                    &pos_tar_rv_desc as *const _,
-                    &mut pos_vs_tex.shader_view as *mut *mut _,
-                )
-            };
-            if res < winapi::shared::winerror::S_OK {
-                return Err(DxError::new(
-                    "Error creating depth shader view for texture",
-                    DxErrorType::ResourceCreation,
-                ));
-            }
-        }
+
         Ok(DeferredPassPre {
             program: shaders::ShaderProgram::create(
                 &vtx_shader,
@@ -534,8 +471,6 @@ impl DeferredPassPre {
             positions_render_target: position_tv,
             albedo: albedo_tex,
             albedo_render_target: albedo_tv,
-            positions_vs: pos_vs_tex,
-            positions_vs_target: pos_vs_tv,
         })
     }
 }

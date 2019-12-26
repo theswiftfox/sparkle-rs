@@ -42,9 +42,9 @@ impl SSAO {
         let mut tex = textures::Texture2D::create_mutable_render_target(
             res_x,
             res_y,
-            dxgifmt::DXGI_FORMAT_R32G32B32A32_FLOAT,
-            dx11::D3D11_TEXTURE_ADDRESS_CLAMP,
-            dx11::D3D11_TEXTURE_ADDRESS_CLAMP,
+            dxgifmt::DXGI_FORMAT_R16G16B16A16_FLOAT,
+            dx11::D3D11_TEXTURE_ADDRESS_MIRROR,
+            dx11::D3D11_TEXTURE_ADDRESS_MIRROR,
             dx11::D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT,
             1,
             dx11::D3D11_BIND_RENDER_TARGET | dx11::D3D11_BIND_SHADER_RESOURCE,
@@ -54,7 +54,7 @@ impl SSAO {
         )?;
         {
             let mut dt_desc: dx11::D3D11_RENDER_TARGET_VIEW_DESC = Default::default();
-            dt_desc.Format = dxgifmt::DXGI_FORMAT_R32G32B32A32_FLOAT;
+            dt_desc.Format = dxgifmt::DXGI_FORMAT_R16G16B16A16_FLOAT;
             dt_desc.ViewDimension = dx11::D3D11_RTV_DIMENSION_TEXTURE2D;
             unsafe { dt_desc.u.Texture2D_mut().MipSlice = 0 };
             let res = unsafe {
@@ -71,7 +71,7 @@ impl SSAO {
                 ));
             }
             let mut pos_tar_rv_desc: dx11::D3D11_SHADER_RESOURCE_VIEW_DESC = Default::default();
-            pos_tar_rv_desc.Format = dxgifmt::DXGI_FORMAT_R32G32B32A32_FLOAT;
+            pos_tar_rv_desc.Format = dxgifmt::DXGI_FORMAT_R16G16B16A16_FLOAT;
             pos_tar_rv_desc.ViewDimension = dx11::D3D11_RTV_DIMENSION_TEXTURE2D;
             unsafe {
                 pos_tar_rv_desc.u.Texture2D_mut().MostDetailedMip = 0;
