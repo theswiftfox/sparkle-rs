@@ -12,7 +12,8 @@ Texture2D<uint4> positionTex : register(t0);
 Texture2D<uint4> albedoTex : register(t1);
 
 cbuffer ubo : register(b0) {
-	float4 cameraPos;
+	float3 cameraPos;
+	bool ssao;
 	Light directionalLight;
 }
 
@@ -37,11 +38,22 @@ PS_OUT main(PS_IN input, float4 screenPos : SV_Position) {
 		output.color = 0.0;
 		return output;
 	}
-    float4 posLS = 	posLS = mul(lightSpace, pos);//float4(pos.xyz, 1.0));
+    float4 posLS = mul(lightSpace, pos);//float4(pos.xyz, 1.0));
+
+	float ambientOcclusion = ssao ? ssaoTex.Sample(samplerSSAO, screenPos.xy).r : 1.0;
 
     float metallic = 16.0;//mr_tex.r;
 	float shadowed = shadow(posLS, normal, normalize(-directionalLight.direction.xyz));
-	float3 color = blinn_phong(directionalLight, cameraPos.xyz, pos.xyz, normal, albedo.rgb, metallic, shadowed);
+	float3 color = blinn_phong(
+		directionalLight, 
+		cameraPos,
+		pos.xyz, 
+		normal, 
+		albedo.rgb, 
+		metallic, 
+		shadowed,
+		ambientOcclusion
+	);
 	color = pow(color, 1/2.2);
 	output.color = float4(color, 1.0);
     return output;
