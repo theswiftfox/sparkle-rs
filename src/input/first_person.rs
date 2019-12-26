@@ -1,7 +1,7 @@
-use crate::input::input_handler::{
-    Action, ApplicationRequest, Button, InputHandler, Key, ScrollAxis,
+use crate::input::{
+    input_handler::{Action, ApplicationRequest, Button, InputHandler, Key, ScrollAxis},
+    AppSettings, Camera,
 };
-use crate::input::Camera;
 
 use std::collections::HashMap;
 
@@ -20,6 +20,7 @@ pub struct FPSController {
     projection_mat: glm::Mat4,
     near_plane: f32,
     far_plane: f32,
+    settings: AppSettings,
 
     keybinds: HashMap<Key, ActionCallback>,
     mousebinds: HashMap<Button, ActionCallback>,
@@ -62,7 +63,7 @@ impl Camera for FPSController {
 }
 
 impl InputHandler for FPSController {
-    fn update(&mut self, delta_t: f32) {
+    fn update(&mut self, delta_t: f32, settings: &mut crate::engine::settings::Settings) {
         if self.move_f {
             self.pos = self.pos + self.move_speed * delta_t * self.get_front();
         }
@@ -75,6 +76,8 @@ impl InputHandler for FPSController {
         if self.move_l {
             self.pos = self.pos + -self.move_speed * delta_t * self.get_right();
         }
+
+        settings.ssao = self.settings.ssao;
     }
     fn handle_key(&mut self, key: Key, action: Action) -> ApplicationRequest {
         match self.keybinds.get(&key) {
@@ -100,6 +103,9 @@ impl InputHandler for FPSController {
             self.v_angle_deg -= (y as f32) * MOUSE_SPEED;
             self.v_angle_deg = (-89.9f32).max(self.v_angle_deg).min(89.9f32);
         }
+    }
+    fn settings(&self) -> &AppSettings {
+        &self.settings
     }
 }
 
@@ -145,6 +151,7 @@ impl FPSController {
             move_l: false,
             move_r: false,
             first_mouse: true,
+            settings: AppSettings::default(),
         }
     }
     pub fn create_ptr(
@@ -202,6 +209,16 @@ impl FPSController {
         }
     }
 
+    fn toggle_ssao(&mut self, action: Action) -> ApplicationRequest {
+        match action {
+            Action::Up => ApplicationRequest::Nothing,
+            Action::Down => {
+                self.settings.ssao = !self.settings.ssao;
+                ApplicationRequest::SettingsChange
+            }
+        }
+    }
+
     fn toggle_aim(&mut self, action: Action) -> ApplicationRequest {
         match action {
             Action::Down => match self.aiming {
@@ -226,6 +243,7 @@ impl FPSController {
         keybinds.insert(Key::A, FPSController::movement_left);
         keybinds.insert(Key::D, FPSController::movement_right);
         keybinds.insert(Key::Esc, FPSController::request_quit);
+        keybinds.insert(Key::F3, FPSController::toggle_ssao);
 
         return keybinds;
     }

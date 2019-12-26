@@ -766,7 +766,7 @@ impl D3D11Backend {
     }
 
     pub fn present(&mut self) -> Result<(), DxError> {
-        let res = unsafe { (*self.swap_chain).Present(1, 0) };
+        let res = unsafe { (*self.swap_chain).Present(0, 0) };
         unsafe {
             (*self.context).DiscardView(self.render_target_view as *mut _);
             (*self.context).DiscardView(self.depth_stencil_view as *mut _);
@@ -818,6 +818,7 @@ impl D3D11Backend {
      * PIX Events
      */
     pub fn pix_begin_event(&self, name: &str) {
+        //  println!("Pix Event: {}", name);
         let msg_wstr = utils::to_wide_str(name);
         unsafe { (*self.annotation).BeginEvent(msg_wstr.as_ptr()) };
     }
