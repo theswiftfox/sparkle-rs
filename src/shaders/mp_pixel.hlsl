@@ -22,7 +22,8 @@ Texture2D txNormal : register(t2);
 SamplerState samplerNormal: register(s2);
 
 cbuffer ubo : register(b0) {
-	float4 cameraPos;
+	float3 cameraPos;
+	bool ssao;
 	Light directionalLight;
 }
 
@@ -43,9 +44,20 @@ PS_OUT main(PS_IN input) {
 	//N.y = -1.0 * N.y;
 	// float3 N = input.normal;
 
+	float ambientOcclusion = 1.0; //ssao ? ssaoTex.Sample(samplerSSAO, input.txCoord) : 1.0;
+
 	float metallic = 16.0;//mr_tex.r;
 	float shadowed = shadow(input.posLS, N, normalize(-directionalLight.direction.xyz));
-	float3 color = blinn_phong(directionalLight, cameraPos.xyz, input.worldPos, N, alb.rgb, metallic, shadowed);
+	float3 color = blinn_phong(
+		directionalLight, 
+		cameraPos, 
+		input.worldPos, 
+		N, 
+		alb.rgb, 
+		metallic, 
+		shadowed, 
+		ambientOcclusion
+	);
 	color = pow(color, 1/2.2);
 	output.color = float4(color, alb.a);
 
