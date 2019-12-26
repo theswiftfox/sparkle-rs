@@ -8,3 +8,13 @@ pub trait Camera {
     fn position(&self) -> glm::Vec3;
     fn near_far(&self) -> (f32, f32);
 }
+
+pub struct AppSettings {
+    pub ssao: bool,
+}
+
+impl Default for AppSettings {
+    fn default() -> AppSettings {
+        AppSettings { ssao: true }
+    }
+}

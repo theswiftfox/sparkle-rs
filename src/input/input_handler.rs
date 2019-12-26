@@ -16,6 +16,7 @@ pub enum ScrollAxis {
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum ApplicationRequest {
+    SettingsChange,
     UnsnapMouse,
     SnapMouse,
     Nothing,
@@ -23,11 +24,12 @@ pub enum ApplicationRequest {
 }
 
 pub trait InputHandler {
-    fn update(&mut self, delta_t: f32);
+    fn update(&mut self, delta_t: f32, settings: &mut crate::engine::settings::Settings);
     fn handle_key(&mut self, key: Key, action: Action) -> ApplicationRequest;
     fn handle_mouse(&mut self, button: Button, action: Action) -> ApplicationRequest;
     fn handle_wheel(&mut self, axis: ScrollAxis, value: f32);
     fn handle_mouse_move(&mut self, x: i32, y: i32);
+    fn settings(&self) -> &super::AppSettings;
 }
 
 #[derive(Debug, PartialEq, Eq, Hash)]
