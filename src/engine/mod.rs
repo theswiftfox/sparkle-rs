@@ -1,10 +1,10 @@
 //pub mod generate;
 pub(crate) mod d3d11;
 pub(crate) mod draw_programs;
+pub(crate) mod gameworks;
 pub(crate) mod geometry;
 pub(crate) mod scenegraph;
 pub(crate) mod settings;
-pub(crate) mod ssao;
 
 use crate::import;
 use crate::input::first_person::FPSController;
@@ -29,7 +29,7 @@ pub struct Renderer {
     deferred_program_light: Option<draw_programs::DeferredPassLight>,
     shadow_program: Option<draw_programs::ShadowPass>,
     skybox_program: Option<draw_programs::SkyBoxPass>,
-    ssao_program: Option<ssao::SSAO>,
+    ssao_program: Option<gameworks::SSAO>,
     input_handler: Option<std::rc::Rc<std::cell::RefCell<dyn InputHandler>>>,
     camera: Option<std::rc::Rc<std::cell::RefCell<dyn Camera>>>,
     backend: D3D11Backend,
@@ -72,7 +72,7 @@ impl Renderer {
             skybox: None,
             screen_quad: quad,
             input_handler: None,
-            camera: None,
+            camera: Some(input_handler.clone()),
             clock: Instant::now(),
             frame_counter: 0,
             frame_time: 0.0f32,
@@ -91,7 +91,7 @@ impl Renderer {
         };
 
         renderer.change_input_handler(input_handler.clone());
-        renderer.change_camera(input_handler.clone());
+        // renderer.change_camera(input_handler.clone());
 
         // TODO: handle optional values here correctly?
         renderer
@@ -278,14 +278,10 @@ impl Renderer {
                             )
                             .expect("Error updating view matrix [SkyBox]");
                     }
-                    if let Some(ssao) = &mut self.ssao_program {
-                        //let vp = &c.borrow().projection_mat() * &c.borrow().view_mat();
-                        ssao.set_proj(c.borrow().projection_mat(), true)
-                            .expect("Error updating view proj matrix [SSAO]");
-                    }
-                    // if let Some(sky) = &mut self.skybox {
-                    //     let model = glm::translate(&glm::identity(), &c.borrow().position());
-                    //     sky.update(&model);
+                    // if let Some(ssao) = &mut self.ssao_program {
+                    //     //let vp = &c.borrow().projection_mat() * &c.borrow().view_mat();
+                    //     ssao.set_proj(c.borrow().projection_mat(), true)
+                    //         .expect("Error updating view proj matrix [SSAO]");
                     // }
                 }
                 None => {}
@@ -401,7 +397,7 @@ impl Renderer {
             );
         };
         if let Some(ssao) = &self.ssao_program {
-            let target = ssao.render_target_view();
+            let target = ssao.get_render_target_view();
             unsafe { (*ctx).ClearRenderTargetView(target, &color) };
         }
 
@@ -461,38 +457,15 @@ impl Renderer {
 
         if self.settings.ssao {
             if let Some(ssao) = &mut self.ssao_program {
-                self.backend.pix_begin_event("SSAO");
-                ssao.prepare_draw(ctx);
-
-                let rt = ssao.render_target_view();
-                let noise_tex = ssao.ssao_noise();
                 unsafe {
                     (*ctx).PSSetSamplers(4, 1, &std::ptr::null_mut() as *const *mut _);
                     (*ctx).PSSetShaderResources(4, 1, &std::ptr::null_mut() as *const *mut _);
-                    (*ctx).OMSetRenderTargets(1, &rt, std::ptr::null_mut());
-                    (*ctx).PSSetSamplers(2, 1, &noise_tex.get_sampler() as *const *mut _);
-                    (*ctx).PSSetShaderResources(
-                        2,
-                        1,
-                        &noise_tex.get_texture_view() as *const *mut _,
-                    );
                 }
-
-                if let Some(dp) = &self.deferred_program_pre {
-                    // let pos = dp.positions();
-                    let pos_vs = dp.positions_vs();
-
-                    let texs = [pos_vs.get_texture_view()];
-                    unsafe {
-                        //  (*ctx).PSSetSamplers(1, 1, &pos_vs.get_sampler() as *const *mut _);
-                        (*ctx).PSSetShaderResources(0, 1, texs.as_ptr());
-                    }
-
-                    self.screen_quad.draw(ctx);
-                    self.backend.pix_end_event();
-                }
-            } else {
-                println!("SSAO enabled, but no draw program bound!") //todo: handle this
+                let tv = ssao.get_render_target_view();
+                self.backend.pix_begin_event("HBAO+");
+                unsafe { (*ctx).OMSetRenderTargets(1, &tv, std::ptr::null_mut()) };
+                ssao.render(ctx);
+                self.backend.pix_end_event();
             }
         }
 
@@ -511,7 +484,7 @@ impl Renderer {
             }
 
             if let Some(ssao) = &mut self.ssao_program {
-                let tex = ssao.render_target();
+                let tex = ssao.get_render_target();
                 unsafe {
                     (*ctx).PSSetSamplers(4, 1, &tex.get_sampler() as *const *mut _);
                     (*ctx).PSSetShaderResources(4, 1, &tex.get_texture_view() as *const *mut _);
@@ -546,13 +519,13 @@ impl Renderer {
                         (*ctx).PSSetShaderResources(5, 1, &tex.get_texture_view() as *const *mut _);
                     }
                 }
-                if let Some(ssao) = &mut self.ssao_program {
-                    let tex = ssao.render_target();
-                    unsafe {
-                        (*ctx).PSSetSamplers(4, 1, &tex.get_sampler() as *const *mut _);
-                        (*ctx).PSSetShaderResources(4, 1, &tex.get_texture_view() as *const *mut _);
-                    }
-                }
+                // if let Some(ssao) = &mut self.ssao_program {
+                //     let tex = ssao.render_target();
+                //     unsafe {
+                //         (*ctx).PSSetSamplers(4, 1, &tex.get_sampler() as *const *mut _);
+                //         (*ctx).PSSetShaderResources(4, 1, &tex.get_texture_view() as *const *mut _);
+                //     }
+                // }
             }
             self.scene.draw(ObjType::Transparent);
             self.backend.pix_end_event();
@@ -594,10 +567,11 @@ impl Renderer {
             self.backend.get_device(),
             self.backend.get_context(),
         )?);
-        self.ssao_program = Some(ssao::SSAO::new(
+        self.ssao_program = Some(gameworks::SSAO::new(
             self.window.borrow().get_resolution(),
+            self.backend.get_depth_stencil_shader_view(),
+            self.camera.as_ref().unwrap().borrow().projection_mat(),
             self.backend.get_device(),
-            self.backend.get_context(),
         )?);
 
         Ok(())

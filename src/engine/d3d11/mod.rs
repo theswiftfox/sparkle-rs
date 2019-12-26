@@ -48,6 +48,7 @@ pub struct D3D11Backend {
     depth_stencil_view: *mut dx11::ID3D11DepthStencilView,
     render_target: *mut dx11::ID3D11Texture2D,
     depth_stencil: *mut dx11::ID3D11Texture2D,
+    depth_stencil_shaderview: *mut dx11::ID3D11ShaderResourceView,
     viewport: dx11::D3D11_VIEWPORT,
     rasterzer_state_back_face: *mut dx11_1::ID3D11RasterizerState1,
     rasterzer_state_front_face: *mut dx11_1::ID3D11RasterizerState1,
@@ -79,6 +80,7 @@ impl Default for D3D11Backend {
             framebuffer_width: 0,
             render_target_view: ptr::null_mut(),
             render_target: ptr::null_mut(),
+            depth_stencil_shaderview: ptr::null_mut(),
             depth_stencil_view: ptr::null_mut(),
             depth_stencil: ptr::null_mut(),
             viewport: Default::default(),
@@ -88,7 +90,7 @@ impl Default for D3D11Backend {
             blend_state: ptr::null_mut(),
             backbuffer_format: dxgifmt::DXGI_FORMAT_B8G8R8A8_UNORM,
             backbuffer_count: 2,
-            depthbuffer_format: dxgifmt::DXGI_FORMAT_D32_FLOAT,
+            depthbuffer_format: dxgifmt::DXGI_FORMAT_R32_TYPELESS,
             initialized: false,
         }
     }
@@ -108,6 +110,10 @@ impl D3D11Backend {
     pub fn get_depth_stencil_view(&self) -> *mut dx11::ID3D11DepthStencilView {
         self.depth_stencil_view
     }
+    pub fn get_depth_stencil_shader_view(&self) -> *mut dx11::ID3D11ShaderResourceView {
+        self.depth_stencil_shaderview
+    }
+
     pub fn get_viewport(&self) -> &dx11::D3D11_VIEWPORT {
         &self.viewport
     }
@@ -150,6 +156,7 @@ impl D3D11Backend {
         Ok(backend)
     }
     pub fn cleanup(&mut self) {
+        self.depth_stencil_shaderview = ptr::null_mut();
         self.depth_stencil_view = ptr::null_mut();
         self.render_target_view = ptr::null_mut();
         self.depth_stencil = ptr::null_mut();
@@ -604,7 +611,8 @@ impl D3D11Backend {
             depth_stencil_desc.Height = self.framebuffer_height;
             depth_stencil_desc.MipLevels = 1;
             depth_stencil_desc.ArraySize = 1;
-            depth_stencil_desc.BindFlags = dx11::D3D11_BIND_DEPTH_STENCIL;
+            depth_stencil_desc.BindFlags =
+                dx11::D3D11_BIND_DEPTH_STENCIL | dx11::D3D11_BIND_SHADER_RESOURCE;
             depth_stencil_desc.SampleDesc.Count = 1;
             depth_stencil_desc.SampleDesc.Quality = 0;
             res = unsafe {
@@ -625,6 +633,7 @@ impl D3D11Backend {
             let mut depth_stencil_view_desc: dx11::D3D11_DEPTH_STENCIL_VIEW_DESC =
                 Default::default();
             depth_stencil_view_desc.ViewDimension = dx11::D3D11_DSV_DIMENSION_TEXTURE2D;
+            depth_stencil_view_desc.Format = dxgifmt::DXGI_FORMAT_D32_FLOAT;
             res = unsafe {
                 (*self.device).CreateDepthStencilView(
                     self.depth_stencil as *mut _,
@@ -636,6 +645,27 @@ impl D3D11Backend {
                 println!("Create Depth-Stencil view error: {}", res);
                 return Err(DxError::new(
                     "Unable to create Depth-Stencil view!",
+                    DxErrorType::ResourceCreation,
+                ));
+            }
+
+            let mut dt_rv_desc: dx11::D3D11_SHADER_RESOURCE_VIEW_DESC = Default::default();
+            dt_rv_desc.Format = dxgifmt::DXGI_FORMAT_R32_FLOAT;
+            dt_rv_desc.ViewDimension = dx11::D3D11_RTV_DIMENSION_TEXTURE2D;
+            unsafe {
+                dt_rv_desc.u.Texture2D_mut().MostDetailedMip = 0;
+                dt_rv_desc.u.Texture2D_mut().MipLevels = 1;
+            };
+            let res = unsafe {
+                (*self.device).CreateShaderResourceView(
+                    self.depth_stencil as *mut _,
+                    &dt_rv_desc as *const _,
+                    &mut self.depth_stencil_shaderview as *mut *mut _,
+                )
+            };
+            if res < winapi::shared::winerror::S_OK {
+                return Err(DxError::new(
+                    "Error creating depth shader view for depth buffer",
                     DxErrorType::ResourceCreation,
                 ));
             }
