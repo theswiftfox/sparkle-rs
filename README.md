@@ -12,6 +12,7 @@
 * Shadow Mapping for other light types  
 * Volumetric Light  
 * 2D rendering for HUD overlays  
+* Screen space reflections  
 
 ![](sponza.png)  
 Left: No SSAO. Right: HBAO+ from nVidia.  
