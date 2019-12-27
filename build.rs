@@ -1,9 +1,28 @@
 #![allow(unused_assignments)]
 
+extern crate bindgen;
+
 use std::error::Error;
 use std::process::Command;
 
 fn main() -> Result<(), Box<dyn Error>> {
+    // generate bindings for hbao+
+    let project_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    println!("cargo:rustc-link-search={}/gameworks/lib", project_dir);
+    println!("cargo:rustc-link-lib=GFSDK_SSAO_D3D11.win64");
+    println!("cargo:rustc-link-lib=GFSDK_SSAO_D3D11_ext.win64");
+    println!("cargo:rerun-if-changed=gameworks/GFSDK_SSAO_D3D11_ext.h");
+
+    let out_path = std::path::PathBuf::from(project_dir).join("src/engine/gameworks/hbao_plus.rs");
+    let binding = bindgen::Builder::default()
+        // .clang_arg("c++")
+        .header("gameworks/GFSDK_SSAO_D3D11_ext.hpp")
+        .parse_callbacks(Box::new(bindgen::CargoCallbacks))
+        .generate()
+        .expect("Error generating HBAO+ bindings");
+
+    binding.write_to_file(out_path).expect("Error writing HBAO+ bindings to file");
+
     // copy over settings.ini
     let _out_dir_assets = "target/release/assets";
     #[cfg(debug_assertions)]

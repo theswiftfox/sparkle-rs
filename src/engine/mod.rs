@@ -1,11 +1,10 @@
 //pub mod generate;
-pub mod geometry;
-pub mod scenegraph;
-
 pub(crate) mod d3d11;
+pub(crate) mod draw_programs;
+pub(crate) mod gameworks;
+pub(crate) mod geometry;
+pub(crate) mod scenegraph;
 pub(crate) mod settings;
-
-mod draw_programs;
 
 use crate::import;
 use crate::input::first_person::FPSController;
@@ -19,6 +18,7 @@ use std::time::Instant;
 use winapi::um::d3d11 as dx11;
 
 pub struct Renderer {
+    settings: settings::Settings,
     scene: Scenegraph,
     skybox: Option<SkyBox>,
     shadow_dist: f32,
@@ -28,6 +28,7 @@ pub struct Renderer {
     deferred_program_light: Option<draw_programs::DeferredPassLight>,
     shadow_program: Option<draw_programs::ShadowPass>,
     skybox_program: Option<draw_programs::SkyBoxPass>,
+    ssao_program: Option<gameworks::SSAO>,
     input_handler: Option<std::rc::Rc<std::cell::RefCell<dyn InputHandler>>>,
     camera: Option<std::rc::Rc<std::cell::RefCell<dyn Camera>>>,
     backend: D3D11Backend,
@@ -56,7 +57,8 @@ impl Renderer {
         let quad = d3d11::drawable::ScreenQuad::create(backend.get_device())
             .expect("Error generating ScreenQuad");
         let mut renderer = Renderer {
-            shadow_dist: 30.0,
+            settings: settings,
+            shadow_dist: 50.0,
             backend: backend,
             window: window,
             forward_program: None,
@@ -64,11 +66,12 @@ impl Renderer {
             deferred_program_light: None,
             shadow_program: None,
             skybox_program: None,
+            ssao_program: None,
             scene: Scenegraph::empty(),
             skybox: None,
             screen_quad: quad,
             input_handler: None,
-            camera: None,
+            camera: Some(input_handler.clone()),
             clock: Instant::now(),
             frame_counter: 0,
             frame_time: 0.0f32,
@@ -87,7 +90,7 @@ impl Renderer {
         };
 
         renderer.change_input_handler(input_handler.clone());
-        renderer.change_camera(input_handler.clone());
+        // renderer.change_camera(input_handler.clone());
 
         // TODO: handle optional values here correctly?
         renderer
@@ -117,7 +120,7 @@ impl Renderer {
 
         println!("DX Setup took {} ms", renderer.clock.elapsed().as_millis());
         renderer.clock = Instant::now();
-        match settings.level {
+        match renderer.settings.level.clone() {
             Some(l) => match renderer.load_scene(&l) {
                 Ok(_) => {
                     println!(
@@ -197,7 +200,7 @@ impl Renderer {
 
         if ok {
             match &self.input_handler {
-                Some(i) => i.borrow_mut().update(dt),
+                Some(i) => i.borrow_mut().update(dt, &mut self.settings),
                 None => {}
             };
             match &self.camera {
@@ -215,37 +218,28 @@ impl Renderer {
                     //println!("{}", light_view);
                     let light_space_mat = self.scene.get_light_proj() * light_view;
 
-                    match &self.forward_program {
-                        Some(_) => {
-                            &self
-                                .forward_program
-                                .as_mut()
-                                .unwrap()
-                                .set_view(c.borrow().view_mat(), false)
-                                .expect("Error setting view mat");
-                            &self
-                                .forward_program
-                                .as_mut()
-                                .unwrap()
-                                .set_camera_pos(glm::vec3_to_vec4(&c.borrow().position()), false)
-                                .expect("Error setting camera pos");
-
-                            &self
-                                .forward_program
-                                .as_mut()
-                                .unwrap()
-                                .set_directional_light((*light).clone(), false)
-                                .expect("Impossible");
-                            &self
-                                .forward_program
-                                .as_mut()
-                                .unwrap()
-                                .set_light_space_matrix(light_space_mat, false)
-                                .expect("Impossible");
-                            &self.forward_program.as_mut().unwrap().update();
-                        }
-                        _ => (),
-                    };
+                    if let Some(forward_program) = &mut self.forward_program {
+                        forward_program
+                            .set_view(c.borrow().view_mat(), false)
+                            .expect("Error setting view mat");
+                        forward_program
+                            .set_camera_pos(c.borrow().position(), false)
+                            .expect("Error setting camera pos");
+                        forward_program
+                            .set_directional_light((*light).clone(), false)
+                            .expect("Impossible");
+                        forward_program
+                            .set_light_space_matrix(light_space_mat, false)
+                            .expect("Impossible");
+                        let ssao = match self.settings.ssao {
+                            true => 1,
+                            false => 0,
+                        };
+                        forward_program
+                            .set_ssao(ssao, false)
+                            .expect("Error changing ssao state");
+                        forward_program.update()?;
+                    }
                     if let Some(deferred_pre) = &mut self.deferred_program_pre {
                         deferred_pre
                             .set_view(c.borrow().view_mat(), false)
@@ -254,7 +248,7 @@ impl Renderer {
                     }
                     if let Some(deferred_light) = &mut self.deferred_program_light {
                         deferred_light
-                            .set_camera_pos(glm::vec3_to_vec4(&c.borrow().position()), false)
+                            .set_camera_pos(c.borrow().position(), false)
                             .expect("Error setting camera pos");
                         deferred_light
                             .set_directional_light((*light).clone(), false)
@@ -262,6 +256,13 @@ impl Renderer {
                         deferred_light
                             .set_light_space_matrix(light_space_mat, false)
                             .expect("Error updating LS matrix");
+                        let ssao = match self.settings.ssao {
+                            true => 1,
+                            false => 0,
+                        };
+                        deferred_light
+                            .set_ssao(ssao, false)
+                            .expect("Error setting ssao state");
                         deferred_light.update()?;
                     }
                     if let Some(p) = &mut self.shadow_program {
@@ -276,9 +277,10 @@ impl Renderer {
                             )
                             .expect("Error updating view matrix [SkyBox]");
                     }
-                    // if let Some(sky) = &mut self.skybox {
-                    //     let model = glm::translate(&glm::identity(), &c.borrow().position());
-                    //     sky.update(&model);
+                    // if let Some(ssao) = &mut self.ssao_program {
+                    //     //let vp = &c.borrow().projection_mat() * &c.borrow().view_mat();
+                    //     ssao.set_proj(c.borrow().projection_mat(), true)
+                    //         .expect("Error updating view proj matrix [SSAO]");
                     // }
                 }
                 None => {}
@@ -364,10 +366,10 @@ impl Renderer {
             None => std::ptr::null_mut(),
         };
 
-        let color: [f32; 4] = colors_linear::background().into();
+        let bg_color: [f32; 4] = colors_linear::background().into();
         //let shadow_map_clear_color: [f32; 4] = glm::zero::<glm::Vec4>().into();
         unsafe {
-            (*ctx).ClearRenderTargetView(render_target, &color);
+            (*ctx).ClearRenderTargetView(render_target, &bg_color);
             if !shadow_map_dt.is_null() {
                 //(*ctx).ClearRenderTargetView(shadow_map_rt, &shadow_map_clear_color);
                 (*ctx).ClearDepthStencilView(
@@ -378,6 +380,7 @@ impl Renderer {
                 );
             }
         }
+        let color: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
         if let Some(dp) = &self.deferred_program_pre {
             let targets = dp.get_render_targets();
             for tv in &targets {
@@ -392,6 +395,10 @@ impl Renderer {
                 0,
             );
         };
+        if let Some(ssao) = &self.ssao_program {
+            let target = ssao.get_render_target_view();
+            unsafe { (*ctx).ClearRenderTargetView(target, &color) };
+        }
 
         self.backend.pix_end_event();
     }
@@ -447,6 +454,20 @@ impl Renderer {
             self.backend.pix_end_event();
         }
 
+        if self.settings.ssao {
+            if let Some(ssao) = &mut self.ssao_program {
+                unsafe {
+                    (*ctx).PSSetSamplers(4, 1, &std::ptr::null_mut() as *const *mut _);
+                    (*ctx).PSSetShaderResources(4, 1, &std::ptr::null_mut() as *const *mut _);
+                }
+                let tv = ssao.get_render_target_view();
+                self.backend.pix_begin_event("HBAO+");
+                unsafe { (*ctx).OMSetRenderTargets(1, &tv, std::ptr::null_mut()) };
+                ssao.render(ctx);
+                self.backend.pix_end_event();
+            }
+        }
+
         let render_target = self.backend.get_render_target_view();
         unsafe { (*ctx).OMSetRenderTargets(1, &render_target, std::ptr::null_mut()) };
         if let Some(deferred_light) = &mut self.deferred_program_light {
@@ -458,6 +479,14 @@ impl Renderer {
                 unsafe {
                     (*ctx).PSSetSamplers(5, 1, &tex.get_sampler() as *const *mut _);
                     (*ctx).PSSetShaderResources(5, 1, &tex.get_texture_view() as *const *mut _);
+                }
+            }
+
+            if let Some(ssao) = &mut self.ssao_program {
+                let tex = ssao.get_render_target();
+                unsafe {
+                    (*ctx).PSSetSamplers(4, 1, &tex.get_sampler() as *const *mut _);
+                    (*ctx).PSSetShaderResources(4, 1, &tex.get_texture_view() as *const *mut _);
                 }
             }
 
@@ -481,16 +510,22 @@ impl Renderer {
 
             unsafe { (*ctx).OMSetRenderTargets(1, &render_target, depth_stencil) };
             fwd.prepare_draw(ctx);
-            match &self.shadow_program {
-                Some(sp) => {
+            if self.deferred_program_light.is_none() {
+                if let Some(sp) = &self.shadow_program {
                     let tex = sp.get_shadow_map();
                     unsafe {
                         (*ctx).PSSetSamplers(5, 1, &tex.get_sampler() as *const *mut _);
                         (*ctx).PSSetShaderResources(5, 1, &tex.get_texture_view() as *const *mut _);
                     }
                 }
-                None => (),
-            };
+                // if let Some(ssao) = &mut self.ssao_program {
+                //     let tex = ssao.render_target();
+                //     unsafe {
+                //         (*ctx).PSSetSamplers(4, 1, &tex.get_sampler() as *const *mut _);
+                //         (*ctx).PSSetShaderResources(4, 1, &tex.get_texture_view() as *const *mut _);
+                //     }
+                // }
+            }
             self.scene.draw(ObjType::Transparent);
             self.backend.pix_end_event();
         };
@@ -530,6 +565,12 @@ impl Renderer {
         self.skybox_program = Some(draw_programs::SkyBoxPass::create(
             self.backend.get_device(),
             self.backend.get_context(),
+        )?);
+        self.ssao_program = Some(gameworks::SSAO::new(
+            self.window.borrow().get_resolution(),
+            self.backend.get_depth_stencil_shader_view(),
+            self.camera.as_ref().unwrap().borrow().projection_mat(),
+            self.backend.get_device(),
         )?);
 
         Ok(())
