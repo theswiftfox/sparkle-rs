@@ -5,7 +5,6 @@ struct PS_IN {
 	float4 worldPos : POSITION_WORLD;
 	float3 normal : NORMAL;
 	float2 txCoord : TEXCOORD0;
-	// float2 txCoordNM : TEXCOORD1;
 	float3x3 TBN : TBN_MATRIX;
 };
 
@@ -33,7 +32,7 @@ Texture2D txNormal : register(t2);
 SamplerState samplerNormal: register(s2);
 
 PS_OUT main(PS_IN input) {
-    PS_OUT output;
+    PS_OUT output = (PS_OUT)0;
 
 	float4 albedo = txDiffuse.Sample(samplerLinear, input.txCoord);
     float4 pos = input.worldPos;//float4(input.worldPos, calcLinearDepth(input.pos.z));

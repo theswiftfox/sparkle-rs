@@ -15,6 +15,8 @@ pub struct Settings {
 
     // engine
     pub dx_validation: bool,
+
+    pub ssao: bool,
 }
 
 impl Settings {
@@ -87,6 +89,7 @@ impl std::default::Default for Settings {
             camera_fov: 70.0,
             view_distance: 1000.0,
             dx_validation: false,
+            ssao: true,
         }
     }
 }

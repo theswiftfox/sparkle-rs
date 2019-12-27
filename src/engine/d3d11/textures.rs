@@ -343,7 +343,7 @@ impl Texture2D {
         )
     }
 
-    fn create(
+    pub fn create(
         width: u32,
         height: u32,
         format: u32,

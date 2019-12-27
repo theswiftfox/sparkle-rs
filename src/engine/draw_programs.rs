@@ -5,7 +5,7 @@ use winapi::um::d3d11_1 as dx11_1;
 use super::d3d11::{cbuffer, shaders, textures, DxError, DxErrorType};
 use super::geometry::Light;
 
-fn vertex_input_desc() -> [dx11::D3D11_INPUT_ELEMENT_DESC; 5] {
+pub(crate) fn vertex_input_desc() -> [dx11::D3D11_INPUT_ELEMENT_DESC; 5] {
     let pos_name: &'static std::ffi::CStr = const_cstr!("SV_Position").as_cstr();
     let norm_name: &'static std::ffi::CStr = const_cstr!("NORMAL").as_cstr();
     let tang_name: &'static std::ffi::CStr = const_cstr!("TANGENT").as_cstr();
@@ -77,15 +77,11 @@ struct ConstantsVtxMP {
     pub proj: glm::Mat4,
     pub light_space: glm::Mat4,
 }
-struct ConstantsPxlMP {
-    pub camera_pos: glm::Vec4,
-    pub directional_light: Light,
-}
 
 pub(crate) struct ForwardPass {
     program: shaders::ShaderProgram,
     vertex_shader_uniforms: cbuffer::CBuffer<ConstantsVtxMP>,
-    pixel_shader_uniforms: cbuffer::CBuffer<ConstantsPxlMP>,
+    pixel_shader_uniforms: cbuffer::CBuffer<ConstantsDefLight>,
 }
 impl ForwardPass {
     pub fn prepare_draw(&mut self, ctx: *mut dx11_1::ID3D11DeviceContext1) {
@@ -152,7 +148,7 @@ impl ForwardPass {
         Ok(())
     }
 
-    pub fn set_camera_pos(&mut self, cpos: glm::Vec4, instant_update: bool) -> Result<(), DxError> {
+    pub fn set_camera_pos(&mut self, cpos: glm::Vec3, instant_update: bool) -> Result<(), DxError> {
         self.pixel_shader_uniforms.data.camera_pos = cpos;
         if instant_update {
             self.pixel_shader_uniforms.update()?
@@ -165,6 +161,13 @@ impl ForwardPass {
         instant_update: bool,
     ) -> Result<(), DxError> {
         self.pixel_shader_uniforms.data.directional_light = light;
+        if instant_update {
+            self.pixel_shader_uniforms.update()?
+        }
+        Ok(())
+    }
+    pub fn set_ssao(&mut self, ssao: u32, instant_update: bool) -> Result<(), DxError> {
+        self.pixel_shader_uniforms.data.ssao = ssao;
         if instant_update {
             self.pixel_shader_uniforms.update()?
         }
@@ -184,8 +187,9 @@ impl ForwardPass {
             proj: glm::identity(),
             light_space: glm::identity(),
         };
-        let pxl_uniforms = ConstantsPxlMP {
+        let pxl_uniforms = ConstantsDefLight {
             camera_pos: glm::zero(),
+            ssao: 1,
             directional_light: Light {
                 direction: glm::zero(),
                 color: glm::zero(),
@@ -472,7 +476,8 @@ impl DeferredPassPre {
 }
 
 struct ConstantsDefLight {
-    camera_pos: glm::Vec4,
+    camera_pos: glm::Vec3,
+    ssao: u32,
     directional_light: Light,
 }
 struct MatricesDefLight {
@@ -519,7 +524,7 @@ impl DeferredPassLight {
         Ok(())
     }
 
-    pub fn set_camera_pos(&mut self, cpos: glm::Vec4, instant_update: bool) -> Result<(), DxError> {
+    pub fn set_camera_pos(&mut self, cpos: glm::Vec3, instant_update: bool) -> Result<(), DxError> {
         self.pixel_shader_uniforms.data.camera_pos = cpos;
         if instant_update {
             self.pixel_shader_uniforms.update()?
@@ -538,6 +543,14 @@ impl DeferredPassLight {
         Ok(())
     }
 
+    pub fn set_ssao(&mut self, ssao: u32, instant_update: bool) -> Result<(), DxError> {
+        self.pixel_shader_uniforms.data.ssao = ssao;
+        if instant_update {
+            self.pixel_shader_uniforms.update()?
+        }
+        Ok(())
+    }
+
     pub fn create(
         device: *mut dx11_1::ID3D11Device1,
         context: *mut dx11_1::ID3D11DeviceContext1,
@@ -547,6 +560,7 @@ impl DeferredPassLight {
 
         let pxl_uniforms = ConstantsDefLight {
             camera_pos: glm::zero(),
+            ssao: 1,
             directional_light: Light {
                 direction: glm::zero(),
                 color: glm::zero(),
