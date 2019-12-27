@@ -6,6 +6,7 @@
 * Shadow Mapping with PCSS for directional light  
 * HBAO+ by [nVidia](https://www.geforce.com/hardware/technology/hbao-plus)  
 * Normal maps  
+* Loading glTF models  
 
 
 ## Planned  
@@ -13,6 +14,7 @@
 * Volumetric Light  
 * 2D rendering for HUD overlays  
 * Screen space reflections  
+* Custom scene description storing assets and lights   
 
 ![](sponza.png)  
 Left: No SSAO. Right: HBAO+ from nVidia.  
