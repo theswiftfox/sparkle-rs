@@ -49,7 +49,7 @@ impl SSAO {
             1,
             dx11::D3D11_BIND_RENDER_TARGET | dx11::D3D11_BIND_SHADER_RESOURCE,
             0,
-            0,
+            2,
             device,
         )?;
         {
