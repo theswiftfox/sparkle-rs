@@ -1,4 +1,5 @@
-#include "shared_pixel.hlsli"
+#include "light.hlsli"
+#include "shadow.hlsli"
 
 struct PS_IN {
 	float4 pos : SV_Position;
@@ -24,8 +25,9 @@ SamplerState samplerNormal: register(s2);
 cbuffer ubo : register(b0) {
 	float3 cameraPos;
 	bool ssao;
-	Light directionalLight;
 }
+
+StructuredBuffer<Light> lightsBuffer : register(t3);
 
 PS_OUT main(PS_IN input) {
 	PS_OUT output;
@@ -47,17 +49,25 @@ PS_OUT main(PS_IN input) {
 	float ambientOcclusion = 1.0; //ssao ? ssaoTex.Sample(samplerSSAO, input.txCoord) : 1.0;
 
 	float metallic = 16.0;//mr_tex.r;
-	float shadowed = shadow(input.posLS, N, normalize(-directionalLight.direction.xyz));
-	float3 color = blinn_phong(
-		directionalLight, 
-		cameraPos, 
-		input.worldPos, 
-		N, 
-		alb.rgb, 
-		metallic, 
-		shadowed, 
-		ambientOcclusion
-	);
+	float shadowed = shadow(input.posLS, N, normalize(-lightsBuffer[0].position.xyz));
+
+	uint numLights;
+	uint stride;
+	lightsBuffer.GetDimensions(numLights, stride);
+	float3 color = 0.0;
+	for (uint i = 0; i < numLights; i++) {
+		color += blinn_phong(
+			lightsBuffer[i], 
+			cameraPos, 
+			input.worldPos, 
+			N, 
+			alb.rgb, 
+			metallic, 
+			shadowed, 
+			ambientOcclusion
+		);
+	}
+	color = color / (color + float3(1.0, 1.0, 1.0));
 	color = pow(color, 1/2.2);
 	output.color = float4(color, alb.a);
 

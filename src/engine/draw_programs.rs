@@ -2,7 +2,7 @@ use winapi::shared::dxgiformat as dxgifmt;
 use winapi::um::d3d11 as dx11;
 use winapi::um::d3d11_1 as dx11_1;
 
-use super::d3d11::{cbuffer, shaders, textures, DxError, DxErrorType};
+use super::d3d11::{cbuffer, sbuffer, shaders, textures, DxError, DxErrorType};
 use super::geometry::Light;
 
 pub(crate) fn vertex_input_desc() -> [dx11::D3D11_INPUT_ELEMENT_DESC; 5] {
@@ -82,6 +82,7 @@ pub(crate) struct ForwardPass {
     program: shaders::ShaderProgram,
     vertex_shader_uniforms: cbuffer::CBuffer<ConstantsVtxMP>,
     pixel_shader_uniforms: cbuffer::CBuffer<ConstantsDefLight>,
+    lights_buffer: sbuffer::SBuffer<Light>,
 }
 impl ForwardPass {
     pub fn prepare_draw(&mut self, ctx: *mut dx11_1::ID3D11DeviceContext1) {
@@ -98,6 +99,7 @@ impl ForwardPass {
                 1,
                 &self.pixel_shader_uniforms.buffer_ptr() as *const *mut _,
             );
+            (*ctx).PSSetShaderResources(3, 1, &self.lights_buffer.shader_view() as *const *mut _);
         };
     }
 
@@ -155,16 +157,8 @@ impl ForwardPass {
         }
         Ok(())
     }
-    pub fn set_directional_light(
-        &mut self,
-        light: Light,
-        instant_update: bool,
-    ) -> Result<(), DxError> {
-        self.pixel_shader_uniforms.data.directional_light = light;
-        if instant_update {
-            self.pixel_shader_uniforms.update()?
-        }
-        Ok(())
+    pub fn set_lights(&mut self, light: Vec<Light>) -> Result<(), DxError> {
+        self.lights_buffer.update(light)
     }
     pub fn set_ssao(&mut self, ssao: u32, instant_update: bool) -> Result<(), DxError> {
         self.pixel_shader_uniforms.data.ssao = ssao;
@@ -190,18 +184,24 @@ impl ForwardPass {
         let pxl_uniforms = ConstantsDefLight {
             camera_pos: glm::zero(),
             ssao: 1,
-            directional_light: Light {
-                direction: glm::zero(),
-                color: glm::zero(),
-            },
         };
         let vtx_cbuff = match cbuffer::CBuffer::create(vtx_uniforms, context, device) {
             Ok(b) => b,
-            Err(e) => panic!(e),
+            Err(e) => return Err(e),
         };
         let pxl_cbuff = match cbuffer::CBuffer::create(pxl_uniforms, context, device) {
             Ok(b) => b,
-            Err(e) => panic!(e),
+            Err(e) => return Err(e),
+        };
+        let light = Light {
+            position: glm::zero(),
+            t: 0,
+            color: glm::zero(),
+            radius: 0.0,
+        };
+        let sbuff = match sbuffer::SBuffer::create(vec![light], context, device) {
+            Ok(b) => b,
+            Err(e) => return Err(e),
         };
 
         Ok(ForwardPass {
@@ -215,6 +215,7 @@ impl ForwardPass {
             )?,
             vertex_shader_uniforms: vtx_cbuff,
             pixel_shader_uniforms: pxl_cbuff,
+            lights_buffer: sbuff,
         })
     }
 }
@@ -478,7 +479,6 @@ impl DeferredPassPre {
 struct ConstantsDefLight {
     camera_pos: glm::Vec3,
     ssao: u32,
-    directional_light: Light,
 }
 struct MatricesDefLight {
     light_space: glm::Mat4,
@@ -488,6 +488,7 @@ pub(crate) struct DeferredPassLight {
     program: shaders::ShaderProgram,
     pixel_shader_uniforms: cbuffer::CBuffer<ConstantsDefLight>,
     pixel_shader_matrices: cbuffer::CBuffer<MatricesDefLight>,
+    lights_buffer: sbuffer::SBuffer<Light>,
 }
 impl DeferredPassLight {
     pub fn prepare_draw(&mut self, ctx: *mut dx11_1::ID3D11DeviceContext1) {
@@ -504,6 +505,7 @@ impl DeferredPassLight {
                 1,
                 &self.pixel_shader_matrices.buffer_ptr() as *const *mut _,
             );
+            (*ctx).PSSetShaderResources(3, 1, &self.lights_buffer.shader_view() as *const *mut _);
         };
     }
 
@@ -531,16 +533,8 @@ impl DeferredPassLight {
         }
         Ok(())
     }
-    pub fn set_directional_light(
-        &mut self,
-        light: Light,
-        instant_update: bool,
-    ) -> Result<(), DxError> {
-        self.pixel_shader_uniforms.data.directional_light = light;
-        if instant_update {
-            self.pixel_shader_uniforms.update()?
-        }
-        Ok(())
+    pub fn set_lights(&mut self, light: Vec<Light>) -> Result<(), DxError> {
+        self.lights_buffer.update(light)
     }
 
     pub fn set_ssao(&mut self, ssao: u32, instant_update: bool) -> Result<(), DxError> {
@@ -561,10 +555,6 @@ impl DeferredPassLight {
         let pxl_uniforms = ConstantsDefLight {
             camera_pos: glm::zero(),
             ssao: 1,
-            directional_light: Light {
-                direction: glm::zero(),
-                color: glm::zero(),
-            },
         };
         let pxl_matrices = MatricesDefLight {
             light_space: glm::zero(),
@@ -575,6 +565,16 @@ impl DeferredPassLight {
             Err(e) => panic!(e),
         };
         let pxl_cbuff_1 = match cbuffer::CBuffer::create(pxl_matrices, context, device) {
+            Ok(b) => b,
+            Err(e) => return Err(e),
+        };
+        let light = Light {
+            position: glm::zero(),
+            t: 0,
+            color: glm::zero(),
+            radius: 0.0,
+        };
+        let pxl_sbuff = match sbuffer::SBuffer::create(vec![light], context, device) {
             Ok(b) => b,
             Err(e) => return Err(e),
         };
@@ -590,6 +590,7 @@ impl DeferredPassLight {
             )?,
             pixel_shader_uniforms: pxl_cbuff,
             pixel_shader_matrices: pxl_cbuff_1,
+            lights_buffer: pxl_sbuff,
         })
     }
 }

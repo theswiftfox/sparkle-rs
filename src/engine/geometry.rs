@@ -9,8 +9,10 @@ pub struct Vertex {
 
 #[derive(Clone)]
 pub struct Light {
-    pub direction: glm::Vec4,
-    pub color: glm::Vec4,
+    pub position: glm::Vec3,
+    pub t: u32,
+    pub color: glm::Vec3,
+    pub radius: f32,
 }
 
 impl Default for Vertex {

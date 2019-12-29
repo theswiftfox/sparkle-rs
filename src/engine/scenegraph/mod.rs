@@ -20,8 +20,10 @@ impl Scenegraph {
             transform: glm::identity(),
             root: None,
             directional_light: Light {
-                direction: glm::zero(),
+                position: glm::zero(),
+                t: 0,
                 color: glm::zero(),
+                radius: 0.0,
             },
             light_proj: glm::ortho_zo(-25.0, 25.0, -25.0, 25.0, 1.0, 70.0),
         }
@@ -35,10 +37,10 @@ impl Scenegraph {
     }
 
     pub fn set_light_direction(&mut self, dir: glm::Vec3) {
-        self.directional_light.direction = glm::vec3_to_vec4(&dir)
+        self.directional_light.position = dir
     }
     pub fn set_light_color(&mut self, color: glm::Vec3) {
-        self.directional_light.color = glm::vec3_to_vec4(&color)
+        self.directional_light.color = color
     }
 
     pub fn get_directional_light(&self) -> &Light {
