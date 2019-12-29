@@ -138,7 +138,7 @@ impl Renderer {
                         1.0,
                         2.0 * renderer.shadow_dist,
                     );
-                    let dir = light.direction.xyz() * (-1.0) * renderer.shadow_dist;
+                    let dir = light.position.xyz() * (-1.0) * renderer.shadow_dist;
                     let mut up = glm::vec3(0.0, 1.0, 0.0);
                     if (up.dot(&dir.normalize()) - 1.0).abs() <= 0.0000001 {
                         up = glm::vec3(0.0, 0.0, 1.0);
@@ -151,7 +151,7 @@ impl Renderer {
                         .forward_program
                         .as_mut()
                         .unwrap()
-                        .set_directional_light((*light).clone(), false)
+                        .set_lights(vec![(*light).clone()])
                         .expect("Impossible");
                     renderer
                         .forward_program
@@ -208,7 +208,7 @@ impl Renderer {
                 Some(c) => {
                     c.borrow_mut().update(dt);
                     let light = self.scene.get_directional_light();
-                    let dir = light.direction.xyz() * (-1.0) * self.shadow_dist;
+                    let dir = light.position.xyz() * (-1.0) * self.shadow_dist;
                     let mut up = glm::vec3(0.0, 1.0, 0.0);
                     if (up.dot(&dir.normalize()) - 1.0).abs() <= 0.0000001 {
                         up = glm::vec3(0.0, 0.0, 1.0);
@@ -227,7 +227,7 @@ impl Renderer {
                             .set_camera_pos(c.borrow().position(), false)
                             .expect("Error setting camera pos");
                         forward_program
-                            .set_directional_light((*light).clone(), false)
+                            .set_lights(vec![(*light).clone()])
                             .expect("Impossible");
                         forward_program
                             .set_light_space_matrix(light_space_mat, false)
@@ -252,7 +252,7 @@ impl Renderer {
                             .set_camera_pos(c.borrow().position(), false)
                             .expect("Error setting camera pos");
                         deferred_light
-                            .set_directional_light((*light).clone(), false)
+                            .set_lights(vec![(*light).clone()])
                             .expect("Impossible");
                         deferred_light
                             .set_light_space_matrix(light_space_mat, false)
@@ -314,9 +314,11 @@ impl Renderer {
         println!("Processing scene...");
         self.scene.set_root(node);
         self.scene.set_directional_light(geometry::Light {
-            direction: glm::vec4(-0.15, -0.5, -0.05, 1.0).normalize(),
+            position: glm::vec3(-0.15, -0.5, -0.05).normalize(),
             // direction: glm::vec4(0.0, -1.5, -1.5, 1.0).normalize(),
-            color: glm::vec4(0.3, 0.3, 0.3, 1.0),
+            t: 0,
+            color: glm::vec3(23.47, 21.31, 20.79),
+            radius: 1.0,
         });
         self.scene.build_matrices();
 
@@ -458,7 +460,7 @@ impl Renderer {
         if self.settings.ssao {
             if let Some(ssao) = &mut self.ssao_program {
                 unsafe {
-                    (*ctx).PSSetSamplers(4, 1, &std::ptr::null_mut() as *const *mut _);
+                    // (*ctx).PSSetSamplers(4, 1, &std::ptr::null_mut() as *const *mut _);
                     (*ctx).PSSetShaderResources(4, 1, &std::ptr::null_mut() as *const *mut _);
                 }
                 let tv = ssao.get_render_target_view();
@@ -486,7 +488,7 @@ impl Renderer {
             if let Some(ssao) = &mut self.ssao_program {
                 let tex = ssao.get_render_target();
                 unsafe {
-                    (*ctx).PSSetSamplers(4, 1, &tex.get_sampler() as *const *mut _);
+                    //   (*ctx).PSSetSamplers(4, 1, &tex.get_sampler() as *const *mut _);
                     (*ctx).PSSetShaderResources(4, 1, &tex.get_texture_view() as *const *mut _);
                 }
             }

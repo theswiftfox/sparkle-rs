@@ -1,5 +1,6 @@
 pub(super) mod cbuffer;
 pub(crate) mod drawable;
+pub(super) mod sbuffer;
 pub(super) mod shaders;
 pub(crate) mod skybox;
 pub(crate) mod textures;

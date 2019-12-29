@@ -1,12 +1,5 @@
-Texture2D ssaoTex : register(t4);
-SamplerState samplerSSAO: register(s4);
 Texture2D txShadowMap : register(t5);
 SamplerComparisonState samplerShadowMap : register(s5);
-
-struct Light {
-	float4 direction;
-	float4 color;
-};
 
 // from https://www.geeks3d.com/20100628/3d-programming-ready-to-use-64-sample-poisson-disc/
 static float2 poissonDisk[64] = { 
@@ -27,24 +20,6 @@ static float2 poissonDisk[64] = {
     float2(-0.772454,-0.090976), float2( 0.504440, 0.372295), float2( 0.155736, 0.065157), float2( 0.391522, 0.849605),
     float2(-0.620106,-0.328104), float2( 0.789239,-0.419965), float2(-0.545396, 0.538133), float2(-0.178564,-0.596057)
 };
-
-float3 blinn_phong(Light light, float3 view_pos, float3 world_pos, float3 normal, float3 albedo, float metallic, float shadowed, float ambientOcclusion) {
-	float3 ld = normalize(-light.direction.xyz);
-	float3 vd = normalize(view_pos - world_pos);
-
-	float3 specular = float3(0.0, 0.0, 0.0);
-	if (dot(normal, ld)) {
-		float3 hwd = normalize(ld + vd);
-		float spec = pow(max(dot(normal, hwd), 0.0), metallic);
-		specular = light.color.rgb * spec;
-	}
-
-	float diff = max(dot(ld, normal), 0.0);
-	float3 diffuse = diff * albedo;
-
-	float3 ambient = 0.15 * albedo * ambientOcclusion;
-	return ambient + max(shadowed, 0.0) * (diffuse + specular);
-}
 
 float random(float3 seed3, int i) {
 	float4 seed4 = float4(seed3, float(i));

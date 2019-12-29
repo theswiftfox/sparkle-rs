@@ -1,5 +1,3 @@
-#include "shared_pixel.hlsli"
-
 struct PS_IN {
 	float4 pos : SV_Position;
 	float4 worldPos : POSITION_WORLD;
@@ -61,15 +59,15 @@ PS_OUT main(PS_IN input) {
 	output.albedo.g = (chalf.b << 16) | chalf.a;
 
 
-	// float2 mr = txMetallicRoughness.Sample(samplerMR, input.txCoord).gb;
+	float2 mr = txMetallicRoughness.Sample(samplerMR, input.txCoord).gb;
 	
-	// float roughness = mr.g;
-	// float metallic = mr.r; //txMetallicRoughness.Sample(textureSampler, input.uv).r;
-	// uint rhalf = f32tof16(roughness);
-	// uint mhalf = f32tof16(metallic);
+	float roughness = mr.g;
+	float metallic = mr.r; //txMetallicRoughness.Sample(textureSampler, input.uv).r;
+	uint rhalf = f32tof16(roughness);
+	uint mhalf = f32tof16(metallic);
 
-	// output.albedo.b = (mhalf << 16) | rhalf;
-	// output.albedo.a = 0;
+	output.albedo.b = (mhalf << 16) | rhalf;
+	output.albedo.a = 0;
 
 	return output;
 }

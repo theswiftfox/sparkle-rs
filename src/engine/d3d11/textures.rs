@@ -367,7 +367,9 @@ impl Texture2D {
             shader_view: std::ptr::null_mut(),
             id: TEXTURE_ID.fetch_add(1, Ordering::SeqCst),
         };
-        if bind_flags & dx11::D3D11_BIND_SHADER_RESOURCE == dx11::D3D11_BIND_SHADER_RESOURCE {
+        if sampler_type != 2
+            && bind_flags & dx11::D3D11_BIND_SHADER_RESOURCE == dx11::D3D11_BIND_SHADER_RESOURCE
+        {
             //is_shader_resource
             let mut desc: dx11::D3D11_SAMPLER_DESC = Default::default();
             desc.Filter = filter;
