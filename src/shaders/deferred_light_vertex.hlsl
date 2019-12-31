@@ -1,12 +1,12 @@
 // Fullscreen Quad VTX Shader
 
-struct VS_OUT {
-	float2 uv : UV;
-};
+// struct VS_OUT {
+// 	float2 uv : UV;
+// };
 
-VS_OUT main(uint id : SV_VertexId, out float4 vtxPos : SV_Position) {
-	VS_OUT output;
-	output.uv = float2((id << 1) & 2, id & 2) / 2.0;
-	vtxPos = float4(output.uv.x * 2 - 1, -output.uv.y * 2 + 1, 0.0f, 1.0f);
-	return output;
+float4 main(uint id : SV_VertexId) : SV_Position {
+	// VS_OUT output;
+	float2 uv = float2((id << 1) & 2, id & 2) / 2.0;
+	float4 vtxPos = float4(uv.x * 2 - 1, -uv.y * 2 + 1, 0.0f, 1.0f);
+	return vtxPos;
 }

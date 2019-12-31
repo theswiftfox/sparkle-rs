@@ -1,9 +1,9 @@
 #include "pbr.hlsli"
 #include "shadow.hlsli"
 
-struct PS_IN {
-	float2 uv : UV;
-};
+// struct PS_IN {
+// 	float2 uv : UV;
+// };
 
 struct PS_OUT {
 	float4 color : SV_Target;
@@ -17,13 +17,7 @@ cbuffer ubo : register(b0) {
 	bool ssao;
 }
 
-StructuredBuffer<Light> lightsBuffer : register(t3);
-
-cbuffer lsubo : register(b1) {
-	float4x4 lightSpace;
-}
-
-PS_OUT main(PS_IN input, float4 screenPos : SV_Position) {
+PS_OUT main(float4 screenPos : SV_Position) {
     PS_OUT output;
 
     // unpack
@@ -40,33 +34,27 @@ PS_OUT main(PS_IN input, float4 screenPos : SV_Position) {
 		output.color = 0.0;
 		return output;
 	}
-    float4 posLS = mul(lightSpace, pos);//float4(pos.xyz, 1.0));
+    //float4(pos.xyz, 1.0));
 
-	float4 ao = ssaoTex.Load(int3(screenPos.xy, 0));
-	float ambientOcclusion = ssao ? ao.r : 1.0;
-
-    float metallic = 16.0;//mr_tex.r;
-	float shadowed = shadow(posLS, normal, normalize(-lightsBuffer[0].position.xyz));
-
-	float3 F0 = lerp(float3(0.04, 0.04, 0.04), albedo.rgb, mr.r);
-	uint numLights;
-	uint stride;
-	lightsBuffer.GetDimensions(numLights, stride);
 	float3 color = 0.0;
-	for (uint i = 0; i < numLights; i++) {
+	if (light.type != AMBIENT) {
+		float3 F0 = lerp(float3(0.04, 0.04, 0.04), albedo.rgb, mr.r);
+		float shadowed = shadow(pos, normal);
 		color += BRDF(
 			cameraPos,
 			normal,
 			pos.xyz,
 			albedo.rgb,
 			F0,
-			lightsBuffer[i],
 			mr.r,
 			mr.g
-		);
+		) * shadowed;
+	} else {
+		float ambientOcclusion = ssao ? ssaoTex.Load(int3(screenPos.xy, 0)).r : 1.0;
+		float3 ambient = 0.15 * albedo.rgb * ambientOcclusion;
+		color = ambient;
 	}
-	float3 ambient = 0.15 * albedo.rgb * ambientOcclusion;
-	color = ambient + shadowed * (color / (color + float3(1.0, 1.0, 1.0)));
+	color = (color / (color + 1.0));
 	color = pow(color, 1/2.2);
 	output.color = float4(color, 1.0);
     return output;
