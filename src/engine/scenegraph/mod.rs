@@ -9,8 +9,7 @@ use super::geometry::Light;
 
 pub struct Scenegraph {
     transform: glm::Mat4,
-    directional_light: Light,
-    light_proj: glm::Mat4,
+    lights: Vec<Light>,
     root: Option<Rc<RefCell<Node>>>,
 }
 
@@ -19,37 +18,32 @@ impl Scenegraph {
         Scenegraph {
             transform: glm::identity(),
             root: None,
-            directional_light: Light {
-                position: glm::zero(),
-                t: 0,
-                color: glm::zero(),
-                radius: 0.0,
-            },
-            light_proj: glm::ortho_zo(-25.0, 25.0, -25.0, 25.0, 1.0, 70.0),
+            lights: Vec::<Light>::new(),
         }
     }
+
     pub fn set_root(&mut self, node: Rc<RefCell<Node>>) {
         self.root = Some(node)
     }
 
-    pub fn set_directional_light(&mut self, light: Light) {
-        self.directional_light = light
+    pub fn add_light(&mut self, light: Light) {
+        self.lights.push(light)
     }
 
-    pub fn set_light_direction(&mut self, dir: glm::Vec3) {
-        self.directional_light.position = dir
-    }
-    pub fn set_light_color(&mut self, color: glm::Vec3) {
-        self.directional_light.color = color
-    }
-
-    pub fn get_directional_light(&self) -> &Light {
-        return &self.directional_light;
-    }
-    pub fn get_light_proj(&self) -> &glm::Mat4 {
-        return &self.light_proj;
+    pub fn update_light(&mut self, light: Light, index: usize) -> Result<(), SceneGraphError> {
+        if index >= self.lights.len() {
+            return Err(SceneGraphError::new(
+                "Light index out of bounds",
+                &ErrorCause::NotFound,
+            ));
+        }
+        self.lights[index] = light;
+        Ok(())
     }
 
+    pub fn get_lights(&self) -> &Vec<Light> {
+        return &self.lights;
+    }
     pub fn build_matrices(&mut self) {
         if let Some(root) = &mut self.root {
             root.borrow_mut().build_model(&self.transform);
