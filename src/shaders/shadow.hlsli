@@ -27,7 +27,10 @@ float random(float3 seed3, int i) {
     return frac(sin(dot_product) * 43758.5453);
 }
 
-float shadow(float4 fragmentLS, float3 normal, float3 lightDir) {
+float shadow(float4 pos, float3 normal) {
+	float4 fragmentLS = mul(light.lightSpace, pos);
+	float3 lightDir = light.type == 0 ?
+		-light.position : light.position;
 	int sampleCount = 16;
 	float2 shadowTexCoords;
 	shadowTexCoords.x = 0.5f + (fragmentLS.x / fragmentLS.w * 0.5f);

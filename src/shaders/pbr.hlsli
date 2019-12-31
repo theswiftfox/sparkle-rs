@@ -37,15 +37,15 @@ float3 BRDF(
     float3 position, 
     float3 albedo, 
     float3 F0, 
-    Light light, 
     float metallic, 
     float roughness)
 {
 	// Precalculate vectors and dot products
-	float3 L = light.type == 0 ? normalize(-light.position) : light.position.xyz - position;
+	float3 L = light.type == DIRECTIONAL ? 
+		normalize(-light.position) : light.position - position;
 	float distance = length(L);
-	float attenuation = 1.0 / (distance * distance);
-	float3 radiance = light.color.rgb * attenuation;
+	float attenuation = light.radius / (distance * distance);
+	float3 radiance = light.color * attenuation;
 
 	L = normalize(L);
 	float3 H = normalize(L + V);

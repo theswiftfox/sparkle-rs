@@ -54,7 +54,8 @@ pub struct D3D11Backend {
     rasterzer_state_back_face: *mut dx11_1::ID3D11RasterizerState1,
     rasterzer_state_front_face: *mut dx11_1::ID3D11RasterizerState1,
     depth_stencil_state: *mut dx11::ID3D11DepthStencilState,
-    blend_state: *mut dx11_1::ID3D11BlendState1,
+    alpha_blend_state: *mut dx11_1::ID3D11BlendState1,
+    add_blend_state: *mut dx11_1::ID3D11BlendState1,
     initialized: bool,
 }
 
@@ -88,7 +89,8 @@ impl Default for D3D11Backend {
             rasterzer_state_back_face: ptr::null_mut(),
             rasterzer_state_front_face: ptr::null_mut(),
             depth_stencil_state: ptr::null_mut(),
-            blend_state: ptr::null_mut(),
+            alpha_blend_state: ptr::null_mut(),
+            add_blend_state: ptr::null_mut(),
             backbuffer_format: dxgifmt::DXGI_FORMAT_B8G8R8A8_UNORM,
             backbuffer_count: 2,
             depthbuffer_format: dxgifmt::DXGI_FORMAT_R32_TYPELESS,
@@ -125,10 +127,24 @@ impl D3D11Backend {
             (*self.context).OMSetBlendState(std::ptr::null_mut(), &factor, 0xffffffff);
         }
     }
-    pub fn enable_blend(&self) {
+    pub fn enable_alpha_blend(&self) {
         unsafe {
             let blend_factor = [1.0f32, 1.0f32, 1.0f32, 1.0f32];
-            (*self.context).OMSetBlendState(self.blend_state as *mut _, &blend_factor, 0xffffffff);
+            (*self.context).OMSetBlendState(
+                self.alpha_blend_state as *mut _,
+                &blend_factor,
+                0xffffffff,
+            );
+        }
+    }
+    pub fn enable_add_blend(&self) {
+        unsafe {
+            let blend_factor = [1.0f32, 1.0f32, 1.0f32, 1.0f32];
+            (*self.context).OMSetBlendState(
+                self.add_blend_state as *mut _,
+                &blend_factor,
+                0xffffffff,
+            );
         }
     }
 
@@ -760,18 +776,21 @@ impl D3D11Backend {
                 (*self.context).OMSetDepthStencilState(self.depth_stencil_state as *mut _, 1);
             }
 
-            let mut blend_state_desc: dx11_1::D3D11_BLEND_DESC1 = unsafe { std::mem::zeroed() };
-            blend_state_desc.RenderTarget[0].BlendEnable = TRUE;
-            blend_state_desc.RenderTarget[0].SrcBlend = dx11::D3D11_BLEND_SRC_ALPHA;
-            blend_state_desc.RenderTarget[0].DestBlend = dx11::D3D11_BLEND_INV_SRC_ALPHA;
-            blend_state_desc.RenderTarget[0].BlendOp = dx11::D3D11_BLEND_OP_ADD;
-            blend_state_desc.RenderTarget[0].SrcBlendAlpha = dx11::D3D11_BLEND_ONE;
-            blend_state_desc.RenderTarget[0].DestBlendAlpha = dx11::D3D11_BLEND_ZERO;
-            blend_state_desc.RenderTarget[0].BlendOpAlpha = dx11::D3D11_BLEND_OP_ADD;
-            blend_state_desc.RenderTarget[0].RenderTargetWriteMask = 0x0f;
+            let mut alpha_blend_state_desc: dx11_1::D3D11_BLEND_DESC1 =
+                unsafe { std::mem::zeroed() };
+            alpha_blend_state_desc.RenderTarget[0].BlendEnable = TRUE;
+            alpha_blend_state_desc.RenderTarget[0].SrcBlend = dx11::D3D11_BLEND_SRC_ALPHA;
+            alpha_blend_state_desc.RenderTarget[0].DestBlend = dx11::D3D11_BLEND_INV_SRC_ALPHA;
+            alpha_blend_state_desc.RenderTarget[0].BlendOp = dx11::D3D11_BLEND_OP_ADD;
+            alpha_blend_state_desc.RenderTarget[0].SrcBlendAlpha = dx11::D3D11_BLEND_ONE;
+            alpha_blend_state_desc.RenderTarget[0].DestBlendAlpha = dx11::D3D11_BLEND_ZERO;
+            alpha_blend_state_desc.RenderTarget[0].BlendOpAlpha = dx11::D3D11_BLEND_OP_ADD;
+            alpha_blend_state_desc.RenderTarget[0].RenderTargetWriteMask = 0x0f;
             unsafe {
-                let res = (*self.device)
-                    .CreateBlendState(&blend_state_desc, &mut self.blend_state as *mut *mut _);
+                let res = (*self.device).CreateBlendState(
+                    &alpha_blend_state_desc,
+                    &mut self.alpha_blend_state as *mut *mut _,
+                );
                 if res < S_OK {
                     //println!("Blend State initialization failed");
                     return Err(DxError::new(
@@ -781,10 +800,33 @@ impl D3D11Backend {
                 }
                 let blend_factor = [1.0f32, 1.0f32, 1.0f32, 1.0f32];
                 (*self.context).OMSetBlendState(
-                    self.blend_state as *mut _,
+                    self.alpha_blend_state as *mut _,
                     &blend_factor,
                     0xffffffff,
                 );
+            }
+
+            let mut add_blend_state_desc: dx11_1::D3D11_BLEND_DESC1 = unsafe { std::mem::zeroed() };
+            add_blend_state_desc.RenderTarget[0].BlendEnable = TRUE;
+            add_blend_state_desc.RenderTarget[0].SrcBlend = dx11::D3D11_BLEND_ONE;
+            add_blend_state_desc.RenderTarget[0].DestBlend = dx11::D3D11_BLEND_ONE;
+            add_blend_state_desc.RenderTarget[0].BlendOp = dx11::D3D11_BLEND_OP_ADD;
+            add_blend_state_desc.RenderTarget[0].SrcBlendAlpha = dx11::D3D11_BLEND_ONE;
+            add_blend_state_desc.RenderTarget[0].DestBlendAlpha = dx11::D3D11_BLEND_ONE;
+            add_blend_state_desc.RenderTarget[0].BlendOpAlpha = dx11::D3D11_BLEND_OP_ADD;
+            add_blend_state_desc.RenderTarget[0].RenderTargetWriteMask = 0x0f;
+            unsafe {
+                let res = (*self.device).CreateBlendState(
+                    &add_blend_state_desc,
+                    &mut self.add_blend_state as *mut *mut _,
+                );
+                if res < S_OK {
+                    //println!("Blend State initialization failed");
+                    return Err(DxError::new(
+                        "Blend State init failed",
+                        DxErrorType::ResourceCreation,
+                    ));
+                }
             }
         }
 

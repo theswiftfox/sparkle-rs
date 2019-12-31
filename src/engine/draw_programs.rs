@@ -2,8 +2,8 @@ use winapi::shared::dxgiformat as dxgifmt;
 use winapi::um::d3d11 as dx11;
 use winapi::um::d3d11_1 as dx11_1;
 
-use super::d3d11::{cbuffer, sbuffer, shaders, textures, DxError, DxErrorType};
-use super::geometry::Light;
+use super::d3d11::{cbuffer, shaders, textures, DxError, DxErrorType};
+use super::geometry::{Light, LightType};
 
 pub(crate) fn vertex_input_desc() -> [dx11::D3D11_INPUT_ELEMENT_DESC; 5] {
     let pos_name: &'static std::ffi::CStr = const_cstr!("SV_Position").as_cstr();
@@ -57,16 +57,68 @@ pub(crate) fn vertex_input_desc() -> [dx11::D3D11_INPUT_ELEMENT_DESC; 5] {
             InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
             InstanceDataStepRate: 0,
         },
-        // dx11::D3D11_INPUT_ELEMENT_DESC {
-        //     SemanticName: uv_name.as_ptr() as *const _,
-        //     SemanticIndex: 1,
-        //     Format: dxgifmt::DXGI_FORMAT_R32G32_FLOAT,
-        //     InputSlot: 0,
-        //     AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
-        //     InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-        //     InstanceDataStepRate: 0,
-        // },
     ]
+}
+
+fn create_render_target(
+    (width, height): (u32, u32),
+    format: u32,
+    device: *mut dx11_1::ID3D11Device1,
+) -> Result<(textures::Texture2D, *mut dx11::ID3D11RenderTargetView), DxError> {
+    let mut tv: *mut dx11::ID3D11RenderTargetView = std::ptr::null_mut();
+    let mut tex = textures::Texture2D::create_mutable_render_target(
+        width,
+        height,
+        format,
+        dx11::D3D11_TEXTURE_ADDRESS_CLAMP,
+        dx11::D3D11_TEXTURE_ADDRESS_CLAMP,
+        dx11::D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT,
+        1,
+        dx11::D3D11_BIND_RENDER_TARGET | dx11::D3D11_BIND_SHADER_RESOURCE,
+        0,
+        0,
+        device,
+    )?;
+    {
+        let mut desc: dx11::D3D11_RENDER_TARGET_VIEW_DESC = Default::default();
+        desc.Format = format;
+        desc.ViewDimension = dx11::D3D11_RTV_DIMENSION_TEXTURE2D;
+        unsafe { desc.u.Texture2D_mut().MipSlice = 0 };
+        let res = unsafe {
+            (*device).CreateRenderTargetView(
+                tex.get_texture_handle() as *mut _,
+                &desc,
+                &mut tv as *mut *mut _,
+            )
+        };
+        if res < winapi::shared::winerror::S_OK {
+            return Err(DxError::new(
+                "Error creating depth target view for texture",
+                DxErrorType::ResourceCreation,
+            ));
+        }
+        let mut rv_desc: dx11::D3D11_SHADER_RESOURCE_VIEW_DESC = Default::default();
+        rv_desc.Format = format;
+        rv_desc.ViewDimension = dx11::D3D11_RTV_DIMENSION_TEXTURE2D;
+        unsafe {
+            rv_desc.u.Texture2D_mut().MostDetailedMip = 0;
+            rv_desc.u.Texture2D_mut().MipLevels = 1;
+        };
+        let res = unsafe {
+            (*device).CreateShaderResourceView(
+                tex.get_texture_handle() as *mut _,
+                &rv_desc as *const _,
+                &mut tex.shader_view as *mut *mut _,
+            )
+        };
+        if res < winapi::shared::winerror::S_OK {
+            return Err(DxError::new(
+                "Error creating depth shader view for texture",
+                DxErrorType::ResourceCreation,
+            ));
+        }
+        Ok((tex, tv))
+    }
 }
 
 /**
@@ -75,16 +127,23 @@ pub(crate) fn vertex_input_desc() -> [dx11::D3D11_INPUT_ELEMENT_DESC; 5] {
 struct ConstantsVtxMP {
     pub view: glm::Mat4,
     pub proj: glm::Mat4,
-    pub light_space: glm::Mat4,
 }
 
 pub(crate) struct ForwardPass {
     program: shaders::ShaderProgram,
     vertex_shader_uniforms: cbuffer::CBuffer<ConstantsVtxMP>,
     pixel_shader_uniforms: cbuffer::CBuffer<ConstantsDefLight>,
-    lights_buffer: sbuffer::SBuffer<Light>,
+    light_buffer: cbuffer::CBuffer<DxLight>,
+    render_target: textures::Texture2D,
+    render_target_view: *mut dx11::ID3D11RenderTargetView,
 }
 impl ForwardPass {
+    pub fn get_render_target(&self) -> &textures::Texture2D {
+        &self.render_target
+    }
+    pub fn get_render_target_view(&self) -> *mut dx11::ID3D11RenderTargetView {
+        self.render_target_view
+    }
     pub fn prepare_draw(&mut self, ctx: *mut dx11_1::ID3D11DeviceContext1) {
         self.program.activate();
 
@@ -94,18 +153,18 @@ impl ForwardPass {
                 1,
                 &self.vertex_shader_uniforms.buffer_ptr() as *const *mut _,
             );
-            (*ctx).PSSetConstantBuffers(
-                0,
-                1,
-                &self.pixel_shader_uniforms.buffer_ptr() as *const *mut _,
-            );
-            (*ctx).PSSetShaderResources(3, 1, &self.lights_buffer.shader_view() as *const *mut _);
+            let cbuffs = [
+                self.pixel_shader_uniforms.buffer_ptr(),
+                self.light_buffer.buffer_ptr(),
+            ];
+            (*ctx).PSSetConstantBuffers(0, 2, cbuffs.as_ptr());
         };
     }
 
     pub fn update(&mut self) -> Result<(), DxError> {
         self.vertex_shader_uniforms.update()?;
         self.pixel_shader_uniforms.update()?;
+        self.light_buffer.update()?;
 
         Ok(())
     }
@@ -124,14 +183,10 @@ impl ForwardPass {
         }
         Ok(())
     }
-    pub fn set_light_space_matrix(
-        &mut self,
-        ls_mat: glm::Mat4,
-        instant_update: bool,
-    ) -> Result<(), DxError> {
-        self.vertex_shader_uniforms.data.light_space = ls_mat;
+    pub fn set_light(&mut self, light: &Light, instant_update: bool) -> Result<(), DxError> {
+        self.light_buffer.data = DxLight::from_sparkle_light(light);
         if instant_update {
-            self.vertex_shader_uniforms.update()?
+            self.light_buffer.update()?
         }
         Ok(())
     }
@@ -157,9 +212,7 @@ impl ForwardPass {
         }
         Ok(())
     }
-    pub fn set_lights(&mut self, light: Vec<Light>) -> Result<(), DxError> {
-        self.lights_buffer.update(light)
-    }
+
     pub fn set_ssao(&mut self, ssao: u32, instant_update: bool) -> Result<(), DxError> {
         self.pixel_shader_uniforms.data.ssao = ssao;
         if instant_update {
@@ -169,6 +222,7 @@ impl ForwardPass {
     }
 
     pub fn create(
+        (width, height): (u32, u32),
         device: *mut dx11_1::ID3D11Device1,
         context: *mut dx11_1::ID3D11DeviceContext1,
     ) -> Result<ForwardPass, DxError> {
@@ -179,7 +233,6 @@ impl ForwardPass {
         let vtx_uniforms = ConstantsVtxMP {
             view: glm::identity(),
             proj: glm::identity(),
-            light_space: glm::identity(),
         };
         let pxl_uniforms = ConstantsDefLight {
             camera_pos: glm::zero(),
@@ -193,16 +246,23 @@ impl ForwardPass {
             Ok(b) => b,
             Err(e) => return Err(e),
         };
-        let light = Light {
+        let light = DxLight {
             position: glm::zero(),
             t: 0,
             color: glm::zero(),
             radius: 0.0,
+            light_space: glm::identity(),
         };
-        let sbuff = match sbuffer::SBuffer::create(vec![light], context, device) {
+        let pxl_cbuff2 = match cbuffer::CBuffer::create(light, context, device) {
             Ok(b) => b,
             Err(e) => return Err(e),
         };
+
+        let (tex, tv) = create_render_target(
+            (width, height),
+            dxgifmt::DXGI_FORMAT_R32G32B32A32_FLOAT,
+            device,
+        )?;
 
         Ok(ForwardPass {
             program: shaders::ShaderProgram::create(
@@ -215,7 +275,9 @@ impl ForwardPass {
             )?,
             vertex_shader_uniforms: vtx_cbuff,
             pixel_shader_uniforms: pxl_cbuff,
-            lights_buffer: sbuff,
+            light_buffer: pxl_cbuff2,
+            render_target: tex,
+            render_target_view: tv,
         })
     }
 }
@@ -349,113 +411,17 @@ impl DeferredPassPre {
         };
 
         // render target positions
-        let mut position_tv: *mut dx11::ID3D11RenderTargetView = std::ptr::null_mut();
-        let mut position_tex = textures::Texture2D::create_mutable_render_target(
-            res_x,
-            res_y,
+        let (position_tex, position_tv) = create_render_target(
+            (res_x, res_y),
             dxgifmt::DXGI_FORMAT_R32G32B32A32_UINT,
-            dx11::D3D11_TEXTURE_ADDRESS_CLAMP,
-            dx11::D3D11_TEXTURE_ADDRESS_CLAMP,
-            dx11::D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT,
-            1,
-            dx11::D3D11_BIND_RENDER_TARGET | dx11::D3D11_BIND_SHADER_RESOURCE,
-            0,
-            0,
             device,
         )?;
-        {
-            let mut dt_desc: dx11::D3D11_RENDER_TARGET_VIEW_DESC = Default::default();
-            dt_desc.Format = dxgifmt::DXGI_FORMAT_R32G32B32A32_UINT;
-            dt_desc.ViewDimension = dx11::D3D11_RTV_DIMENSION_TEXTURE2D;
-            unsafe { dt_desc.u.Texture2D_mut().MipSlice = 0 };
-            let res = unsafe {
-                (*device).CreateRenderTargetView(
-                    position_tex.get_texture_handle() as *mut _,
-                    &dt_desc,
-                    &mut position_tv as *mut *mut _,
-                )
-            };
-            if res < winapi::shared::winerror::S_OK {
-                return Err(DxError::new(
-                    "Error creating depth target view for texture",
-                    DxErrorType::ResourceCreation,
-                ));
-            }
-            let mut pos_tar_rv_desc: dx11::D3D11_SHADER_RESOURCE_VIEW_DESC = Default::default();
-            pos_tar_rv_desc.Format = dxgifmt::DXGI_FORMAT_R32G32B32A32_UINT;
-            pos_tar_rv_desc.ViewDimension = dx11::D3D11_RTV_DIMENSION_TEXTURE2D;
-            unsafe {
-                pos_tar_rv_desc.u.Texture2D_mut().MostDetailedMip = 0;
-                pos_tar_rv_desc.u.Texture2D_mut().MipLevels = 1;
-            };
-            let res = unsafe {
-                (*device).CreateShaderResourceView(
-                    position_tex.get_texture_handle() as *mut _,
-                    &pos_tar_rv_desc as *const _,
-                    &mut position_tex.shader_view as *mut *mut _,
-                )
-            };
-            if res < winapi::shared::winerror::S_OK {
-                return Err(DxError::new(
-                    "Error creating depth shader view for texture",
-                    DxErrorType::ResourceCreation,
-                ));
-            }
-        }
         // render target albedo
-        let mut albedo_tv: *mut dx11::ID3D11RenderTargetView = std::ptr::null_mut();
-        let mut albedo_tex = textures::Texture2D::create_mutable_render_target(
-            res_x,
-            res_y,
+        let (albedo_tex, albedo_tv) = create_render_target(
+            (res_x, res_y),
             dxgifmt::DXGI_FORMAT_R32G32B32A32_UINT,
-            dx11::D3D11_TEXTURE_ADDRESS_CLAMP,
-            dx11::D3D11_TEXTURE_ADDRESS_CLAMP,
-            dx11::D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT,
-            1,
-            dx11::D3D11_BIND_RENDER_TARGET | dx11::D3D11_BIND_SHADER_RESOURCE,
-            0,
-            0,
             device,
         )?;
-        {
-            let mut dt_desc: dx11::D3D11_RENDER_TARGET_VIEW_DESC = Default::default();
-            dt_desc.Format = dxgifmt::DXGI_FORMAT_R32G32B32A32_UINT;
-            dt_desc.ViewDimension = dx11::D3D11_RTV_DIMENSION_TEXTURE2D;
-            unsafe { dt_desc.u.Texture2D_mut().MipSlice = 0 };
-            let res = unsafe {
-                (*device).CreateRenderTargetView(
-                    albedo_tex.get_texture_handle() as *mut _,
-                    &dt_desc,
-                    &mut albedo_tv as *mut *mut _,
-                )
-            };
-            if res < winapi::shared::winerror::S_OK {
-                return Err(DxError::new(
-                    "Error creating depth target view for texture",
-                    DxErrorType::ResourceCreation,
-                ));
-            }
-            let mut pos_tar_rv_desc: dx11::D3D11_SHADER_RESOURCE_VIEW_DESC = Default::default();
-            pos_tar_rv_desc.Format = dxgifmt::DXGI_FORMAT_R32G32B32A32_UINT;
-            pos_tar_rv_desc.ViewDimension = dx11::D3D11_RTV_DIMENSION_TEXTURE2D;
-            unsafe {
-                pos_tar_rv_desc.u.Texture2D_mut().MostDetailedMip = 0;
-                pos_tar_rv_desc.u.Texture2D_mut().MipLevels = 1;
-            };
-            let res = unsafe {
-                (*device).CreateShaderResourceView(
-                    albedo_tex.get_texture_handle() as *mut _,
-                    &pos_tar_rv_desc as *const _,
-                    &mut albedo_tex.shader_view as *mut *mut _,
-                )
-            };
-            if res < winapi::shared::winerror::S_OK {
-                return Err(DxError::new(
-                    "Error creating depth shader view for texture",
-                    DxErrorType::ResourceCreation,
-                ));
-            }
-        }
 
         Ok(DeferredPassPre {
             program: shaders::ShaderProgram::create(
@@ -480,48 +446,68 @@ struct ConstantsDefLight {
     camera_pos: glm::Vec3,
     ssao: u32,
 }
-struct MatricesDefLight {
+
+struct DxLight {
+    position: glm::Vec3,
+    t: u32,
+    color: glm::Vec3,
+    radius: f32,
     light_space: glm::Mat4,
+}
+impl DxLight {
+    #[allow(unreachable_patterns)]
+    fn from_sparkle_light(light: &Light) -> DxLight {
+        let t = match &light.t {
+            LightType::Ambient => 0u32,
+            LightType::Directional => 1u32,
+            LightType::Area => 2u32,
+            _ => std::u32::MAX,
+        };
+        DxLight {
+            position: light.position.clone(),
+            t: t,
+            color: light.color.clone(),
+            radius: light.radius.clone(),
+            light_space: light.light_proj.clone(),
+        }
+    }
 }
 
 pub(crate) struct DeferredPassLight {
     program: shaders::ShaderProgram,
     pixel_shader_uniforms: cbuffer::CBuffer<ConstantsDefLight>,
-    pixel_shader_matrices: cbuffer::CBuffer<MatricesDefLight>,
-    lights_buffer: sbuffer::SBuffer<Light>,
+    light_buffer: cbuffer::CBuffer<DxLight>,
+    render_target: textures::Texture2D,
+    render_target_view: *mut dx11::ID3D11RenderTargetView,
 }
 impl DeferredPassLight {
+    pub fn get_render_target(&self) -> &textures::Texture2D {
+        &self.render_target
+    }
+    pub fn get_render_target_view(&self) -> *mut dx11::ID3D11RenderTargetView {
+        self.render_target_view
+    }
     pub fn prepare_draw(&mut self, ctx: *mut dx11_1::ID3D11DeviceContext1) {
         self.program.activate();
 
         unsafe {
-            (*ctx).PSSetConstantBuffers(
-                0,
-                1,
-                &self.pixel_shader_uniforms.buffer_ptr() as *const *mut _,
-            );
-            (*ctx).PSSetConstantBuffers(
-                1,
-                1,
-                &self.pixel_shader_matrices.buffer_ptr() as *const *mut _,
-            );
-            (*ctx).PSSetShaderResources(3, 1, &self.lights_buffer.shader_view() as *const *mut _);
+            let cbuffs = [
+                self.pixel_shader_uniforms.buffer_ptr(),
+                self.light_buffer.buffer_ptr(),
+            ];
+            (*ctx).PSSetConstantBuffers(0, 2, cbuffs.as_ptr());
         };
     }
 
     pub fn update(&mut self) -> Result<(), DxError> {
         self.pixel_shader_uniforms.update()?;
-        self.pixel_shader_matrices.update()?;
+        self.light_buffer.update()?;
         Ok(())
     }
-    pub fn set_light_space_matrix(
-        &mut self,
-        ls_mat: glm::Mat4,
-        instant_update: bool,
-    ) -> Result<(), DxError> {
-        self.pixel_shader_matrices.data.light_space = ls_mat;
+    pub fn set_light(&mut self, light: &Light, instant_update: bool) -> Result<(), DxError> {
+        self.light_buffer.data = DxLight::from_sparkle_light(light);
         if instant_update {
-            self.pixel_shader_matrices.update()?
+            self.light_buffer.update()?
         }
         Ok(())
     }
@@ -533,9 +519,6 @@ impl DeferredPassLight {
         }
         Ok(())
     }
-    pub fn set_lights(&mut self, light: Vec<Light>) -> Result<(), DxError> {
-        self.lights_buffer.update(light)
-    }
 
     pub fn set_ssao(&mut self, ssao: u32, instant_update: bool) -> Result<(), DxError> {
         self.pixel_shader_uniforms.data.ssao = ssao;
@@ -546,6 +529,7 @@ impl DeferredPassLight {
     }
 
     pub fn create(
+        (width, height): (u32, u32),
         device: *mut dx11_1::ID3D11Device1,
         context: *mut dx11_1::ID3D11DeviceContext1,
     ) -> Result<DeferredPassLight, DxError> {
@@ -556,29 +540,27 @@ impl DeferredPassLight {
             camera_pos: glm::zero(),
             ssao: 1,
         };
-        let pxl_matrices = MatricesDefLight {
-            light_space: glm::zero(),
-        };
 
         let pxl_cbuff = match cbuffer::CBuffer::create(pxl_uniforms, context, device) {
             Ok(b) => b,
             Err(e) => panic!(e),
         };
-        let pxl_cbuff_1 = match cbuffer::CBuffer::create(pxl_matrices, context, device) {
-            Ok(b) => b,
-            Err(e) => return Err(e),
-        };
-        let light = Light {
+        let light = DxLight {
             position: glm::zero(),
             t: 0,
             color: glm::zero(),
             radius: 0.0,
+            light_space: glm::identity(),
         };
-        let pxl_sbuff = match sbuffer::SBuffer::create(vec![light], context, device) {
+        let pxl_cbuff2 = match cbuffer::CBuffer::create(light, context, device) {
             Ok(b) => b,
             Err(e) => return Err(e),
         };
-
+        let (tex, tv) = create_render_target(
+            (width, height),
+            dxgifmt::DXGI_FORMAT_R32G32B32A32_FLOAT,
+            device,
+        )?;
         Ok(DeferredPassLight {
             program: shaders::ShaderProgram::create(
                 &vtx_shader,
@@ -589,8 +571,9 @@ impl DeferredPassLight {
                 context,
             )?,
             pixel_shader_uniforms: pxl_cbuff,
-            pixel_shader_matrices: pxl_cbuff_1,
-            lights_buffer: pxl_sbuff,
+            light_buffer: pxl_cbuff2,
+            render_target: tex,
+            render_target_view: tv,
         })
     }
 }
@@ -608,7 +591,6 @@ pub(crate) struct ShadowPass {
     program: shaders::ShaderProgram,
     vertex_shader_uniforms: cbuffer::CBuffer<ConstantsVtxSM>,
     shadow_map: textures::Texture2D,
-    //shadow_map_render_target: *mut dx11::ID3D11RenderTargetView,
     shadow_map_depth_target: *mut dx11::ID3D11DepthStencilView,
     shadow_viewport: dx11::D3D11_VIEWPORT,
 }
@@ -616,9 +598,6 @@ pub(crate) struct ShadowPass {
 // todo: destructor that cleans up resources
 
 impl ShadowPass {
-    // pub fn get_render_target_view(&self) -> *mut dx11::ID3D11RenderTargetView {
-    //     self.shadow_map_render_target
-    // }
     pub fn get_depth_stencil_view(&self) -> *mut dx11::ID3D11DepthStencilView {
         self.shadow_map_depth_target
     }
@@ -759,6 +738,34 @@ impl ShadowPass {
                 MinDepth: 0.0,
                 MaxDepth: 1.0,
             },
+        })
+    }
+}
+
+pub struct OutputPass {
+    program: shaders::ShaderProgram,
+}
+
+impl OutputPass {
+    pub fn prepare_draw(&mut self) {
+        self.program.activate();
+    }
+    pub fn create(
+        device: *mut dx11_1::ID3D11Device1,
+        context: *mut dx11_1::ID3D11DeviceContext1,
+    ) -> Result<OutputPass, DxError> {
+        let vtx_shader = "deferred_light_vertex.cso";
+        let ps_shader = "blend_pixel.cso";
+
+        Ok(OutputPass {
+            program: shaders::ShaderProgram::create(
+                &vtx_shader,
+                &ps_shader,
+                None,
+                None,
+                device,
+                context,
+            )?,
         })
     }
 }

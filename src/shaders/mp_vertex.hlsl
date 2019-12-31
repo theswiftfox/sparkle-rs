@@ -10,18 +10,15 @@ struct VS_IN {
 
 struct VS_OUT {
 	float4 pos			: SV_Position;
-	float4 posLS		: POSITION_LIGHT_SPACE;
-	float3 worldPos 	: POSITION_WORLD;
+	float4 worldPos 	: POSITION_WORLD;
 	float3 normal		: NORMAL;
 	float2 txCoord 		: TEXCOORD0;
-	// float2 txCoordNM	: TEXCOORD1;
 	float3x3 TBN		: TBN_MATRIX;
 };
 
 cbuffer FrameConsts : register(b0) {
 	float4x4 view;
 	float4x4 proj;
-	float4x4 lightSpace;
 };
 
 cbuffer PerInstance : register(b1) {
@@ -31,11 +28,9 @@ cbuffer PerInstance : register(b1) {
 VS_OUT main(VS_IN input) {
 	VS_OUT output;
 	float4 worldPos = mul(model, float4(input.pos, 1.0));
-	output.worldPos = worldPos.xyz;
+	output.worldPos = worldPos;
 	output.pos = mul(proj, mul(view , worldPos));
-	output.posLS = mul(lightSpace, worldPos);
 	output.txCoord = input.txCoord;
-	// output.txCoordNM = input.txCoordNM;
 
 	float3x3 normalMat = transpose((float3x3)model);
 
