@@ -1,7 +1,6 @@
 [package]
 name = "sparkle"
 version = "0.1.0"
-authors = ["Patrick Gantner <patrick.gantner@linesofcode.at>"]
 edition = "2018"
 build = "build.rs"
 
