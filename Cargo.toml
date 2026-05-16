@@ -5,26 +5,16 @@ authors = ["Elena Gantner <elena.gantner@linesofcode.at>"]
 edition = "2018"
 build = "build.rs"
 
-[features]
-default = [ "debug_context" ]
-debug_context = [] # toggle dx debug context
-
 [dependencies]
-winapi = { version = "0.3.7", features = [
-    "unknwnbase", "windef", "winerror", "winuser", "windowsx", 
-    "d3d11", "d3d11_1", "dxgi", "dxgi1_6", "d3d11sdklayers", "dxgidebug",
-    "d3dcompiler", 
-    "libloaderapi", "impl-default"
-    ] }
 nalgebra-glm = "0.5.0"
-const-cstr = "0.1"
 image = "0.22.2"
 gltf = "0.14"
 rust-ini = "0.13.0"
 rand = "0.7.2"
-
-[build-dependencies]
-bindgen = "0.52.0"
+winit = "0.30"
+wgpu = "24"
+pollster = "0.4"
+bytemuck = { version = "1", features = ["derive"] }
 
 # From doc.rust-lang.org:
 # The development profile, used for `cargo build`.

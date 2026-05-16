@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 type ActionCallback = fn(&mut FPSController, Action) -> ApplicationRequest;
 
-const MOUSE_SPEED: f32 = 0.05f32; // π/180 (convert deg to rad) * 0.05 (sensitivity) //0.00390625f32;
+const MOUSE_SPEED: f32 = 0.05f32;
 
 pub struct FPSController {
     world_up: glm::Vec3,
@@ -49,7 +49,7 @@ impl Camera for FPSController {
     }
     fn view_mat(&self) -> glm::Mat4 {
         let center = self.pos + self.front;
-        glm::look_at(&self.pos, &center, &glm::vec3(0.0f32, 1.0f32, 0.0f32))
+        glm::look_at_rh(&self.pos, &center, &glm::vec3(0.0f32, 1.0f32, 0.0f32))
     }
     fn projection_mat(&self) -> glm::Mat4 {
         self.projection_mat
@@ -98,7 +98,6 @@ impl InputHandler for FPSController {
                 self.first_mouse = false;
                 return;
             }
-            // println!("Mouse Event: x({}), y({})", x, y);
             self.h_angle_deg += (x as f32) * MOUSE_SPEED;
             self.v_angle_deg -= (y as f32) * MOUSE_SPEED;
             self.v_angle_deg = (-89.9f32).max(self.v_angle_deg).min(89.9f32);
@@ -110,30 +109,12 @@ impl InputHandler for FPSController {
 }
 
 impl FPSController {
-    fn proj_lh(aspect: f32, fov: f32, near: f32, far: f32) -> glm::Mat4 {
-        let mut mat: glm::Mat4 = glm::zero();
-        let y_scale = 1.0f32 / glm::tan(&(glm::radians(&glm::vec1(fov)) / 2.0f32)).x;
-        let x_scale = y_scale * aspect;
-        mat.column_mut(0)
-            .copy_from(&glm::vec4(x_scale, 0.0f32, 0.0f32, 0.0f32));
-        mat.column_mut(1)
-            .copy_from(&glm::vec4(0.0f32, y_scale, 0.0f32, 0.0f32));
-        mat.column_mut(2).copy_from(&glm::vec4(
-            0.0f32,
-            0.0f32,
-            far / (near - far),
-            (near * far) / (near - far),
-        ));
-        mat.column_mut(3)
-            .copy_from(&glm::vec4(0.0f32, 0.0f32, -1.0f32, 0.0f32));
-        return mat;
-    }
     pub fn create(aspect: f32, fov: f32, near: f32, far: f32) -> FPSController {
-        let proj = glm::perspective_zo(aspect, fov, near, far);
-        //proj[(1, 1)] *= -1.0f32;
+        let fov_rad = glm::radians(&glm::vec1(fov)).x;
+        let proj = glm::perspective_zo(aspect, fov_rad, near, far);
         FPSController {
             world_up: glm::vec3(0.0f32, 1.0f32, 0.0f32),
-            pos: glm::vec3(0.0f32, 0.0f32, 3.0f32),
+            pos: glm::vec3(0.0f32, 1.5f32, 0.0f32),
             front: glm::zero(),
             up: glm::zero(),
             right: glm::zero(),

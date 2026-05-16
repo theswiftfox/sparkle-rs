@@ -14,7 +14,7 @@ pub struct Settings {
     pub view_distance: f32,
 
     // engine
-    pub dx_validation: bool,
+    pub gpu_validation: bool,
 
     pub ssao: bool,
 }
@@ -66,9 +66,9 @@ impl Settings {
         if let Some(engine_settings) = ini.section(Some("Engine")) {
             match engine_settings.get("Validation") {
                 Some(v) => match v.parse::<bool>() {
-                    Ok(b) => settings.dx_validation = b,
+                    Ok(b) => settings.gpu_validation = b,
                     Err(_) => match v.parse::<u32>() {
-                        Ok(i) => settings.dx_validation = i == 1,
+                        Ok(i) => settings.gpu_validation = i == 1,
                         _ => (),
                     },
                 },
@@ -88,7 +88,7 @@ impl std::default::Default for Settings {
             level: None,
             camera_fov: 70.0,
             view_distance: 1000.0,
-            dx_validation: false,
+            gpu_validation: false,
             ssao: true,
         }
     }

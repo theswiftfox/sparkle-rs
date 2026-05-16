@@ -1,850 +1,1173 @@
-use winapi::shared::dxgiformat as dxgifmt;
-use winapi::um::d3d11 as dx11;
-use winapi::um::d3d11_1 as dx11_1;
+//! Render pass programs for the sparkle-rs deferred+forward pipeline.
+//!
+//! Each pass struct bundles a GPU pipeline, uniform buffers, and render targets.
+//! All types are generic over [`GpuBackend`] for backend-agnostic rendering.
+//!
+//! The rendering pipeline consists of:
+//! 1. **DeferredPassPre** — G-buffer fill (position, normal+roughness, albedo+metallic MRT)
+//! 2. **SsaoPass** — Screen-space ambient occlusion (SSAO + blur sub-passes)
+//! 3. **ShadowPass** — Directional shadow map generation
+//! 4. **DeferredPassLight** — Fullscreen deferred lighting (reads SSAO result)
+//! 5. **ForwardPass** — Transparent object rendering with forward lighting
+//! 6. **OutputPass** — Composite deferred + forward results to backbuffer
+//! 7. **SkyBoxPass** — Skybox rendering
+//!
+//! Each pass exposes:
+//! - `create(backend, ...)` — construct from a backend and shader bytecode
+//! - `prepare_draw(backend)` — bind the pipeline and uniforms for drawing
+//! - `update(backend)` — upload CPU-side uniform data to GPU buffers
+//! - Setters for CPU-side uniform data (view, proj, light, etc.)
+//! - Accessors for render targets used by subsequent passes
 
-use super::d3d11::{cbuffer, shaders, textures, DxError, DxErrorType};
+use super::backend::*;
 use super::geometry::{Light, LightType};
 
-pub(crate) fn vertex_input_desc() -> [dx11::D3D11_INPUT_ELEMENT_DESC; 5] {
-    let pos_name: &'static std::ffi::CStr = const_cstr!("SV_Position").as_cstr();
-    let norm_name: &'static std::ffi::CStr = const_cstr!("NORMAL").as_cstr();
-    let tang_name: &'static std::ffi::CStr = const_cstr!("TANGENT").as_cstr();
-    let bitang_name: &'static std::ffi::CStr = const_cstr!("BITANGENT").as_cstr();
-    let uv_name: &'static std::ffi::CStr = const_cstr!("TEXCOORD").as_cstr();
-    [
-        dx11::D3D11_INPUT_ELEMENT_DESC {
-            SemanticName: pos_name.as_ptr() as *const _,
-            SemanticIndex: 0,
-            Format: dxgifmt::DXGI_FORMAT_R32G32B32_FLOAT,
-            InputSlot: 0,
-            AlignedByteOffset: 0,
-            InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-            InstanceDataStepRate: 0,
-        },
-        dx11::D3D11_INPUT_ELEMENT_DESC {
-            SemanticName: norm_name.as_ptr() as *const _,
-            SemanticIndex: 0,
-            Format: dxgifmt::DXGI_FORMAT_R32G32B32_FLOAT,
-            InputSlot: 0,
-            AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
-            InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-            InstanceDataStepRate: 0,
-        },
-        dx11::D3D11_INPUT_ELEMENT_DESC {
-            SemanticName: tang_name.as_ptr() as *const _,
-            SemanticIndex: 0,
-            Format: dxgifmt::DXGI_FORMAT_R32G32B32_FLOAT,
-            InputSlot: 0,
-            AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
-            InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-            InstanceDataStepRate: 0,
-        },
-        dx11::D3D11_INPUT_ELEMENT_DESC {
-            SemanticName: bitang_name.as_ptr() as *const _,
-            SemanticIndex: 0,
-            Format: dxgifmt::DXGI_FORMAT_R32G32B32_FLOAT,
-            InputSlot: 0,
-            AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
-            InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-            InstanceDataStepRate: 0,
-        },
-        dx11::D3D11_INPUT_ELEMENT_DESC {
-            SemanticName: uv_name.as_ptr() as *const _,
-            SemanticIndex: 0,
-            Format: dxgifmt::DXGI_FORMAT_R32G32_FLOAT,
-            InputSlot: 0,
-            AlignedByteOffset: dx11::D3D11_APPEND_ALIGNED_ELEMENT,
-            InputSlotClass: dx11::D3D11_INPUT_PER_VERTEX_DATA,
-            InstanceDataStepRate: 0,
-        },
-    ]
+// Uniform data structs (CPU-side, #[repr(C)] for GPU upload)
+
+/// View and projection matrices — used by vertex shaders of most passes.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ViewProjUniforms {
+    view: glm::Mat4,
+    proj: glm::Mat4,
 }
 
-fn create_render_target(
-    (width, height): (u32, u32),
-    format: u32,
-    device: *mut dx11_1::ID3D11Device1,
-) -> Result<(textures::Texture2D, *mut dx11::ID3D11RenderTargetView), DxError> {
-    let mut tv: *mut dx11::ID3D11RenderTargetView = std::ptr::null_mut();
-    let mut tex = textures::Texture2D::create_mutable_render_target(
-        width,
-        height,
-        format,
-        dx11::D3D11_TEXTURE_ADDRESS_CLAMP,
-        dx11::D3D11_TEXTURE_ADDRESS_CLAMP,
-        dx11::D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT,
-        1,
-        dx11::D3D11_BIND_RENDER_TARGET | dx11::D3D11_BIND_SHADER_RESOURCE,
-        0,
-        0,
-        device,
-    )?;
-    {
-        let mut desc: dx11::D3D11_RENDER_TARGET_VIEW_DESC = Default::default();
-        desc.Format = format;
-        desc.ViewDimension = dx11::D3D11_RTV_DIMENSION_TEXTURE2D;
-        unsafe { desc.u.Texture2D_mut().MipSlice = 0 };
-        let res = unsafe {
-            (*device).CreateRenderTargetView(
-                tex.get_texture_handle() as *mut _,
-                &desc,
-                &mut tv as *mut *mut _,
-            )
-        };
-        if res < winapi::shared::winerror::S_OK {
-            return Err(DxError::new(
-                "Error creating depth target view for texture",
-                DxErrorType::ResourceCreation,
-            ));
-        }
-        let mut rv_desc: dx11::D3D11_SHADER_RESOURCE_VIEW_DESC = Default::default();
-        rv_desc.Format = format;
-        rv_desc.ViewDimension = dx11::D3D11_RTV_DIMENSION_TEXTURE2D;
-        unsafe {
-            rv_desc.u.Texture2D_mut().MostDetailedMip = 0;
-            rv_desc.u.Texture2D_mut().MipLevels = 1;
-        };
-        let res = unsafe {
-            (*device).CreateShaderResourceView(
-                tex.get_texture_handle() as *mut _,
-                &rv_desc as *const _,
-                &mut tex.shader_view as *mut *mut _,
-            )
-        };
-        if res < winapi::shared::winerror::S_OK {
-            return Err(DxError::new(
-                "Error creating depth shader view for texture",
-                DxErrorType::ResourceCreation,
-            ));
-        }
-        Ok((tex, tv))
-    }
+/// Camera position and SSAO toggle — used by lighting pixel shaders.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CameraUniforms {
+    camera_pos: glm::Vec3,
+    ssao: u32,
 }
 
-/**
- * Section ForwardPass
- */
-struct ConstantsVtxMP {
-    pub view: glm::Mat4,
-    pub proj: glm::Mat4,
-}
-
-pub(crate) struct ForwardPass {
-    program: shaders::ShaderProgram,
-    vertex_shader_uniforms: cbuffer::CBuffer<ConstantsVtxMP>,
-    pixel_shader_uniforms: cbuffer::CBuffer<ConstantsDefLight>,
-    light_buffer: cbuffer::CBuffer<DxLight>,
-    render_target: textures::Texture2D,
-    render_target_view: *mut dx11::ID3D11RenderTargetView,
-}
-impl ForwardPass {
-    pub fn get_render_target(&self) -> &textures::Texture2D {
-        &self.render_target
-    }
-    pub fn get_render_target_view(&self) -> *mut dx11::ID3D11RenderTargetView {
-        self.render_target_view
-    }
-    pub fn prepare_draw(&mut self, ctx: *mut dx11_1::ID3D11DeviceContext1) {
-        self.program.activate();
-
-        unsafe {
-            (*ctx).VSSetConstantBuffers(
-                0,
-                1,
-                &self.vertex_shader_uniforms.buffer_ptr() as *const *mut _,
-            );
-            let cbuffs = [
-                self.pixel_shader_uniforms.buffer_ptr(),
-                self.light_buffer.buffer_ptr(),
-            ];
-            (*ctx).PSSetConstantBuffers(0, 2, cbuffs.as_ptr());
-        };
-    }
-
-    pub fn update(&mut self) -> Result<(), DxError> {
-        self.vertex_shader_uniforms.update()?;
-        self.pixel_shader_uniforms.update()?;
-        self.light_buffer.update()?;
-
-        Ok(())
-    }
-
-    pub fn set_view(&mut self, view: glm::Mat4, instant_update: bool) -> Result<(), DxError> {
-        self.vertex_shader_uniforms.data.view = view;
-        if instant_update {
-            self.vertex_shader_uniforms.update()?
-        }
-        Ok(())
-    }
-    pub fn set_proj(&mut self, proj: glm::Mat4, instant_update: bool) -> Result<(), DxError> {
-        self.vertex_shader_uniforms.data.proj = proj;
-        if instant_update {
-            self.vertex_shader_uniforms.update()?
-        }
-        Ok(())
-    }
-    pub fn set_light(&mut self, light: &Light, instant_update: bool) -> Result<(), DxError> {
-        self.light_buffer.data = DxLight::from_sparkle_light(light);
-        if instant_update {
-            self.light_buffer.update()?
-        }
-        Ok(())
-    }
-
-    pub fn set_view_proj(
-        &mut self,
-        view: glm::Mat4,
-        proj: glm::Mat4,
-        instant_update: bool,
-    ) -> Result<(), DxError> {
-        self.set_view(view, false)?;
-        self.set_proj(proj, false)?;
-        if instant_update {
-            self.vertex_shader_uniforms.update()?
-        }
-        Ok(())
-    }
-
-    pub fn set_camera_pos(&mut self, cpos: glm::Vec3, instant_update: bool) -> Result<(), DxError> {
-        self.pixel_shader_uniforms.data.camera_pos = cpos;
-        if instant_update {
-            self.pixel_shader_uniforms.update()?
-        }
-        Ok(())
-    }
-
-    pub fn set_ssao(&mut self, ssao: u32, instant_update: bool) -> Result<(), DxError> {
-        self.pixel_shader_uniforms.data.ssao = ssao;
-        if instant_update {
-            self.pixel_shader_uniforms.update()?
-        }
-        Ok(())
-    }
-
-    pub fn create(
-        (width, height): (u32, u32),
-        device: *mut dx11_1::ID3D11Device1,
-        context: *mut dx11_1::ID3D11DeviceContext1,
-    ) -> Result<ForwardPass, DxError> {
-        let vtx_shader = "mp_vertex.cso";
-        let ps_shader = "mp_pixel.cso";
-        let input_element_description = vertex_input_desc();
-
-        let vtx_uniforms = ConstantsVtxMP {
-            view: glm::identity(),
-            proj: glm::identity(),
-        };
-        let pxl_uniforms = ConstantsDefLight {
-            camera_pos: glm::zero(),
-            ssao: 1,
-        };
-        let vtx_cbuff = match cbuffer::CBuffer::create(vtx_uniforms, context, device) {
-            Ok(b) => b,
-            Err(e) => return Err(e),
-        };
-        let pxl_cbuff = match cbuffer::CBuffer::create(pxl_uniforms, context, device) {
-            Ok(b) => b,
-            Err(e) => return Err(e),
-        };
-        let light = DxLight {
-            position: glm::zero(),
-            t: 0,
-            color: glm::zero(),
-            radius: 0.0,
-            light_space: glm::identity(),
-        };
-        let pxl_cbuff2 = match cbuffer::CBuffer::create(light, context, device) {
-            Ok(b) => b,
-            Err(e) => return Err(e),
-        };
-
-        let (tex, tv) = create_render_target(
-            (width, height),
-            dxgifmt::DXGI_FORMAT_R32G32B32A32_FLOAT,
-            device,
-        )?;
-
-        Ok(ForwardPass {
-            program: shaders::ShaderProgram::create(
-                &vtx_shader,
-                &ps_shader,
-                None,
-                Some(&input_element_description),
-                device,
-                context,
-            )?,
-            vertex_shader_uniforms: vtx_cbuff,
-            pixel_shader_uniforms: pxl_cbuff,
-            light_buffer: pxl_cbuff2,
-            render_target: tex,
-            render_target_view: tv,
-        })
-    }
-}
-
-/**
- * Section Deferred Renderer
- */
-struct ConstantsPxDeferredPre {
+/// Near/far plane distances — used by deferred pre-pass pixel shader.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct NearFarUniforms {
     near_plane: f32,
     far_plane: f32,
     _pad: f32,
     _pad2: f32,
 }
-struct ConstantsVtxDeferredPre {
-    view: glm::Mat4,
-    proj: glm::Mat4,
+
+/// Light-space matrix — used by shadow pass vertex shader.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct LightSpaceUniforms {
+    light_space_matrix: glm::Mat4,
 }
 
-pub(crate) struct DeferredPassPre {
-    program: shaders::ShaderProgram,
-    vertex_shader_uniforms: cbuffer::CBuffer<ConstantsVtxDeferredPre>,
-    pixel_shader_uniforms: cbuffer::CBuffer<ConstantsPxDeferredPre>,
-    positions: textures::Texture2D,
-    positions_render_target: *mut dx11::ID3D11RenderTargetView,
-    albedo: textures::Texture2D,
-    albedo_render_target: *mut dx11::ID3D11RenderTargetView,
-}
-impl DeferredPassPre {
-    pub fn get_render_targets(&self) -> [*mut dx11::ID3D11RenderTargetView; 2] {
-        [self.positions_render_target, self.albedo_render_target]
-    }
-
-    pub fn positions(&self) -> &textures::Texture2D {
-        &self.positions
-    }
-    pub fn albedo(&self) -> &textures::Texture2D {
-        &self.albedo
-    }
-
-    pub fn prepare_draw(&mut self, ctx: *mut dx11_1::ID3D11DeviceContext1) {
-        self.program.activate();
-
-        unsafe {
-            (*ctx).VSSetConstantBuffers(
-                0,
-                1,
-                &self.vertex_shader_uniforms.buffer_ptr() as *const *mut _,
-            );
-            (*ctx).PSSetConstantBuffers(
-                0,
-                1,
-                &self.pixel_shader_uniforms.buffer_ptr() as *const *mut _,
-            );
-        };
-    }
-
-    pub fn update(&mut self) -> Result<(), DxError> {
-        self.vertex_shader_uniforms.update()?;
-        self.pixel_shader_uniforms.update()?;
-
-        Ok(())
-    }
-
-    pub fn set_view(&mut self, view: glm::Mat4, instant_update: bool) -> Result<(), DxError> {
-        self.vertex_shader_uniforms.data.view = view;
-        if instant_update {
-            self.vertex_shader_uniforms.update()?
-        }
-        Ok(())
-    }
-    pub fn set_proj(&mut self, proj: glm::Mat4, instant_update: bool) -> Result<(), DxError> {
-        self.vertex_shader_uniforms.data.proj = proj;
-        if instant_update {
-            self.vertex_shader_uniforms.update()?
-        }
-        Ok(())
-    }
-
-    pub fn set_view_proj(
-        &mut self,
-        view: glm::Mat4,
-        proj: glm::Mat4,
-        instant_update: bool,
-    ) -> Result<(), DxError> {
-        self.set_view(view, false)?;
-        self.set_proj(proj, false)?;
-        if instant_update {
-            self.vertex_shader_uniforms.update()?
-        }
-        Ok(())
-    }
-
-    pub fn set_camera_planes(
-        &mut self,
-        (near, far): (f32, f32),
-        instant_update: bool,
-    ) -> Result<(), DxError> {
-        self.pixel_shader_uniforms.data.near_plane = near;
-        self.pixel_shader_uniforms.data.far_plane = far;
-        if instant_update {
-            self.pixel_shader_uniforms.update()?
-        }
-        Ok(())
-    }
-    pub fn create(
-        (res_x, res_y): (u32, u32),
-        device: *mut dx11_1::ID3D11Device1,
-        context: *mut dx11_1::ID3D11DeviceContext1,
-    ) -> Result<DeferredPassPre, DxError> {
-        let vtx_shader = "deferred_pre_vertex.cso";
-        let ps_shader = "deferred_pre_pixel_packing.cso";
-        let input_element_description = vertex_input_desc();
-
-        let vtx_uniforms = ConstantsVtxDeferredPre {
-            view: glm::identity(),
-            proj: glm::identity(),
-        };
-        let pxl_uniforms = ConstantsPxDeferredPre {
-            near_plane: 0.0f32,
-            far_plane: 0.0f32,
-            _pad: 0.0f32,
-            _pad2: 0.0f32,
-        };
-        let vtx_cbuff = match cbuffer::CBuffer::create(vtx_uniforms, context, device) {
-            Ok(b) => b,
-            Err(e) => panic!(e),
-        };
-        let pxl_cbuff = match cbuffer::CBuffer::create(pxl_uniforms, context, device) {
-            Ok(b) => b,
-            Err(e) => panic!(e),
-        };
-
-        // render target positions
-        let (position_tex, position_tv) = create_render_target(
-            (res_x, res_y),
-            dxgifmt::DXGI_FORMAT_R32G32B32A32_UINT,
-            device,
-        )?;
-        // render target albedo
-        let (albedo_tex, albedo_tv) = create_render_target(
-            (res_x, res_y),
-            dxgifmt::DXGI_FORMAT_R32G32B32A32_UINT,
-            device,
-        )?;
-
-        Ok(DeferredPassPre {
-            program: shaders::ShaderProgram::create(
-                &vtx_shader,
-                &ps_shader,
-                None,
-                Some(&input_element_description),
-                device,
-                context,
-            )?,
-            vertex_shader_uniforms: vtx_cbuff,
-            pixel_shader_uniforms: pxl_cbuff,
-            positions: position_tex,
-            positions_render_target: position_tv,
-            albedo: albedo_tex,
-            albedo_render_target: albedo_tv,
-        })
-    }
-}
-
-struct ConstantsDefLight {
-    camera_pos: glm::Vec3,
-    ssao: u32,
-}
-
-struct DxLight {
+/// GPU-side light data, matching the shader cbuffer layout.
+///
+/// Layout (96 bytes):
+/// - `position: Vec3` (12 bytes) + `t: u32` (4 bytes) = 16 bytes
+/// - `color: Vec3` (12 bytes) + `radius: f32` (4 bytes) = 16 bytes
+/// - `light_space: Mat4` (64 bytes)
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct GpuLight {
     position: glm::Vec3,
     t: u32,
     color: glm::Vec3,
     radius: f32,
     light_space: glm::Mat4,
 }
-impl DxLight {
-    #[allow(unreachable_patterns)]
-    fn from_sparkle_light(light: &Light) -> DxLight {
+
+impl GpuLight {
+    fn from_light(light: &Light) -> GpuLight {
         let t = match &light.t {
             LightType::Ambient => 0u32,
             LightType::Directional => 1u32,
             LightType::Area => 2u32,
-            _ => std::u32::MAX,
         };
-        DxLight {
-            position: light.position.clone(),
-            t: t,
-            color: light.color.clone(),
-            radius: light.radius.clone(),
-            light_space: light.light_proj.clone(),
+        GpuLight {
+            position: light.position,
+            t,
+            color: light.color,
+            radius: light.radius,
+            light_space: light.light_proj,
         }
     }
 }
 
-pub(crate) struct DeferredPassLight {
-    program: shaders::ShaderProgram,
-    pixel_shader_uniforms: cbuffer::CBuffer<ConstantsDefLight>,
-    light_buffer: cbuffer::CBuffer<DxLight>,
-    render_target: textures::Texture2D,
-    render_target_view: *mut dx11::ID3D11RenderTargetView,
+// SSAO helpers (kernel + noise generation)
+
+fn hash_u32(mut x: u32) -> u32 {
+    x = ((x >> 16) ^ x).wrapping_mul(0x45d9f3b);
+    x = ((x >> 16) ^ x).wrapping_mul(0x45d9f3b);
+    x = (x >> 16) ^ x;
+    x
 }
-impl DeferredPassLight {
-    pub fn get_render_target(&self) -> &textures::Texture2D {
-        &self.render_target
-    }
-    pub fn get_render_target_view(&self) -> *mut dx11::ID3D11RenderTargetView {
-        self.render_target_view
-    }
-    pub fn prepare_draw(&mut self, ctx: *mut dx11_1::ID3D11DeviceContext1) {
-        self.program.activate();
 
-        unsafe {
-            let cbuffs = [
-                self.pixel_shader_uniforms.buffer_ptr(),
-                self.light_buffer.buffer_ptr(),
-            ];
-            (*ctx).PSSetConstantBuffers(0, 2, cbuffs.as_ptr());
-        };
+fn hash_float(i: u32) -> f32 {
+    (hash_u32(i) as f32) / (u32::MAX as f32)
+}
+
+/// Generate 32 hemisphere-distributed sample points for SSAO.
+/// Samples are weighted toward the center for better quality.
+fn generate_ssao_kernel() -> [[f32; 4]; 32] {
+    let mut kernel = [[0.0f32; 4]; 32];
+    for i in 0..32 {
+        let theta = 2.0 * std::f32::consts::PI * hash_float(i as u32 * 2);
+        let cos_phi = hash_float(i as u32 * 2 + 1);
+        let sin_phi = (1.0 - cos_phi * cos_phi).sqrt();
+
+        let mut x = sin_phi * theta.cos();
+        let mut y = sin_phi * theta.sin();
+        let mut z = cos_phi;
+
+        // Scale: more samples closer to the surface
+        let scale = 0.1 + 0.9 * (i as f32 / 32.0) * (i as f32 / 32.0);
+        x *= scale;
+        y *= scale;
+        z *= scale;
+
+        kernel[i] = [x, y, z, 0.0];
+    }
+    kernel
+}
+
+/// Generate a 4x4 noise texture for SSAO (random rotation vectors).
+/// Each pixel is (randX, randY, 0, 1) in [0, 255] Rgba8Unorm.
+fn generate_ssao_noise() -> Vec<u8> {
+    let mut noise = Vec::with_capacity(4 * 4 * 4);
+    for i in 0..16 {
+        let x = hash_float(i as u32 * 3 + 100);
+        let y = hash_float(i as u32 * 3 + 101);
+        noise.push((x * 255.0) as u8);
+        noise.push((y * 255.0) as u8);
+        noise.push(0u8);
+        noise.push(255u8);
+    }
+    noise
+}
+
+// SsaoPass
+
+/// SSAO uniforms matching the WGSL struct layout.
+///
+/// Layout (656 bytes):
+/// - `projection: Mat4` (64 bytes)
+/// - `view: Mat4` (64 bytes)
+/// - `resolution: [f32; 2]` (8 bytes)
+/// - `radius: f32` (4 bytes)
+/// - `bias: f32` (4 bytes)
+/// - `kernel: [[f32; 4]; 32]` (512 bytes)
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SsaoUniforms {
+    projection: glm::Mat4,
+    view: glm::Mat4,
+    resolution: [f32; 2],
+    radius: f32,
+    bias: f32,
+    kernel: [[f32; 4]; 32],
+}
+
+/// Screen-space ambient occlusion pass.
+///
+/// Runs as two sub-passes:
+/// 1. SSAO: reads G-buffer positions → raw AO texture
+/// 2. Blur: smooths raw AO → final AO texture
+///
+/// The final blurred result is bound by the Renderer into the deferred light pass.
+pub(crate) struct SsaoPass<B: GpuBackend> {
+    ssao_pipeline: B::Pipeline,
+    blur_pipeline: B::Pipeline,
+    uniforms_buf: B::Buffer,
+    noise_texture: B::Texture,
+    ssao_target: B::RenderTarget,
+    blur_target: B::RenderTarget,
+    uniforms: SsaoUniforms,
+}
+
+impl<B: GpuBackend> SsaoPass<B> {
+    /// The blurred SSAO result, ready to be bound in the deferred light pass.
+    pub fn blur_target(&self) -> &B::RenderTarget {
+        &self.blur_target
     }
 
-    pub fn update(&mut self) -> Result<(), DxError> {
-        self.pixel_shader_uniforms.update()?;
-        self.light_buffer.update()?;
-        Ok(())
-    }
-    pub fn set_light(&mut self, light: &Light, instant_update: bool) -> Result<(), DxError> {
-        self.light_buffer.data = DxLight::from_sparkle_light(light);
-        if instant_update {
-            self.light_buffer.update()?
-        }
-        Ok(())
+    /// The raw (unblurred) SSAO target — used internally for the blur sub-pass.
+    pub fn ssao_target(&self) -> &B::RenderTarget {
+        &self.ssao_target
     }
 
-    pub fn set_camera_pos(&mut self, cpos: glm::Vec3, instant_update: bool) -> Result<(), DxError> {
-        self.pixel_shader_uniforms.data.camera_pos = cpos;
-        if instant_update {
-            self.pixel_shader_uniforms.update()?
-        }
-        Ok(())
+    /// Bind the SSAO pipeline, uniforms, and noise texture for the main SSAO sub-pass.
+    pub fn prepare_draw_ssao(&self, backend: &mut B) {
+        backend.set_pipeline(&self.ssao_pipeline);
+        backend.bind_uniform(ShaderStage::Fragment, 0, &self.uniforms_buf);
+        backend.bind_texture(0, &self.noise_texture);
     }
 
-    pub fn set_ssao(&mut self, ssao: u32, instant_update: bool) -> Result<(), DxError> {
-        self.pixel_shader_uniforms.data.ssao = ssao;
-        if instant_update {
-            self.pixel_shader_uniforms.update()?
-        }
-        Ok(())
+    /// Bind the blur pipeline for the blur sub-pass.
+    /// The raw SSAO target is bound by the Renderer via `bind_render_target_as_texture`.
+    pub fn prepare_draw_blur(&self, backend: &mut B) {
+        backend.set_pipeline(&self.blur_pipeline);
+    }
+
+    /// Upload SSAO uniform data to the GPU.
+    pub fn update(&self, backend: &B) {
+        backend.update_buffer(
+            &self.uniforms_buf,
+            as_bytes(std::slice::from_ref(&self.uniforms)),
+        );
+    }
+
+    pub fn set_view(&mut self, view: glm::Mat4) {
+        self.uniforms.view = view;
+    }
+
+    pub fn set_proj(&mut self, proj: glm::Mat4) {
+        self.uniforms.projection = proj;
+    }
+
+    pub fn set_view_proj(&mut self, view: glm::Mat4, proj: glm::Mat4) {
+        self.uniforms.view = view;
+        self.uniforms.projection = proj;
     }
 
     pub fn create(
-        (width, height): (u32, u32),
-        device: *mut dx11_1::ID3D11Device1,
-        context: *mut dx11_1::ID3D11DeviceContext1,
-    ) -> Result<DeferredPassLight, DxError> {
-        let vtx_shader = "deferred_light_vertex.cso";
-        let ps_shader = "deferred_light_pixel_packing.cso";
+        backend: &B,
+        resolution: (u32, u32),
+        ssao_shader: &[u8],
+        blur_shader: &[u8],
+    ) -> Result<Self, GpuError> {
+        // SSAO pipeline
+        let ssao_pipeline = backend.create_pipeline(&PipelineDesc {
+            label: "ssao_pass",
+            shader_source: ssao_shader,
+            vertex_layout: Some(standard_vertex_layout()),
+            blend_mode: BlendMode::None,
+            cull_mode: CullMode::None,
+            depth_write: false,
+            depth_compare: CompareFunc::Always,
+            color_target_formats: &[TextureFormat::R8Unorm],
+            depth_format: None,
+            bind_groups: &[
+                // Group 0: empty (fullscreen quad)
+                &[],
+                // Group 1: empty (no per-object)
+                &[],
+                // Group 2: noise texture
+                &[BindingType::Texture2D, BindingType::Sampler],
+                // Group 3: SSAO uniforms + positions G-buffer + normal G-buffer
+                &[BindingType::UniformBuffer, BindingType::Texture2DUnfilterable, BindingType::Texture2D],
+            ],
+        })?;
 
-        let pxl_uniforms = ConstantsDefLight {
+        // Blur pipeline
+        let blur_pipeline = backend.create_pipeline(&PipelineDesc {
+            label: "ssao_blur",
+            shader_source: blur_shader,
+            vertex_layout: Some(standard_vertex_layout()),
+            blend_mode: BlendMode::None,
+            cull_mode: CullMode::None,
+            depth_write: false,
+            depth_compare: CompareFunc::Always,
+            color_target_formats: &[TextureFormat::R8Unorm],
+            depth_format: None,
+            bind_groups: &[
+                // Group 0: empty
+                &[],
+                // Group 1: empty
+                &[],
+                // Group 2: empty
+                &[],
+                // Group 3: raw SSAO texture
+                &[BindingType::Texture2D, BindingType::Sampler],
+            ],
+        })?;
+
+        // Generate kernel and noise
+        let kernel = generate_ssao_kernel();
+        let noise_data = generate_ssao_noise();
+
+        let uniforms = SsaoUniforms {
+            projection: glm::identity(),
+            view: glm::identity(),
+            resolution: [resolution.0 as f32, resolution.1 as f32],
+            radius: 0.5,
+            bias: 0.025,
+            kernel,
+        };
+
+        let uniforms_buf = backend.create_buffer(
+            &BufferDesc {
+                usage: BufferUsage::Uniform,
+                size: std::mem::size_of::<SsaoUniforms>(),
+            },
+            Some(as_bytes(std::slice::from_ref(&uniforms))),
+        )?;
+
+        let noise_texture = backend.create_texture(
+            &TextureDesc {
+                width: 4,
+                height: 4,
+                format: TextureFormat::Rgba8Unorm,
+                sampler: SamplerDesc {
+                    address_u: AddressMode::Repeat,
+                    address_v: AddressMode::Repeat,
+                    filter: FilterMode::Nearest,
+                    compare: None,
+                },
+                generate_mipmaps: false,
+            },
+            &noise_data,
+        )?;
+
+        let ssao_target = backend.create_render_target(&RenderTargetDesc {
+            width: resolution.0,
+            height: resolution.1,
+            format: TextureFormat::R8Unorm,
+            sampler: SamplerDesc::default(),
+        })?;
+
+        let blur_target = backend.create_render_target(&RenderTargetDesc {
+            width: resolution.0,
+            height: resolution.1,
+            format: TextureFormat::R8Unorm,
+            sampler: SamplerDesc::default(),
+        })?;
+
+        Ok(SsaoPass {
+            ssao_pipeline,
+            blur_pipeline,
+            uniforms_buf,
+            noise_texture,
+            ssao_target,
+            blur_target,
+            uniforms,
+        })
+    }
+}
+
+// ForwardPass
+
+/// Forward rendering pass: renders transparent objects with full lighting.
+///
+/// Vertex uniforms (slot 0): view + projection matrices.
+/// Pixel uniforms (slot 0): camera position + SSAO flag.
+/// Pixel uniforms (slot 1): light data.
+/// Output: `Rgba32Float` render target.
+pub(crate) struct ForwardPass<B: GpuBackend> {
+    pipeline: B::Pipeline,
+    pipeline_double_sided: B::Pipeline,
+    vertex_uniforms_buf: B::Buffer,
+    pixel_uniforms_buf: B::Buffer,
+    light_buf: B::Buffer,
+    render_target: B::RenderTarget,
+    vertex_uniforms: ViewProjUniforms,
+    pixel_uniforms: CameraUniforms,
+    light_data: GpuLight,
+}
+
+impl<B: GpuBackend> ForwardPass<B> {
+    pub fn render_target(&self) -> &B::RenderTarget {
+        &self.render_target
+    }
+
+    /// Bind pipeline and all uniform buffers for drawing.
+    pub fn prepare_draw(&self, backend: &mut B) {
+        backend.set_pipeline(&self.pipeline);
+        backend.bind_uniform(ShaderStage::Vertex, 0, &self.vertex_uniforms_buf);
+        backend.bind_uniform(ShaderStage::Fragment, 0, &self.pixel_uniforms_buf);
+        backend.bind_uniform(ShaderStage::Fragment, 1, &self.light_buf);
+    }
+
+    /// Switch pipeline based on whether the drawable is double-sided.
+    /// Rebinds pass uniforms since set_pipeline() clears all pending bindings.
+    pub fn set_pipeline_for(&self, backend: &mut B, double_sided: bool) {
+        if double_sided {
+            backend.set_pipeline(&self.pipeline_double_sided);
+        } else {
+            backend.set_pipeline(&self.pipeline);
+        }
+        backend.bind_uniform(ShaderStage::Vertex, 0, &self.vertex_uniforms_buf);
+        backend.bind_uniform(ShaderStage::Fragment, 0, &self.pixel_uniforms_buf);
+        backend.bind_uniform(ShaderStage::Fragment, 1, &self.light_buf);
+    }
+
+    /// Upload all CPU-side uniform data to GPU buffers.
+    pub fn update(&self, backend: &B) {
+        backend.update_buffer(
+            &self.vertex_uniforms_buf,
+            as_bytes(std::slice::from_ref(&self.vertex_uniforms)),
+        );
+        backend.update_buffer(
+            &self.pixel_uniforms_buf,
+            as_bytes(std::slice::from_ref(&self.pixel_uniforms)),
+        );
+        backend.update_buffer(
+            &self.light_buf,
+            as_bytes(std::slice::from_ref(&self.light_data)),
+        );
+    }
+
+    pub fn set_view(&mut self, view: glm::Mat4) {
+        self.vertex_uniforms.view = view;
+    }
+
+    pub fn set_proj(&mut self, proj: glm::Mat4) {
+        self.vertex_uniforms.proj = proj;
+    }
+
+    pub fn set_view_proj(&mut self, view: glm::Mat4, proj: glm::Mat4) {
+        self.vertex_uniforms.view = view;
+        self.vertex_uniforms.proj = proj;
+    }
+
+    pub fn set_camera_pos(&mut self, pos: glm::Vec3) {
+        self.pixel_uniforms.camera_pos = pos;
+    }
+
+    pub fn set_ssao(&mut self, enabled: bool) {
+        self.pixel_uniforms.ssao = if enabled { 1 } else { 0 };
+    }
+
+    pub fn set_light(&mut self, light: &Light) {
+        self.light_data = GpuLight::from_light(light);
+    }
+
+    pub fn create(
+        backend: &B,
+        resolution: (u32, u32),
+        shader_source: &[u8],
+    ) -> Result<Self, GpuError> {
+        let pipeline = backend.create_pipeline(&PipelineDesc {
+            label: "forward_pass",
+            shader_source,
+            vertex_layout: Some(standard_vertex_layout()),
+            blend_mode: BlendMode::Alpha,
+            cull_mode: CullMode::Back,
+            depth_write: true,
+            depth_compare: CompareFunc::LessEqual,
+            color_target_formats: &[TextureFormat::R16g16b16a16Float],
+            depth_format: Some(TextureFormat::Depth32Float),
+            bind_groups: &[
+                // Group 0: vertex frame uniforms (view + proj)
+                &[BindingType::UniformBuffer],
+                // Group 1: per-object (model matrix)
+                &[BindingType::UniformBuffer],
+                // Group 2: material textures (diffuse, MR, normal)
+                &[
+                    BindingType::Texture2D, BindingType::Sampler,
+                    BindingType::Texture2D, BindingType::Sampler,
+                    BindingType::Texture2D, BindingType::Sampler,
+                ],
+                // Group 3: fragment uniforms + shadow map
+                &[
+                    BindingType::UniformBuffer,       // camera
+                    BindingType::UniformBuffer,       // light
+                    BindingType::TextureDepth2D,      // shadow map
+                    BindingType::SamplerComparison,   // shadow sampler
+                ],
+            ],
+        })?;
+
+        let pipeline_double_sided = backend.create_pipeline(&PipelineDesc {
+            label: "forward_pass_double_sided",
+            shader_source,
+            vertex_layout: Some(standard_vertex_layout()),
+            blend_mode: BlendMode::Alpha,
+            cull_mode: CullMode::None,
+            depth_write: true,
+            depth_compare: CompareFunc::LessEqual,
+            color_target_formats: &[TextureFormat::R16g16b16a16Float],
+            depth_format: Some(TextureFormat::Depth32Float),
+            bind_groups: &[
+                &[BindingType::UniformBuffer],
+                &[BindingType::UniformBuffer],
+                &[
+                    BindingType::Texture2D, BindingType::Sampler,
+                    BindingType::Texture2D, BindingType::Sampler,
+                    BindingType::Texture2D, BindingType::Sampler,
+                ],
+                &[
+                    BindingType::UniformBuffer,
+                    BindingType::UniformBuffer,
+                    BindingType::TextureDepth2D,
+                    BindingType::SamplerComparison,
+                ],
+            ],
+        })?;
+
+        let vertex_uniforms = ViewProjUniforms {
+            view: glm::identity(),
+            proj: glm::identity(),
+        };
+        let pixel_uniforms = CameraUniforms {
             camera_pos: glm::zero(),
             ssao: 1,
         };
-
-        let pxl_cbuff = match cbuffer::CBuffer::create(pxl_uniforms, context, device) {
-            Ok(b) => b,
-            Err(e) => panic!(e),
-        };
-        let light = DxLight {
+        let light_data = GpuLight {
             position: glm::zero(),
             t: 0,
             color: glm::zero(),
             radius: 0.0,
             light_space: glm::identity(),
         };
-        let pxl_cbuff2 = match cbuffer::CBuffer::create(light, context, device) {
-            Ok(b) => b,
-            Err(e) => return Err(e),
-        };
-        let (tex, tv) = create_render_target(
-            (width, height),
-            dxgifmt::DXGI_FORMAT_R32G32B32A32_FLOAT,
-            device,
-        )?;
-        Ok(DeferredPassLight {
-            program: shaders::ShaderProgram::create(
-                &vtx_shader,
-                &ps_shader,
-                None,
-                None,
-                device,
-                context,
-            )?,
-            pixel_shader_uniforms: pxl_cbuff,
-            light_buffer: pxl_cbuff2,
-            render_target: tex,
-            render_target_view: tv,
-        })
-    }
-}
 
-/**
- * Section Shadow Mapping
- */
-const SHADOW_MAP_SIZE: u32 = /*2048; */4096;
-
-struct ConstantsVtxSM {
-    pub light_space_matrix: glm::Mat4,
-}
-
-pub(crate) struct ShadowPass {
-    program: shaders::ShaderProgram,
-    vertex_shader_uniforms: cbuffer::CBuffer<ConstantsVtxSM>,
-    shadow_map: textures::Texture2D,
-    shadow_map_depth_target: *mut dx11::ID3D11DepthStencilView,
-    shadow_viewport: dx11::D3D11_VIEWPORT,
-}
-
-// todo: destructor that cleans up resources
-
-impl ShadowPass {
-    pub fn get_depth_stencil_view(&self) -> *mut dx11::ID3D11DepthStencilView {
-        self.shadow_map_depth_target
-    }
-    pub fn get_shadow_map(&self) -> &textures::Texture2D {
-        &self.shadow_map
-    }
-    pub fn get_shadow_map_viewport(&self) -> &dx11::D3D11_VIEWPORT {
-        &self.shadow_viewport
-    }
-
-    pub fn prepare_draw(&mut self, ctx: *mut dx11_1::ID3D11DeviceContext1) {
-        self.program.activate();
-        unsafe {
-            (*ctx).VSSetConstantBuffers(
-                0,
-                1,
-                &self.vertex_shader_uniforms.buffer_ptr() as *const *mut _,
-            );
-        };
-    }
-
-    pub fn update(&mut self) -> Result<(), DxError> {
-        self.vertex_shader_uniforms.update()?;
-
-        Ok(())
-    }
-
-    pub fn set_light_space(
-        &mut self,
-        light_space_matrix: glm::Mat4,
-        instant_update: bool,
-    ) -> Result<(), DxError> {
-        self.vertex_shader_uniforms.data.light_space_matrix = light_space_matrix;
-        if instant_update {
-            self.vertex_shader_uniforms.update()?
-        }
-        Ok(())
-    }
-
-    pub fn create_simple(
-        device: *mut dx11_1::ID3D11Device1,
-        context: *mut dx11_1::ID3D11DeviceContext1,
-    ) -> Result<ShadowPass, DxError> {
-        let vt_file = "sm_vertex.cso";
-        let ps_file = "sm_pixel.cso";
-
-        ShadowPass::create(device, context, vt_file, None, ps_file)
-    }
-
-    fn create(
-        device: *mut dx11_1::ID3D11Device1,
-        context: *mut dx11_1::ID3D11DeviceContext1,
-        vertex_shader: &str,
-        geometry_shader: Option<&str>,
-        pixel_shader: &str,
-    ) -> Result<ShadowPass, DxError> {
-        let input_element_description = vertex_input_desc();
-
-        let vtx_uniforms = ConstantsVtxSM {
-            light_space_matrix: glm::identity(),
-        };
-        let vtx_cbuff = match cbuffer::CBuffer::create(vtx_uniforms, context, device) {
-            Ok(b) => b,
-            Err(e) => panic!(e),
-        };
-
-        let mut depth_tex = textures::Texture2D::create_mutable_render_target(
-            SHADOW_MAP_SIZE,
-            SHADOW_MAP_SIZE,
-            dxgifmt::DXGI_FORMAT_R24G8_TYPELESS, // depth component only
-            dx11::D3D11_TEXTURE_ADDRESS_CLAMP,
-            dx11::D3D11_TEXTURE_ADDRESS_CLAMP,
-            dx11::D3D11_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT,
-            1,
-            dx11::D3D11_BIND_DEPTH_STENCIL | dx11::D3D11_BIND_SHADER_RESOURCE,
-            0,
-            1,
-            device,
-        )?;
-        let mut dt_desc: dx11::D3D11_DEPTH_STENCIL_VIEW_DESC = Default::default();
-        dt_desc.Flags = 0;
-        dt_desc.Format = dxgifmt::DXGI_FORMAT_D24_UNORM_S8_UINT;
-        dt_desc.ViewDimension = dx11::D3D11_DSV_DIMENSION_TEXTURE2D;
-        unsafe { dt_desc.u.Texture2D_mut().MipSlice = 0 };
-        let mut dtv: *mut dx11::ID3D11DepthStencilView = std::ptr::null_mut();
-        let res = unsafe {
-            (*device).CreateDepthStencilView(
-                depth_tex.get_texture_handle() as *mut _,
-                &dt_desc,
-                &mut dtv as *mut *mut _,
-            )
-        };
-        if res < winapi::shared::winerror::S_OK {
-            return Err(DxError::new(
-                "Error creating depth target view for texture",
-                DxErrorType::ResourceCreation,
-            ));
-        }
-        let mut dt_rv_desc: dx11::D3D11_SHADER_RESOURCE_VIEW_DESC = Default::default();
-        dt_rv_desc.Format = dxgifmt::DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
-        dt_rv_desc.ViewDimension = dx11::D3D11_RTV_DIMENSION_TEXTURE2D;
-        unsafe {
-            dt_rv_desc.u.Texture2D_mut().MostDetailedMip = 0;
-            dt_rv_desc.u.Texture2D_mut().MipLevels = 1;
-        };
-        let res = unsafe {
-            (*device).CreateShaderResourceView(
-                depth_tex.get_texture_handle() as *mut _,
-                &dt_rv_desc as *const _,
-                &mut depth_tex.shader_view as *mut *mut _,
-            )
-        };
-        if res < winapi::shared::winerror::S_OK {
-            return Err(DxError::new(
-                "Error creating depth shader view for texture",
-                DxErrorType::ResourceCreation,
-            ));
-        }
-
-        Ok(ShadowPass {
-            program: shaders::ShaderProgram::create(
-                &vertex_shader,
-                &pixel_shader,
-                geometry_shader,
-                Some(&input_element_description),
-                device,
-                context,
-            )?,
-            vertex_shader_uniforms: vtx_cbuff,
-            shadow_map: depth_tex,
-            //shadow_map_render_target: rtv,
-            shadow_map_depth_target: dtv,
-            shadow_viewport: dx11::D3D11_VIEWPORT {
-                TopLeftX: 0.0,
-                TopLeftY: 0.0,
-                Width: SHADOW_MAP_SIZE as f32,
-                Height: SHADOW_MAP_SIZE as f32,
-                MinDepth: 0.0,
-                MaxDepth: 1.0,
+        let vertex_uniforms_buf = backend.create_buffer(
+            &BufferDesc {
+                usage: BufferUsage::Uniform,
+                size: std::mem::size_of::<ViewProjUniforms>(),
             },
+            Some(as_bytes(std::slice::from_ref(&vertex_uniforms))),
+        )?;
+        let pixel_uniforms_buf = backend.create_buffer(
+            &BufferDesc {
+                usage: BufferUsage::Uniform,
+                size: std::mem::size_of::<CameraUniforms>(),
+            },
+            Some(as_bytes(std::slice::from_ref(&pixel_uniforms))),
+        )?;
+        let light_buf = backend.create_buffer(
+            &BufferDesc {
+                usage: BufferUsage::Uniform,
+                size: std::mem::size_of::<GpuLight>(),
+            },
+            Some(as_bytes(std::slice::from_ref(&light_data))),
+        )?;
+
+        let render_target = backend.create_render_target(&RenderTargetDesc {
+            width: resolution.0,
+            height: resolution.1,
+            format: TextureFormat::R16g16b16a16Float,
+            sampler: SamplerDesc::default(),
+        })?;
+
+        Ok(ForwardPass {
+            pipeline,
+            pipeline_double_sided,
+            vertex_uniforms_buf,
+            pixel_uniforms_buf,
+            light_buf,
+            render_target,
+            vertex_uniforms,
+            pixel_uniforms,
+            light_data,
         })
     }
 }
 
-pub struct OutputPass {
-    program: shaders::ShaderProgram,
+// DeferredPassPre
+
+/// Deferred pre-pass: fills the G-buffer with position, normal, roughness, albedo, and metallic data.
+///
+/// Vertex uniforms (slot 0): view + projection matrices.
+/// Pixel uniforms (slot 0): near/far plane distances.
+/// Output: three float MRT targets (position, normal+roughness, albedo+metallic).
+pub(crate) struct DeferredPassPre<B: GpuBackend> {
+    pipeline: B::Pipeline,
+    pipeline_double_sided: B::Pipeline,
+    vertex_uniforms_buf: B::Buffer,
+    pixel_uniforms_buf: B::Buffer,
+    positions_target: B::RenderTarget,
+    normal_roughness_target: B::RenderTarget,
+    albedo_metallic_target: B::RenderTarget,
+    vertex_uniforms: ViewProjUniforms,
+    pixel_uniforms: NearFarUniforms,
 }
 
-impl OutputPass {
-    pub fn prepare_draw(&mut self) {
-        self.program.activate();
+impl<B: GpuBackend> DeferredPassPre<B> {
+    pub fn positions(&self) -> &B::RenderTarget {
+        &self.positions_target
     }
+
+    pub fn normal_roughness(&self) -> &B::RenderTarget {
+        &self.normal_roughness_target
+    }
+
+    pub fn albedo_metallic(&self) -> &B::RenderTarget {
+        &self.albedo_metallic_target
+    }
+
+    /// Bind pipeline and all uniform buffers for drawing.
+    pub fn prepare_draw(&self, backend: &mut B) {
+        backend.set_pipeline(&self.pipeline);
+        backend.bind_uniform(ShaderStage::Vertex, 0, &self.vertex_uniforms_buf);
+        backend.bind_uniform(ShaderStage::Fragment, 0, &self.pixel_uniforms_buf);
+    }
+
+    /// Switch pipeline based on whether the drawable is double-sided.
+    /// Call after `prepare_draw()` to override the default pipeline.
+    /// Rebinds pass uniforms since set_pipeline() clears all pending bindings.
+    pub fn set_pipeline_for(&self, backend: &mut B, double_sided: bool) {
+        if double_sided {
+            backend.set_pipeline(&self.pipeline_double_sided);
+        } else {
+            backend.set_pipeline(&self.pipeline);
+        }
+        backend.bind_uniform(ShaderStage::Vertex, 0, &self.vertex_uniforms_buf);
+        backend.bind_uniform(ShaderStage::Fragment, 0, &self.pixel_uniforms_buf);
+    }
+
+    /// Upload all CPU-side uniform data to GPU buffers.
+    pub fn update(&self, backend: &B) {
+        backend.update_buffer(
+            &self.vertex_uniforms_buf,
+            as_bytes(std::slice::from_ref(&self.vertex_uniforms)),
+        );
+        backend.update_buffer(
+            &self.pixel_uniforms_buf,
+            as_bytes(std::slice::from_ref(&self.pixel_uniforms)),
+        );
+    }
+
+    pub fn set_view(&mut self, view: glm::Mat4) {
+        self.vertex_uniforms.view = view;
+    }
+
+    pub fn set_proj(&mut self, proj: glm::Mat4) {
+        self.vertex_uniforms.proj = proj;
+    }
+
+    pub fn set_view_proj(&mut self, view: glm::Mat4, proj: glm::Mat4) {
+        self.vertex_uniforms.view = view;
+        self.vertex_uniforms.proj = proj;
+    }
+
+    pub fn set_camera_planes(&mut self, near: f32, far: f32) {
+        self.pixel_uniforms.near_plane = near;
+        self.pixel_uniforms.far_plane = far;
+    }
+
     pub fn create(
-        device: *mut dx11_1::ID3D11Device1,
-        context: *mut dx11_1::ID3D11DeviceContext1,
-    ) -> Result<OutputPass, DxError> {
-        let vtx_shader = "deferred_light_vertex.cso";
-        let ps_shader = "blend_pixel.cso";
+        backend: &B,
+        resolution: (u32, u32),
+        shader_source: &[u8],
+    ) -> Result<Self, GpuError> {
+        let pipeline = backend.create_pipeline(&PipelineDesc {
+            label: "deferred_pre",
+            shader_source,
+            vertex_layout: Some(standard_vertex_layout()),
+            blend_mode: BlendMode::None,
+            cull_mode: CullMode::Back,
+            depth_write: true,
+            depth_compare: CompareFunc::LessEqual,
+            color_target_formats: &[
+                TextureFormat::Rgba32Float,
+                TextureFormat::R16g16b16a16Float,
+                TextureFormat::R16g16b16a16Float,
+            ],
+            depth_format: Some(TextureFormat::Depth32Float),
+            bind_groups: &[
+                // Group 0: vertex frame uniforms (view + proj)
+                &[BindingType::UniformBuffer],
+                // Group 1: per-object (model matrix)
+                &[BindingType::UniformBuffer],
+                // Group 2: material textures (diffuse, MR, normal)
+                &[
+                    BindingType::Texture2D, BindingType::Sampler,
+                    BindingType::Texture2D, BindingType::Sampler,
+                    BindingType::Texture2D, BindingType::Sampler,
+                ],
+                // Group 3: fragment uniforms (near/far planes)
+                &[BindingType::UniformBuffer],
+            ],
+        })?;
 
-        Ok(OutputPass {
-            program: shaders::ShaderProgram::create(
-                &vtx_shader,
-                &ps_shader,
-                None,
-                None,
-                device,
-                context,
-            )?,
-        })
-    }
-}
+        let pipeline_double_sided = backend.create_pipeline(&PipelineDesc {
+            label: "deferred_pre_double_sided",
+            shader_source,
+            vertex_layout: Some(standard_vertex_layout()),
+            blend_mode: BlendMode::None,
+            cull_mode: CullMode::None,
+            depth_write: true,
+            depth_compare: CompareFunc::LessEqual,
+            color_target_formats: &[
+                TextureFormat::Rgba32Float,
+                TextureFormat::R16g16b16a16Float,
+                TextureFormat::R16g16b16a16Float,
+            ],
+            depth_format: Some(TextureFormat::Depth32Float),
+            bind_groups: &[
+                &[BindingType::UniformBuffer],
+                &[BindingType::UniformBuffer],
+                &[
+                    BindingType::Texture2D, BindingType::Sampler,
+                    BindingType::Texture2D, BindingType::Sampler,
+                    BindingType::Texture2D, BindingType::Sampler,
+                ],
+                &[BindingType::UniformBuffer],
+            ],
+        })?;
 
-pub struct SkyBoxPass {
-    program: shaders::ShaderProgram,
-    vertex_shader_uniforms: cbuffer::CBuffer<ConstantsVtxDeferredPre>,
-}
-
-impl SkyBoxPass {
-    pub fn prepare_draw(&mut self, ctx: *mut dx11_1::ID3D11DeviceContext1) {
-        self.program.activate();
-        unsafe {
-            (*ctx).VSSetConstantBuffers(
-                0,
-                1,
-                &self.vertex_shader_uniforms.buffer_ptr() as *const *mut _,
-            );
-        };
-    }
-
-    pub fn update(&mut self) -> Result<(), DxError> {
-        self.vertex_shader_uniforms.update()
-    }
-
-    pub fn set_view(&mut self, view: glm::Mat4, instant_update: bool) -> Result<(), DxError> {
-        self.vertex_shader_uniforms.data.view = view;
-        if instant_update {
-            self.vertex_shader_uniforms.update()?
-        }
-        Ok(())
-    }
-    pub fn set_proj(&mut self, proj: glm::Mat4, instant_update: bool) -> Result<(), DxError> {
-        self.vertex_shader_uniforms.data.proj = proj;
-        if instant_update {
-            self.vertex_shader_uniforms.update()?
-        }
-        Ok(())
-    }
-    pub fn set_view_proj(
-        &mut self,
-        view: glm::Mat4,
-        proj: glm::Mat4,
-        instant_update: bool,
-    ) -> Result<(), DxError> {
-        self.set_view(view, false)?;
-        self.set_proj(proj, false)?;
-        if instant_update {
-            self.vertex_shader_uniforms.update()?
-        }
-        Ok(())
-    }
-
-    pub fn create(
-        device: *mut dx11_1::ID3D11Device1,
-        context: *mut dx11_1::ID3D11DeviceContext1,
-    ) -> Result<SkyBoxPass, DxError> {
-        let vtx_shader = "skybox_vertex.cso";
-        let ps_shader = "skybox_pixel.cso";
-
-        let vtx_uniforms = ConstantsVtxDeferredPre {
+        let vertex_uniforms = ViewProjUniforms {
             view: glm::identity(),
             proj: glm::identity(),
         };
-        let vtx_cbuff = match cbuffer::CBuffer::create(vtx_uniforms, context, device) {
-            Ok(b) => b,
-            Err(e) => panic!(e),
+        let pixel_uniforms = NearFarUniforms {
+            near_plane: 0.0,
+            far_plane: 0.0,
+            _pad: 0.0,
+            _pad2: 0.0,
         };
 
+        let vertex_uniforms_buf = backend.create_buffer(
+            &BufferDesc {
+                usage: BufferUsage::Uniform,
+                size: std::mem::size_of::<ViewProjUniforms>(),
+            },
+            Some(as_bytes(std::slice::from_ref(&vertex_uniforms))),
+        )?;
+        let pixel_uniforms_buf = backend.create_buffer(
+            &BufferDesc {
+                usage: BufferUsage::Uniform,
+                size: std::mem::size_of::<NearFarUniforms>(),
+            },
+            Some(as_bytes(std::slice::from_ref(&pixel_uniforms))),
+        )?;
+
+        let positions_target = backend.create_render_target(&RenderTargetDesc {
+            width: resolution.0,
+            height: resolution.1,
+            format: TextureFormat::Rgba32Float,
+            sampler: SamplerDesc::default(),
+        })?;
+        let normal_roughness_target = backend.create_render_target(&RenderTargetDesc {
+            width: resolution.0,
+            height: resolution.1,
+            format: TextureFormat::R16g16b16a16Float,
+            sampler: SamplerDesc::default(),
+        })?;
+        let albedo_metallic_target = backend.create_render_target(&RenderTargetDesc {
+            width: resolution.0,
+            height: resolution.1,
+            format: TextureFormat::R16g16b16a16Float,
+            sampler: SamplerDesc::default(),
+        })?;
+
+        Ok(DeferredPassPre {
+            pipeline,
+            pipeline_double_sided,
+            vertex_uniforms_buf,
+            pixel_uniforms_buf,
+            positions_target,
+            normal_roughness_target,
+            albedo_metallic_target,
+            vertex_uniforms,
+            pixel_uniforms,
+        })
+    }
+}
+
+// DeferredPassLight
+
+/// Deferred lighting pass: fullscreen quad that reads G-buffer and computes lighting.
+///
+/// Pixel uniforms (slot 0): camera position + SSAO flag.
+/// Pixel uniforms (slot 1): light data.
+/// Inputs (bound by Renderer): G-buffer positions (slot 0), normal+roughness (slot 1),
+///   albedo+metallic (slot 2), shadow map (slot 3), SSAO blurred texture (slot 4).
+/// Output: `R16g16b16a16Float` render target (accumulated light).
+pub(crate) struct DeferredPassLight<B: GpuBackend> {
+    pipeline: B::Pipeline,
+    pixel_uniforms_buf: B::Buffer,
+    light_buf: B::Buffer,
+    render_target: B::RenderTarget,
+    pixel_uniforms: CameraUniforms,
+    light_data: GpuLight,
+}
+
+impl<B: GpuBackend> DeferredPassLight<B> {
+    pub fn render_target(&self) -> &B::RenderTarget {
+        &self.render_target
+    }
+
+    /// Bind pipeline and all uniform buffers for drawing.
+    pub fn prepare_draw(&self, backend: &mut B) {
+        backend.set_pipeline(&self.pipeline);
+        backend.bind_uniform(ShaderStage::Fragment, 0, &self.pixel_uniforms_buf);
+        backend.bind_uniform(ShaderStage::Fragment, 1, &self.light_buf);
+    }
+
+    /// Upload all CPU-side uniform data to GPU buffers.
+    pub fn update(&self, backend: &B) {
+        backend.update_buffer(
+            &self.pixel_uniforms_buf,
+            as_bytes(std::slice::from_ref(&self.pixel_uniforms)),
+        );
+        backend.update_buffer(
+            &self.light_buf,
+            as_bytes(std::slice::from_ref(&self.light_data)),
+        );
+    }
+
+    pub fn set_camera_pos(&mut self, pos: glm::Vec3) {
+        self.pixel_uniforms.camera_pos = pos;
+    }
+
+    pub fn set_ssao(&mut self, enabled: bool) {
+        self.pixel_uniforms.ssao = if enabled { 1 } else { 0 };
+    }
+
+    pub fn set_light(&mut self, light: &Light) {
+        self.light_data = GpuLight::from_light(light);
+    }
+
+    pub fn create(
+        backend: &B,
+        resolution: (u32, u32),
+        shader_source: &[u8],
+    ) -> Result<Self, GpuError> {
+        let pipeline = backend.create_pipeline(&PipelineDesc {
+            label: "deferred_light",
+            shader_source,
+            vertex_layout: Some(standard_vertex_layout()),
+            blend_mode: BlendMode::Additive,
+            cull_mode: CullMode::None,
+            depth_write: false,
+            depth_compare: CompareFunc::Always,
+            color_target_formats: &[TextureFormat::R16g16b16a16Float],
+            depth_format: None,
+            bind_groups: &[
+                // Group 0: empty (fullscreen quad, no vertex uniforms)
+                &[],
+                // Group 1: empty (no per-object data)
+                &[],
+                // Group 2: empty (no material textures)
+                &[],
+                // Group 3: fragment uniforms + G-buffer + shadow map + SSAO
+                &[
+                    BindingType::UniformBuffer,       // camera
+                    BindingType::UniformBuffer,       // light
+                    BindingType::Texture2DUnfilterable, // positions G-buffer (Rgba32Float, unfilterable)
+                    BindingType::Texture2D,           // normal+roughness G-buffer (Rgba16Float)
+                    BindingType::Texture2D,           // albedo+metallic G-buffer (Rgba16Float)
+                    BindingType::TextureDepth2D,      // shadow map
+                    BindingType::SamplerComparison,   // shadow sampler
+                    BindingType::Texture2D,           // SSAO blurred
+                    BindingType::Sampler,             // SSAO sampler
+                ],
+            ],
+        })?;
+
+        let pixel_uniforms = CameraUniforms {
+            camera_pos: glm::zero(),
+            ssao: 1,
+        };
+        let light_data = GpuLight {
+            position: glm::zero(),
+            t: 0,
+            color: glm::zero(),
+            radius: 0.0,
+            light_space: glm::identity(),
+        };
+
+        let pixel_uniforms_buf = backend.create_buffer(
+            &BufferDesc {
+                usage: BufferUsage::Uniform,
+                size: std::mem::size_of::<CameraUniforms>(),
+            },
+            Some(as_bytes(std::slice::from_ref(&pixel_uniforms))),
+        )?;
+        let light_buf = backend.create_buffer(
+            &BufferDesc {
+                usage: BufferUsage::Uniform,
+                size: std::mem::size_of::<GpuLight>(),
+            },
+            Some(as_bytes(std::slice::from_ref(&light_data))),
+        )?;
+
+        let render_target = backend.create_render_target(&RenderTargetDesc {
+            width: resolution.0,
+            height: resolution.1,
+            format: TextureFormat::R16g16b16a16Float,
+            sampler: SamplerDesc::default(),
+        })?;
+
+        Ok(DeferredPassLight {
+            pipeline,
+            pixel_uniforms_buf,
+            light_buf,
+            render_target,
+            pixel_uniforms,
+            light_data,
+        })
+    }
+}
+
+// ShadowPass
+
+const SHADOW_MAP_SIZE: u32 = 4096;
+
+/// Shadow mapping pass: renders the scene from the light's perspective into a depth map.
+///
+/// Vertex uniforms (slot 0): light-space matrix.
+/// Output: `Depth32Float` shadow map render target (4096x4096).
+/// The shadow map has a comparison sampler for PCF filtering.
+pub(crate) struct ShadowPass<B: GpuBackend> {
+    pipeline: B::Pipeline,
+    pipeline_double_sided: B::Pipeline,
+    vertex_uniforms_buf: B::Buffer,
+    shadow_map: B::RenderTarget,
+    shadow_viewport: ViewportDesc,
+    vertex_uniforms: LightSpaceUniforms,
+}
+
+impl<B: GpuBackend> ShadowPass<B> {
+    pub fn shadow_map(&self) -> &B::RenderTarget {
+        &self.shadow_map
+    }
+
+    pub fn viewport(&self) -> &ViewportDesc {
+        &self.shadow_viewport
+    }
+
+    /// Bind pipeline and vertex uniform buffer for drawing.
+    pub fn prepare_draw(&self, backend: &mut B) {
+        backend.set_pipeline(&self.pipeline);
+        backend.bind_uniform(ShaderStage::Vertex, 0, &self.vertex_uniforms_buf);
+    }
+
+    /// Switch pipeline based on whether the drawable is double-sided.
+    /// Rebinds pass uniforms since set_pipeline() clears all pending bindings.
+    pub fn set_pipeline_for(&self, backend: &mut B, double_sided: bool) {
+        if double_sided {
+            backend.set_pipeline(&self.pipeline_double_sided);
+        } else {
+            backend.set_pipeline(&self.pipeline);
+        }
+        backend.bind_uniform(ShaderStage::Vertex, 0, &self.vertex_uniforms_buf);
+    }
+
+    /// Upload light-space matrix to GPU.
+    pub fn update(&self, backend: &B) {
+        backend.update_buffer(
+            &self.vertex_uniforms_buf,
+            as_bytes(std::slice::from_ref(&self.vertex_uniforms)),
+        );
+    }
+
+    pub fn set_light_space(&mut self, light_space_matrix: glm::Mat4) {
+        self.vertex_uniforms.light_space_matrix = light_space_matrix;
+    }
+
+    pub fn create(
+        backend: &B,
+        shader_source: &[u8],
+    ) -> Result<Self, GpuError> {
+        let pipeline = backend.create_pipeline(&PipelineDesc {
+            label: "shadow_pass",
+            shader_source,
+            vertex_layout: Some(standard_vertex_layout()),
+            blend_mode: BlendMode::None,
+            cull_mode: CullMode::Front, // Front-face culling reduces shadow acne
+            depth_write: true,
+            depth_compare: CompareFunc::Less,
+            color_target_formats: &[],
+            depth_format: Some(TextureFormat::Depth32Float),
+            bind_groups: &[
+                // Group 0: vertex frame uniforms (light-space matrix)
+                &[BindingType::UniformBuffer],
+                // Group 1: per-object (model matrix)
+                &[BindingType::UniformBuffer],
+                // Group 2: empty (no material needed for shadow)
+                &[],
+                // Group 3: empty (no fragment stage)
+                &[],
+            ],
+        })?;
+
+        let pipeline_double_sided = backend.create_pipeline(&PipelineDesc {
+            label: "shadow_pass_double_sided",
+            shader_source,
+            vertex_layout: Some(standard_vertex_layout()),
+            blend_mode: BlendMode::None,
+            cull_mode: CullMode::None, // Both faces cast shadows for double-sided materials
+            depth_write: true,
+            depth_compare: CompareFunc::Less,
+            color_target_formats: &[],
+            depth_format: Some(TextureFormat::Depth32Float),
+            bind_groups: &[
+                &[BindingType::UniformBuffer],
+                &[BindingType::UniformBuffer],
+                &[],
+                &[],
+            ],
+        })?;
+
+        let vertex_uniforms = LightSpaceUniforms {
+            light_space_matrix: glm::identity(),
+        };
+
+        let vertex_uniforms_buf = backend.create_buffer(
+            &BufferDesc {
+                usage: BufferUsage::Uniform,
+                size: std::mem::size_of::<LightSpaceUniforms>(),
+            },
+            Some(as_bytes(std::slice::from_ref(&vertex_uniforms))),
+        )?;
+
+        let shadow_map = backend.create_render_target(&RenderTargetDesc {
+            width: SHADOW_MAP_SIZE,
+            height: SHADOW_MAP_SIZE,
+            format: TextureFormat::Depth32Float,
+            sampler: SamplerDesc {
+                address_u: AddressMode::Clamp,
+                address_v: AddressMode::Clamp,
+                filter: FilterMode::Linear,
+                compare: Some(CompareFunc::LessEqual),
+            },
+        })?;
+
+        let shadow_viewport = ViewportDesc {
+            x: 0.0,
+            y: 0.0,
+            width: SHADOW_MAP_SIZE as f32,
+            height: SHADOW_MAP_SIZE as f32,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        };
+
+        Ok(ShadowPass {
+            pipeline,
+            pipeline_double_sided,
+            vertex_uniforms_buf,
+            shadow_map,
+            shadow_viewport,
+            vertex_uniforms,
+        })
+    }
+}
+
+// OutputPass
+
+/// Output compositing pass: blends deferred and forward results to the backbuffer.
+///
+/// No uniforms. Inputs are bound by the Renderer:
+///   - Deferred light result (slot 0)
+///   - Forward result (slot 1)
+pub(crate) struct OutputPass<B: GpuBackend> {
+    pipeline: B::Pipeline,
+}
+
+impl<B: GpuBackend> OutputPass<B> {
+    /// Bind pipeline for drawing.
+    pub fn prepare_draw(&self, backend: &mut B) {
+        backend.set_pipeline(&self.pipeline);
+    }
+
+    pub fn create(
+        backend: &B,
+        shader_source: &[u8],
+        backbuffer_format: TextureFormat,
+    ) -> Result<Self, GpuError> {
+        let pipeline = backend.create_pipeline(&PipelineDesc {
+            label: "output_pass",
+            shader_source,
+            vertex_layout: Some(standard_vertex_layout()),
+            blend_mode: BlendMode::None,
+            cull_mode: CullMode::None,
+            depth_write: false,
+            depth_compare: CompareFunc::Always,
+            color_target_formats: &[backbuffer_format],
+            depth_format: None,
+            bind_groups: &[
+                // Group 0: empty (fullscreen quad, no vertex uniforms)
+                &[],
+                // Group 1: empty (no per-object data)
+                &[],
+                // Group 2: empty (no material textures)
+                &[],
+                // Group 3: deferred + forward render target textures
+                &[
+                    BindingType::Texture2D, BindingType::Sampler,   // deferred result
+                    BindingType::Texture2D, BindingType::Sampler,   // forward result
+                ],
+            ],
+        })?;
+
+        Ok(OutputPass { pipeline })
+    }
+}
+
+// SkyBoxPass
+
+/// Skybox rendering pass: draws a cubemap skybox behind all scene geometry.
+///
+/// Vertex uniforms (slot 0): view + projection matrices.
+/// The view matrix should have its translation component removed
+/// (mat3→mat4 conversion) so the skybox moves with the camera.
+pub(crate) struct SkyBoxPass<B: GpuBackend> {
+    pipeline: B::Pipeline,
+    vertex_uniforms_buf: B::Buffer,
+    vertex_uniforms: ViewProjUniforms,
+}
+
+impl<B: GpuBackend> SkyBoxPass<B> {
+    /// Bind pipeline and vertex uniform buffer for drawing.
+    pub fn prepare_draw(&self, backend: &mut B) {
+        backend.set_pipeline(&self.pipeline);
+        backend.bind_uniform(ShaderStage::Vertex, 0, &self.vertex_uniforms_buf);
+    }
+
+    /// Upload view/projection matrices to GPU.
+    pub fn update(&self, backend: &B) {
+        backend.update_buffer(
+            &self.vertex_uniforms_buf,
+            as_bytes(std::slice::from_ref(&self.vertex_uniforms)),
+        );
+    }
+
+    pub fn set_view(&mut self, view: glm::Mat4) {
+        self.vertex_uniforms.view = view;
+    }
+
+    pub fn set_proj(&mut self, proj: glm::Mat4) {
+        self.vertex_uniforms.proj = proj;
+    }
+
+    pub fn set_view_proj(&mut self, view: glm::Mat4, proj: glm::Mat4) {
+        self.vertex_uniforms.view = view;
+        self.vertex_uniforms.proj = proj;
+    }
+
+    pub fn create(
+        backend: &B,
+        shader_source: &[u8],
+        backbuffer_format: TextureFormat,
+    ) -> Result<Self, GpuError> {
+        let pipeline = backend.create_pipeline(&PipelineDesc {
+            label: "skybox_pass",
+            shader_source,
+            vertex_layout: Some(standard_vertex_layout()),
+            blend_mode: BlendMode::None,
+            cull_mode: CullMode::None,
+            depth_write: false,
+            depth_compare: CompareFunc::LessEqual,
+            color_target_formats: &[backbuffer_format],
+            depth_format: Some(TextureFormat::Depth32Float),
+            bind_groups: &[
+                // Group 0: vertex frame uniforms (view + proj)
+                &[BindingType::UniformBuffer],
+                // Group 1: per-object (model matrix)
+                &[BindingType::UniformBuffer],
+                // Group 2: cubemap texture
+                &[BindingType::TextureCube, BindingType::Sampler],
+                // Group 3: empty (no fragment uniforms)
+                &[],
+            ],
+        })?;
+
+        let vertex_uniforms = ViewProjUniforms {
+            view: glm::identity(),
+            proj: glm::identity(),
+        };
+
+        let vertex_uniforms_buf = backend.create_buffer(
+            &BufferDesc {
+                usage: BufferUsage::Uniform,
+                size: std::mem::size_of::<ViewProjUniforms>(),
+            },
+            Some(as_bytes(std::slice::from_ref(&vertex_uniforms))),
+        )?;
+
         Ok(SkyBoxPass {
-            program: shaders::ShaderProgram::create(
-                &vtx_shader,
-                &ps_shader,
-                None,
-                None,
-                device,
-                context,
-            )?,
-            vertex_shader_uniforms: vtx_cbuff,
+            pipeline,
+            vertex_uniforms_buf,
+            vertex_uniforms,
         })
     }
 }

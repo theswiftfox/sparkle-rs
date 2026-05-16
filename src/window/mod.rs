@@ -1,381 +1,326 @@
 use crate::input::input_handler::{
     Action, ApplicationRequest, Button, InputHandler, Key, ScrollAxis,
 };
-use crate::utils;
 
 use std::cell::RefCell;
-use std::convert::TryInto;
 use std::rc::Rc;
-use std::*;
+use std::sync::Arc;
 
-use winapi::shared::minwindef::{LPARAM, LRESULT, UINT, WPARAM};
-use winapi::shared::windef::{HWND, POINT, RECT};
-use winapi::shared::windowsx::{GET_X_LPARAM, GET_Y_LPARAM};
-use winapi::um::libloaderapi::*;
-use winapi::um::winuser::*;
+use winit::{
+    application::ApplicationHandler,
+    dpi::PhysicalSize,
+    event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
+    keyboard::{KeyCode, PhysicalKey},
+    window::WindowId,
+};
 
-unsafe extern "system" fn window_proc(
-    hwnd: HWND,
-    msg: UINT,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    if msg == WM_NCCREATE {
-        let lpcs = lparam as LPCREATESTRUCTW;
-        let ptr = (*lpcs).lpCreateParams as *mut Window;
-        if !ptr.is_null() {
-            // (*ptr).handle = hwnd;
-            let res = DefWindowProcW(hwnd, msg, wparam, lparam);
-            SetWindowLongPtrW(hwnd, GWLP_USERDATA, ptr as LPARAM);
-            return res;
-        }
-        return 0;
-    }
-    let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Window;
-    if !ptr.is_null() {
-        return (*ptr).window_proc(hwnd, msg, wparam, lparam);
-    } else {
-        return DefWindowProcW(hwnd, msg, wparam, lparam);
-    }
-}
-
+/// Cross-platform window backed by winit.
 pub struct Window {
-    handle: HWND,
+    winit_window: Option<Arc<winit::window::Window>>,
     width: u32,
     height: u32,
-    input_handler: Option<std::rc::Rc<std::cell::RefCell<dyn InputHandler>>>,
-    request_quit: bool,
+    input_handler: Option<Rc<RefCell<dyn InputHandler>>>,
     snap_mouse: bool,
-
-    last_x: i32,
-    last_y: i32,
-
+    last_pos: Option<(f64, f64)>,
     title: String,
 }
 
 impl Window {
+    pub fn new(width: u32, height: u32, title: &str) -> Self {
+        Window {
+            winit_window: None,
+            width,
+            height,
+            input_handler: None,
+            snap_mouse: false,
+            last_pos: None,
+            title: title.to_string(),
+        }
+    }
+
     pub fn get_resolution(&self) -> (u32, u32) {
         (self.width, self.height)
     }
+
     pub fn get_width(&self) -> u32 {
         self.width
     }
+
     pub fn get_height(&self) -> u32 {
         self.height
     }
-    pub fn get_handle(&self) -> winapi::shared::windef::HWND {
-        self.handle
+
+    /// Returns a reference to the underlying winit window, if created.
+    /// The window is created lazily when the event loop starts.
+    pub fn winit_window(&self) -> Option<&winit::window::Window> {
+        self.winit_window.as_deref()
     }
 
-    pub fn set_title(&mut self, title: &str) -> bool {
-        let combined = format!("{} {}", self.title, title);
-        let title_w = utils::to_wide_str(&combined);
-        unsafe { SetWindowTextW(self.handle, title_w.as_ptr()) != 0 }
+    /// Returns a cloneable Arc handle to the winit window.
+    /// Needed for wgpu surface creation (requires `Surface<'static>`).
+    pub fn winit_window_arc(&self) -> Option<Arc<winit::window::Window>> {
+        self.winit_window.clone()
     }
 
-    pub fn create_window(width: u32, height: u32, name: &str, title: &str) -> Rc<RefCell<Window>> {
-        let wnd = Rc::new(RefCell::new(Window {
-            handle: ptr::null_mut(),
-            width: width,
-            height: height,
-            input_handler: None,
-            request_quit: false,
-            snap_mouse: false,
-            last_x: std::i32::MIN,
-            last_y: std::i32::MIN,
-            title: title.to_string(),
-        }));
-        wnd.borrow_mut().create(width, height, name, title);
-        return wnd;
-    }
-    pub fn update(&mut self) -> bool {
-        if self.request_quit {
-            return false;
+    pub fn set_title(&mut self, subtitle: &str) {
+        let combined = format!("{} {}", self.title, subtitle);
+        if let Some(w) = &self.winit_window {
+            w.set_title(&combined);
         }
-        unsafe {
-            let mut msg: MSG = mem::MaybeUninit::<MSG>::uninit().assume_init();
-            while PeekMessageW(&mut msg, self.handle, 0, 0, PM_REMOVE) > 0 {
-                TranslateMessage(&msg);
-                DispatchMessageW(&msg);
-            }
-            if self.snap_mouse && self.input_handler.is_some() {
-                let mut rect: RECT = Default::default();
-                if GetWindowRect(self.handle, &mut rect as *mut _) != 1 {
-                    println!("Error getting Window Rectangle");
-                    return false; // todo: maybe log instead or smth?
-                }
-                let cx = (rect.left + rect.right) / 2;
-                let cy = (rect.top + rect.bottom) / 2;
-
-                let mut pos: POINT = Default::default();
-                if GetCursorPos(&mut pos as *mut _) == 1 {
-                    let x = pos.x - cx;
-                    let y = pos.y - cy;
-
-                    self.input_handler
-                        .as_ref()
-                        .unwrap()
-                        .borrow_mut()
-                        .handle_mouse_move(x, y);
-
-                    SetCursorPos(cx, cy);
-                }
-            }
-        }
-        true
     }
+
     pub fn set_input_handler(
         &mut self,
-        handler: std::rc::Rc<std::cell::RefCell<dyn InputHandler>>,
+        handler: Rc<RefCell<dyn InputHandler>>,
     ) {
-        self.input_handler = Some(handler.clone())
+        self.input_handler = Some(handler);
     }
 
-    fn create(&mut self, width: u32, height: u32, name: &str, title: &str) {
-        let name = utils::to_wide_str(name);
-        let title = utils::to_wide_str(title);
+    /// Runs the event loop, calling `frame_fn` once per frame.
+    /// This consumes the Window and blocks until the application exits.
+    pub fn run(self, frame_fn: impl FnMut(&mut Window) + 'static) {
+        let event_loop = EventLoop::new().expect("Failed to create event loop");
+        let mut app = WindowApp {
+            window: self,
+            frame_fn: Box::new(frame_fn),
+        };
+        event_loop.run_app(&mut app).expect("Event loop error");
+    }
 
-        unsafe {
-            let instance = GetModuleHandleW(ptr::null_mut());
-            let window_class = WNDCLASSW {
-                style: CS_OWNDC | CS_HREDRAW | CS_VREDRAW,
-                lpfnWndProc: Some(window_proc),
-                hInstance: instance,
-                lpszClassName: name.as_ptr(),
-                cbClsExtra: 0,
-                cbWndExtra: 0,
-                hIcon: ptr::null_mut(),
-                hCursor: ptr::null_mut(),
-                hbrBackground: ptr::null_mut(),
-                lpszMenuName: ptr::null_mut(),
-            };
-
-            RegisterClassW(&window_class);
-            let handle = CreateWindowExW(
-                0,
-                name.as_ptr(),
-                title.as_ptr(),
-                WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-                CW_USEDEFAULT,
-                CW_USEDEFAULT,
-                width.try_into().unwrap(),
-                height.try_into().unwrap(),
-                ptr::null_mut(),
-                ptr::null_mut(),
-                instance,
-                (self as *mut Window) as *mut _,
-            );
-
-            if handle.is_null() {
-                panic!("Unable to obtain window handle!")
+    fn handle_window_event(&mut self, event: WindowEvent, event_loop: &ActiveEventLoop) {
+        match event {
+            WindowEvent::CloseRequested => {
+                event_loop.exit();
             }
-            self.handle = handle;
-        }
-    }
-
-    fn window_proc(&mut self, hwnd: HWND, msg: UINT, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-        if self.input_handler.is_none() {
-            return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
-        } else {
-            let handler = self.input_handler.as_ref().unwrap().clone();
-            let was_snapped = self.snap_mouse;
-            match msg {
-                WM_DESTROY => {
-                    unsafe { PostQuitMessage(0) };
-                    self.request_quit = true;
-                    return 0;
+            WindowEvent::Resized(size) => {
+                self.width = size.width;
+                self.height = size.height;
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                if let Some(ref handler) = self.input_handler {
+                    let action = match event.state {
+                        ElementState::Pressed => Action::Down,
+                        ElementState::Released => Action::Up,
+                    };
+                    let key = if let PhysicalKey::Code(code) = event.physical_key {
+                        translate_key(code)
+                    } else {
+                        Key::None
+                    };
+                    match handler.borrow_mut().handle_key(key, action) {
+                        ApplicationRequest::Quit => event_loop.exit(),
+                        _ => {}
+                    }
                 }
-                WM_SIZE => {
-                    return 0;
-                }
-                WM_KEYDOWN => {
-                    match handler
-                        .borrow_mut()
-                        .handle_key(Window::get_sparkle_key(wparam), Action::Down)
-                    {
-                        ApplicationRequest::Quit => {
-                            unsafe { PostQuitMessage(0) };
-                            self.request_quit = true;
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                if let Some(ref handler) = self.input_handler {
+                    let action = match state {
+                        ElementState::Pressed => Action::Down,
+                        ElementState::Released => Action::Up,
+                    };
+                    let btn = match button {
+                        MouseButton::Left => Button::Left,
+                        MouseButton::Right => Button::Right,
+                        MouseButton::Middle => Button::Middle,
+                        _ => return,
+                    };
+                    match handler.borrow_mut().handle_mouse(btn, action) {
+                        ApplicationRequest::SnapMouse => {
+                            self.snap_mouse = true;
+                            if let Some(w) = &self.winit_window {
+                                w.set_cursor_visible(false);
+                            }
+                        }
+                        ApplicationRequest::UnsnapMouse => {
+                            self.snap_mouse = false;
+                            if let Some(w) = &self.winit_window {
+                                w.set_cursor_visible(true);
+                            }
                         }
                         _ => {}
-                    };
+                    }
                 }
-                WM_KEYUP => {
-                    match handler
-                        .borrow_mut()
-                        .handle_key(Window::get_sparkle_key(wparam), Action::Up)
-                    {
-                        ApplicationRequest::Quit => {
-                            unsafe { PostQuitMessage(0) };
-                            self.request_quit = true;
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                if let Some(ref handler) = self.input_handler {
+                    match delta {
+                        MouseScrollDelta::LineDelta(x, y) => {
+                            if y.abs() > 0.0 {
+                                handler
+                                    .borrow_mut()
+                                    .handle_wheel(ScrollAxis::Vertical, y * 24.0);
+                            }
+                            if x.abs() > 0.0 {
+                                handler
+                                    .borrow_mut()
+                                    .handle_wheel(ScrollAxis::Horizontal, x * 24.0);
+                            }
                         }
-                        _ => {}
-                    };
+                        MouseScrollDelta::PixelDelta(pos) => {
+                            if pos.y.abs() > 0.0 {
+                                handler
+                                    .borrow_mut()
+                                    .handle_wheel(ScrollAxis::Vertical, pos.y as f32);
+                            }
+                            if pos.x.abs() > 0.0 {
+                                handler
+                                    .borrow_mut()
+                                    .handle_wheel(ScrollAxis::Horizontal, pos.x as f32);
+                            }
+                        }
+                    }
                 }
-                WM_LBUTTONDOWN => {
-                    match handler
-                        .borrow_mut()
-                        .handle_mouse(Button::Left, Action::Down)
-                    {
-                        ApplicationRequest::SnapMouse => self.snap_mouse = true,
-                        ApplicationRequest::UnsnapMouse => self.snap_mouse = false,
-                        _ => {}
-                    };
-                }
-                WM_LBUTTONUP => {
-                    match handler.borrow_mut().handle_mouse(Button::Left, Action::Up) {
-                        ApplicationRequest::SnapMouse => self.snap_mouse = true,
-                        ApplicationRequest::UnsnapMouse => self.snap_mouse = false,
-                        _ => {}
-                    };
-                }
-                WM_MBUTTONDOWN => {
-                    match handler
-                        .borrow_mut()
-                        .handle_mouse(Button::Middle, Action::Down)
-                    {
-                        ApplicationRequest::SnapMouse => self.snap_mouse = true,
-                        ApplicationRequest::UnsnapMouse => self.snap_mouse = false,
-                        _ => {}
-                    };
-                }
-                WM_MBUTTONUP => {
-                    match handler
-                        .borrow_mut()
-                        .handle_mouse(Button::Middle, Action::Up)
-                    {
-                        ApplicationRequest::SnapMouse => self.snap_mouse = true,
-                        ApplicationRequest::UnsnapMouse => self.snap_mouse = false,
-                        _ => {}
-                    };
-                }
-                WM_RBUTTONDOWN => {
-                    match handler
-                        .borrow_mut()
-                        .handle_mouse(Button::Right, Action::Down)
-                    {
-                        ApplicationRequest::SnapMouse => self.snap_mouse = true,
-                        ApplicationRequest::UnsnapMouse => self.snap_mouse = false,
-                        _ => {}
-                    };
-                }
-                WM_RBUTTONUP => {
-                    match handler.borrow_mut().handle_mouse(Button::Right, Action::Up) {
-                        ApplicationRequest::SnapMouse => self.snap_mouse = true,
-                        ApplicationRequest::UnsnapMouse => self.snap_mouse = false,
-                        _ => {}
-                    };
-                }
-                WM_MOUSEWHEEL => {
-                    handler.borrow_mut().handle_wheel(
-                        ScrollAxis::Vertical,
-                        f32::from(GET_WHEEL_DELTA_WPARAM(wparam)) / 5.0f32,
-                    );
-                }
-                WM_MOUSEHWHEEL => {
-                    handler.borrow_mut().handle_wheel(
-                        ScrollAxis::Horizontal,
-                        f32::from(GET_WHEEL_DELTA_WPARAM(wparam)) / 5.0f32,
-                    );
-                }
-                WM_MOUSEMOVE => {
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                if let Some(ref handler) = self.input_handler {
+                    if let Some((lx, ly)) = self.last_pos {
+                        let dx = position.x - lx;
+                        let dy = position.y - ly;
+                        handler
+                            .borrow_mut()
+                            .handle_mouse_move(dx as i32, dy as i32);
+                    }
                     if self.snap_mouse {
-                        return 0;
+                        if let Some(w) = &self.winit_window {
+                            let size = w.inner_size();
+                            let cx = size.width as f64 / 2.0;
+                            let cy = size.height as f64 / 2.0;
+                            let _ = w.set_cursor_position(
+                                winit::dpi::PhysicalPosition::new(cx, cy),
+                            );
+                            self.last_pos = Some((cx, cy));
+                        }
+                    } else {
+                        self.last_pos = Some((position.x, position.y));
                     }
-
-                    let wx = GET_X_LPARAM(lparam);
-                    let wy = GET_Y_LPARAM(lparam);
-
-                    if self.last_x != std::i32::MIN && self.last_y != std::i32::MIN {
-                        let x = wx - self.last_x;
-                        let y = wy - self.last_y;
-                        //println!("x({}) y({}), px({}) py({}) Dx({}) Dy({})", wx, wy, self.last_x, self.last_y, x, y);
-                        handler.borrow_mut().handle_mouse_move(x, y);
-                    }
-                    self.last_x = wx;
-                    self.last_y = wy;
                 }
-                _ => return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
             }
-            if self.snap_mouse && !was_snapped {
-                unsafe {
-                    ShowCursor(0);
-                    // ClipCursor(&rect as *const _);
-                    //SetCapture(self.handle);
-                };
-            } else if !self.snap_mouse && was_snapped {
-                unsafe {
-                    ShowCursor(1);
-                    // if ReleaseCapture() != 1 {
-                    //     return -1;
-                    // }
-                    // ClipCursor(ptr::null());
-                };
+            WindowEvent::RedrawRequested => {
+                // Rendering is driven by about_to_wait / frame_fn
             }
-            return 0;
+            _ => {}
+        }
+    }
+}
+
+// -- Event loop integration via ApplicationHandler (winit 0.30) --
+
+struct WindowApp {
+    window: Window,
+    frame_fn: Box<dyn FnMut(&mut Window)>,
+}
+
+impl ApplicationHandler for WindowApp {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        event_loop.set_control_flow(ControlFlow::Poll);
+        if self.window.winit_window.is_none() {
+            let attrs = winit::window::Window::default_attributes()
+                .with_title(&self.window.title)
+                .with_inner_size(PhysicalSize::new(self.window.width, self.window.height));
+            self.window.winit_window = Some(Arc::new(
+                event_loop
+                    .create_window(attrs)
+                    .expect("Failed to create window"),
+            ));
         }
     }
 
-    fn get_sparkle_key(wparam: WPARAM) -> Key {
-        match wparam as i32 {
-            VK_LEFT => Key::KeyLeft,
-            VK_RIGHT => Key::KeyRight,
-            VK_UP => Key::KeyUp,
-            VK_DOWN => Key::KeyDown,
-            VK_SPACE => Key::Space,
-            VK_BACK => Key::Backspace,
-            VK_SHIFT => Key::Shift,
-            VK_CONTROL => Key::CtrlL,
-            VK_ESCAPE => Key::Esc,
-            VK_F1 => Key::F1,
-            VK_F2 => Key::F2,
-            VK_F3 => Key::F3,
-            VK_F4 => Key::F4,
-            VK_F5 => Key::F5,
-            VK_F6 => Key::F6,
-            VK_F7 => Key::F7,
-            VK_F8 => Key::F8,
-            VK_F9 => Key::F9,
-            VK_F10 => Key::F10,
-            VK_F11 => Key::F11,
-            VK_F12 => Key::F12,
-            0x30 => Key::Zero,
-            0x31 => Key::One,
-            0x32 => Key::Two,
-            0x33 => Key::Three,
-            0x34 => Key::Four,
-            0x35 => Key::Five,
-            0x36 => Key::Six,
-            0x37 => Key::Seven,
-            0x38 => Key::Eight,
-            0x39 => Key::Nine,
-            0x41 => Key::A,
-            0x42 => Key::B,
-            0x43 => Key::C,
-            0x44 => Key::D,
-            0x45 => Key::E,
-            0x46 => Key::F,
-            0x47 => Key::G,
-            0x48 => Key::H,
-            0x49 => Key::I,
-            0x4A => Key::J,
-            0x4B => Key::K,
-            0x4C => Key::L,
-            0x4D => Key::M,
-            0x4E => Key::N,
-            0x4F => Key::O,
-            0x50 => Key::P,
-            0x51 => Key::Q,
-            0x52 => Key::R,
-            0x53 => Key::S,
-            0x54 => Key::T,
-            0x55 => Key::U,
-            0x56 => Key::V,
-            0x57 => Key::W,
-            0x58 => Key::X,
-            0x59 => Key::Y,
-            0x5A => Key::Z,
-            _ => Key::None,
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        self.window.handle_window_event(event, event_loop);
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        (self.frame_fn)(&mut self.window);
+        if let Some(w) = &self.window.winit_window {
+            w.request_redraw();
         }
+    }
+}
+
+// -- Key translation from winit KeyCode to sparkle Key --
+
+fn translate_key(code: KeyCode) -> Key {
+    match code {
+        KeyCode::ArrowLeft => Key::KeyLeft,
+        KeyCode::ArrowRight => Key::KeyRight,
+        KeyCode::ArrowUp => Key::KeyUp,
+        KeyCode::ArrowDown => Key::KeyDown,
+        KeyCode::Space => Key::Space,
+        KeyCode::Backspace => Key::Backspace,
+        KeyCode::Enter => Key::Return,
+        KeyCode::CapsLock => Key::Caps,
+        KeyCode::ShiftLeft => Key::Shift,
+        KeyCode::ShiftRight => Key::ShiftR,
+        KeyCode::ControlLeft => Key::CtrlL,
+        KeyCode::ControlRight => Key::CtrlR,
+        KeyCode::Escape => Key::Esc,
+        KeyCode::Quote => Key::Apostrophe,
+        KeyCode::F1 => Key::F1,
+        KeyCode::F2 => Key::F2,
+        KeyCode::F3 => Key::F3,
+        KeyCode::F4 => Key::F4,
+        KeyCode::F5 => Key::F5,
+        KeyCode::F6 => Key::F6,
+        KeyCode::F7 => Key::F7,
+        KeyCode::F8 => Key::F8,
+        KeyCode::F9 => Key::F9,
+        KeyCode::F10 => Key::F10,
+        KeyCode::F11 => Key::F11,
+        KeyCode::F12 => Key::F12,
+        KeyCode::Digit0 => Key::Zero,
+        KeyCode::Digit1 => Key::One,
+        KeyCode::Digit2 => Key::Two,
+        KeyCode::Digit3 => Key::Three,
+        KeyCode::Digit4 => Key::Four,
+        KeyCode::Digit5 => Key::Five,
+        KeyCode::Digit6 => Key::Six,
+        KeyCode::Digit7 => Key::Seven,
+        KeyCode::Digit8 => Key::Eight,
+        KeyCode::Digit9 => Key::Nine,
+        KeyCode::KeyA => Key::A,
+        KeyCode::KeyB => Key::B,
+        KeyCode::KeyC => Key::C,
+        KeyCode::KeyD => Key::D,
+        KeyCode::KeyE => Key::E,
+        KeyCode::KeyF => Key::F,
+        KeyCode::KeyG => Key::G,
+        KeyCode::KeyH => Key::H,
+        KeyCode::KeyI => Key::I,
+        KeyCode::KeyJ => Key::J,
+        KeyCode::KeyK => Key::K,
+        KeyCode::KeyL => Key::L,
+        KeyCode::KeyM => Key::M,
+        KeyCode::KeyN => Key::N,
+        KeyCode::KeyO => Key::O,
+        KeyCode::KeyP => Key::P,
+        KeyCode::KeyQ => Key::Q,
+        KeyCode::KeyR => Key::R,
+        KeyCode::KeyS => Key::S,
+        KeyCode::KeyT => Key::T,
+        KeyCode::KeyU => Key::U,
+        KeyCode::KeyV => Key::V,
+        KeyCode::KeyW => Key::W,
+        KeyCode::KeyX => Key::X,
+        KeyCode::KeyY => Key::Y,
+        KeyCode::KeyZ => Key::Z,
+        KeyCode::Minus => Key::Minus,
+        KeyCode::Equal => Key::Equals,
+        KeyCode::BracketLeft => Key::BracketL,
+        KeyCode::BracketRight => Key::BracketR,
+        KeyCode::Semicolon => Key::Semicolon,
+        KeyCode::Slash => Key::Slash,
+        KeyCode::Backslash => Key::Backslash,
+        KeyCode::Period => Key::Point,
+        KeyCode::Insert => Key::Ins,
+        KeyCode::Delete => Key::Del,
+        KeyCode::PrintScreen => Key::PrntScr,
+        _ => Key::None,
     }
 }
