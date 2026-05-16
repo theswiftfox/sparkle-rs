@@ -428,6 +428,29 @@ impl WgpuBackend {
         );
         (target, depth_format)
     }
+
+    // --- Accessors for editor / egui integration ---
+
+    /// Raw wgpu device handle (needed by egui-wgpu renderer).
+    pub fn device(&self) -> &wgpu::Device {
+        &self.device
+    }
+
+    /// Raw wgpu queue handle (needed by egui-wgpu renderer).
+    pub fn queue(&self) -> &wgpu::Queue {
+        &self.queue
+    }
+
+    /// The surface texture format used for the backbuffer.
+    pub fn surface_format(&self) -> wgpu::TextureFormat {
+        self.surface_config.format
+    }
+
+    /// The current frame's backbuffer texture view.
+    /// Only valid between begin_frame() and present().
+    pub fn backbuffer_view(&self) -> &wgpu::TextureView {
+        &self.backbuffer_target.view
+    }
 }
 
 // GpuBackend trait implementation

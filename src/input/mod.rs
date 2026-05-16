@@ -1,5 +1,6 @@
 pub mod first_person;
 pub mod input_handler;
+pub mod orbit;
 
 pub trait Camera {
     fn update(&mut self, delta_t: f32);

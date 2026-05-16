@@ -476,7 +476,20 @@ impl<B: GpuBackend> Renderer<B> {
     ///
     /// Handles input, camera, and rendering. The caller is responsible for
     /// frame timing (dt), FPS tracking, and window title updates.
+    ///
+    /// For editor integration, use the three-step flow instead:
+    ///   1. `update_state(dt)` — process input and camera
+    ///   2. `render_scene()` — execute all render passes (no present)
+    ///   3. `finish_frame()` — submit commands and present
+    /// Between steps 2 and 3, the editor can render its overlay (egui).
     pub fn update(&mut self, dt: f32) -> Result<(), GpuError> {
+        self.update_state(dt);
+        self.render_scene()?;
+        self.finish_frame()
+    }
+
+    /// Step 1: Update input and camera state. Call before render_scene().
+    pub fn update_state(&mut self, dt: f32) {
         // Update camera direction vectors first (from Euler angles + mouse input)
         // so that movement uses the current frame's direction, not last frame's.
         if let Some(cam) = self.camera.clone() {
@@ -492,8 +505,19 @@ impl<B: GpuBackend> Renderer<B> {
         if let Some(cam) = self.camera.clone() {
             self.update_camera_uniforms(&cam);
         }
+    }
 
+    /// Step 2: Execute the full rendering pipeline (all passes), but do NOT
+    /// present. Call after update_state() and before finish_frame().
+    pub fn render_scene(&mut self) -> Result<(), GpuError> {
         self.render()
+    }
+
+    /// Step 3: Submit GPU commands and present the frame.
+    /// Call after render_scene() and any overlay rendering (e.g., egui).
+    pub fn finish_frame(&mut self) -> Result<(), GpuError> {
+        self.backend.end_frame()?;
+        self.backend.present()
     }
 
     /// Upload current camera state to all pass uniform buffers.
@@ -892,8 +916,8 @@ impl<B: GpuBackend> Renderer<B> {
             }
         }
 
-        self.backend.end_frame()?;
-        self.backend.present()?;
+        // Note: end_frame() and present() are NOT called here.
+        // Use finish_frame() after any overlay rendering (e.g., egui).
 
         Ok(())
     }

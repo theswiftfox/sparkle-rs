@@ -24,6 +24,21 @@ pub struct Window {
     snap_mouse: bool,
     last_pos: Option<(f64, f64)>,
     title: String,
+
+    /// Optional callback invoked for every raw winit WindowEvent *before*
+    /// the game input handler. Returns true if the event was consumed
+    /// (in which case the game input handler is skipped for that event).
+    ///
+    /// Used by the editor to forward events to egui.
+    event_filter: Option<Box<dyn FnMut(&winit::window::Window, &WindowEvent) -> bool>>,
+
+    /// Optional callback invoked when mouse cursor delta is computed.
+    /// Receives (dx, dy) in pixels. Used by the editor to feed the
+    /// orbit camera.
+    mouse_delta_callback: Option<Box<dyn FnMut(f32, f32)>>,
+
+    /// If true, a quit was requested via the event filter (e.g., editor menu).
+    quit_requested: bool,
 }
 
 impl Window {
@@ -36,6 +51,9 @@ impl Window {
             snap_mouse: false,
             last_pos: None,
             title: title.to_string(),
+            event_filter: None,
+            mouse_delta_callback: None,
+            quit_requested: false,
         }
     }
 
@@ -77,6 +95,34 @@ impl Window {
         self.input_handler = Some(handler);
     }
 
+    /// Set a callback that receives raw winit events before the game input handler.
+    ///
+    /// The callback receives a reference to the winit window and the event.
+    /// Return true if the event was consumed (game input handler will be skipped).
+    pub fn set_event_filter(
+        &mut self,
+        filter: impl FnMut(&winit::window::Window, &WindowEvent) -> bool + 'static,
+    ) {
+        self.event_filter = Some(Box::new(filter));
+    }
+
+    /// Set a callback that receives mouse cursor deltas (in pixels).
+    ///
+    /// Called whenever the cursor moves, with (dx, dy). Used by the editor
+    /// to drive the orbit camera.
+    pub fn set_mouse_delta_callback(
+        &mut self,
+        callback: impl FnMut(f32, f32) + 'static,
+    ) {
+        self.mouse_delta_callback = Some(Box::new(callback));
+    }
+
+    /// Request the application to quit. The event loop will exit on the next
+    /// iteration.
+    pub fn request_quit(&mut self) {
+        self.quit_requested = true;
+    }
+
     /// Runs the event loop, calling `frame_fn` once per frame.
     /// This consumes the Window and blocks until the application exits.
     pub fn run(self, frame_fn: impl FnMut(&mut Window) + 'static) {
@@ -89,14 +135,78 @@ impl Window {
     }
 
     fn handle_window_event(&mut self, event: WindowEvent, event_loop: &ActiveEventLoop) {
-        match event {
+        // Always handle structural events (close, resize) regardless of filters.
+        match &event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
+                return;
             }
             WindowEvent::Resized(size) => {
                 self.width = size.width;
                 self.height = size.height;
+                // Don't return — let the filter see this too (egui needs it).
             }
+            WindowEvent::RedrawRequested => {
+                return; // Rendering is driven by about_to_wait / frame_fn
+            }
+            _ => {}
+        }
+
+        // Forward to event filter first (editor / egui).
+        let consumed = if let (Some(ref mut filter), Some(ref w)) =
+            (&mut self.event_filter, &self.winit_window)
+        {
+            filter(w, &event)
+        } else {
+            false
+        };
+
+        // Always track cursor position and fire delta callbacks, even when
+        // the event filter consumed the event. The editor's orbit camera
+        // relies on mouse_delta_callback, which would be starved if we
+        // skipped CursorMoved processing.
+        if let WindowEvent::CursorMoved { position, .. } = &event {
+            if let Some((lx, ly)) = self.last_pos {
+                let dx = position.x - lx;
+                let dy = position.y - ly;
+
+                // Notify the mouse delta callback (editor orbit camera)
+                if let Some(ref mut cb) = self.mouse_delta_callback {
+                    cb(dx as f32, dy as f32);
+                }
+
+                // Notify the game input handler (only in Play mode, i.e.,
+                // when the event was NOT consumed by the editor).
+                if !consumed {
+                    if let Some(ref handler) = self.input_handler {
+                        handler
+                            .borrow_mut()
+                            .handle_mouse_move(dx as i32, dy as i32);
+                    }
+                }
+            }
+            if self.snap_mouse {
+                if let Some(w) = &self.winit_window {
+                    let size = w.inner_size();
+                    let cx = size.width as f64 / 2.0;
+                    let cy = size.height as f64 / 2.0;
+                    let _ = w.set_cursor_position(
+                        winit::dpi::PhysicalPosition::new(cx, cy),
+                    );
+                    self.last_pos = Some((cx, cy));
+                }
+            } else {
+                self.last_pos = Some((position.x, position.y));
+            }
+        }
+
+        // If the filter consumed the event, don't forward to the game input handler.
+        if consumed {
+            return;
+        }
+
+        // Forward to game input handler (same logic as before).
+        match event {
             WindowEvent::KeyboardInput { event, .. } => {
                 if let Some(ref handler) = self.input_handler {
                     let action = match event.state {
@@ -173,33 +283,6 @@ impl Window {
                     }
                 }
             }
-            WindowEvent::CursorMoved { position, .. } => {
-                if let Some(ref handler) = self.input_handler {
-                    if let Some((lx, ly)) = self.last_pos {
-                        let dx = position.x - lx;
-                        let dy = position.y - ly;
-                        handler
-                            .borrow_mut()
-                            .handle_mouse_move(dx as i32, dy as i32);
-                    }
-                    if self.snap_mouse {
-                        if let Some(w) = &self.winit_window {
-                            let size = w.inner_size();
-                            let cx = size.width as f64 / 2.0;
-                            let cy = size.height as f64 / 2.0;
-                            let _ = w.set_cursor_position(
-                                winit::dpi::PhysicalPosition::new(cx, cy),
-                            );
-                            self.last_pos = Some((cx, cy));
-                        }
-                    } else {
-                        self.last_pos = Some((position.x, position.y));
-                    }
-                }
-            }
-            WindowEvent::RedrawRequested => {
-                // Rendering is driven by about_to_wait / frame_fn
-            }
             _ => {}
         }
     }
@@ -236,7 +319,12 @@ impl ApplicationHandler for WindowApp {
         self.window.handle_window_event(event, event_loop);
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Check if a quit was requested via the frame callback
+        if self.window.quit_requested {
+            event_loop.exit();
+            return;
+        }
         (self.frame_fn)(&mut self.window);
         if let Some(w) = &self.window.winit_window {
             w.request_redraw();
