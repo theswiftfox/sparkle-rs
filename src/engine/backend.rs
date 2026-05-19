@@ -4,7 +4,7 @@
 //! Backend implementations (wgpu, Vulkan, etc.) implement the [`GpuBackend`] trait
 //! and its associated resource types.
 
-use super::geometry::Vertex;
+use super::geometry::{Vertex, AABB};
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -581,6 +581,8 @@ pub struct Drawable<B: GpuBackend> {
     material: Material<B>,
     object_type: ObjType,
     double_sided: bool,
+    /// Local-space axis-aligned bounding box computed from vertex positions.
+    aabb: AABB,
 }
 
 impl<B: GpuBackend> Drawable<B> {
@@ -629,6 +631,7 @@ impl<B: GpuBackend> Drawable<B> {
             material: Material::new(),
             object_type,
             double_sided: false,
+            aabb: AABB::from_vertices(vertices),
         })))
     }
 
@@ -665,6 +668,11 @@ impl<B: GpuBackend> Drawable<B> {
 
     pub fn set_double_sided(&mut self, val: bool) {
         self.double_sided = val;
+    }
+
+    /// Returns the local-space AABB of this drawable's mesh.
+    pub fn aabb(&self) -> &AABB {
+        &self.aabb
     }
 
     /// Add or replace a texture on this drawable's material.

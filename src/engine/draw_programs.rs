@@ -339,6 +339,24 @@ impl<B: GpuBackend> SsaoPass<B> {
             uniforms,
         })
     }
+
+    /// Recreate resolution-dependent render targets after a window resize.
+    pub fn resize(&mut self, backend: &B, resolution: (u32, u32)) -> Result<(), GpuError> {
+        self.ssao_target = backend.create_render_target(&RenderTargetDesc {
+            width: resolution.0,
+            height: resolution.1,
+            format: TextureFormat::R8Unorm,
+            sampler: SamplerDesc::default(),
+        })?;
+        self.blur_target = backend.create_render_target(&RenderTargetDesc {
+            width: resolution.0,
+            height: resolution.1,
+            format: TextureFormat::R8Unorm,
+            sampler: SamplerDesc::default(),
+        })?;
+        self.uniforms.resolution = [resolution.0 as f32, resolution.1 as f32];
+        Ok(())
+    }
 }
 
 // ForwardPass
@@ -548,6 +566,17 @@ impl<B: GpuBackend> ForwardPass<B> {
             light_data,
         })
     }
+
+    /// Recreate resolution-dependent render targets after a window resize.
+    pub fn resize(&mut self, backend: &B, resolution: (u32, u32)) -> Result<(), GpuError> {
+        self.render_target = backend.create_render_target(&RenderTargetDesc {
+            width: resolution.0,
+            height: resolution.1,
+            format: TextureFormat::R16g16b16a16Float,
+            sampler: SamplerDesc::default(),
+        })?;
+        Ok(())
+    }
 }
 
 // DeferredPassPre
@@ -750,6 +779,29 @@ impl<B: GpuBackend> DeferredPassPre<B> {
             pixel_uniforms,
         })
     }
+
+    /// Recreate resolution-dependent render targets after a window resize.
+    pub fn resize(&mut self, backend: &B, resolution: (u32, u32)) -> Result<(), GpuError> {
+        self.positions_target = backend.create_render_target(&RenderTargetDesc {
+            width: resolution.0,
+            height: resolution.1,
+            format: TextureFormat::Rgba32Float,
+            sampler: SamplerDesc::default(),
+        })?;
+        self.normal_roughness_target = backend.create_render_target(&RenderTargetDesc {
+            width: resolution.0,
+            height: resolution.1,
+            format: TextureFormat::R16g16b16a16Float,
+            sampler: SamplerDesc::default(),
+        })?;
+        self.albedo_metallic_target = backend.create_render_target(&RenderTargetDesc {
+            width: resolution.0,
+            height: resolution.1,
+            format: TextureFormat::R16g16b16a16Float,
+            sampler: SamplerDesc::default(),
+        })?;
+        Ok(())
+    }
 }
 
 // DeferredPassLight
@@ -885,6 +937,17 @@ impl<B: GpuBackend> DeferredPassLight<B> {
             pixel_uniforms,
             light_data,
         })
+    }
+
+    /// Recreate resolution-dependent render targets after a window resize.
+    pub fn resize(&mut self, backend: &B, resolution: (u32, u32)) -> Result<(), GpuError> {
+        self.render_target = backend.create_render_target(&RenderTargetDesc {
+            width: resolution.0,
+            height: resolution.1,
+            format: TextureFormat::R16g16b16a16Float,
+            sampler: SamplerDesc::default(),
+        })?;
+        Ok(())
     }
 }
 

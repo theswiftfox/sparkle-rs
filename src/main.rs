@@ -118,7 +118,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                         // Handle F1 mode toggle before egui processes
                                         // the event. This is never consumed by egui.
                                         if let winit::event::WindowEvent::KeyboardInput {
-                                            event: ref key_event,
+                                            event: key_event,
                                             ..
                                         } = event
                                         {
@@ -209,9 +209,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     last_mode = Some(current_mode);
                 }
 
-                // Begin egui frame (draws UI)
+                // Begin egui frame (draws UI, extracts scene data, applies edits)
                 if let Some(w) = window.winit_window() {
-                    ed.begin_frame(w);
+                    ed.begin_frame(w, r);
                 }
 
                 // Handle pending actions from editor UI

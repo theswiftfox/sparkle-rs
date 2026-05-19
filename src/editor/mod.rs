@@ -6,11 +6,18 @@
 //! The editor owns all egui state (context, winit integration, wgpu renderer)
 //! and drives the orbit camera directly from raw winit events.
 
+pub mod gizmo;
+pub mod picking;
+pub mod transform;
 pub mod ui;
+pub mod undo;
 
 use crate::engine::backend::GpuBackend;
+use crate::engine::geometry::Light;
 use crate::engine::renderer::Renderer;
+use crate::engine::scene_info::NodeInfo;
 use crate::engine::wgpu_backend::WgpuBackend;
+use crate::input::Camera;
 use crate::input::orbit::OrbitCamera;
 
 use std::cell::RefCell;
@@ -58,6 +65,21 @@ pub struct Editor {
     egui_wants_keyboard: bool,
     /// Egui output from the last `begin_frame()` call, consumed by `render_overlay()`.
     pending_egui_output: Option<egui::FullOutput>,
+    /// Currently selected node name (None = nothing selected).
+    pub selected_node: Option<String>,
+    /// Snapshot of the scenegraph tree, refreshed each frame in begin_frame.
+    pub scene_snapshot: Option<NodeInfo>,
+    /// Snapshot of lights, refreshed each frame in begin_frame.
+    pub scene_lights: Vec<Light>,
+
+    /// State for the transform gizmo (active axis, drag start transform, etc.).
+    gizmo_state: gizmo::GizmoState,
+    /// Undo stack for scene edits, supporting merging multiple edits into one undo
+    undo_stack: undo::UndoStack,
+    /// Whether gizmo was dragging last frame (for undo recording on drag end).
+    gizmo_was_dragging: bool,
+    /// The node's local transform mat4 when gizmo drag started (for undo).
+    gizmo_drag_old_transform: Option<glm::Mat4>,
 }
 
 impl Editor {
@@ -112,6 +134,13 @@ impl Editor {
             egui_wants_pointer: false,
             egui_wants_keyboard: false,
             pending_egui_output: None,
+            selected_node: None,
+            scene_snapshot: None,
+            scene_lights: Vec::new(),
+            gizmo_state: gizmo::GizmoState::new(),
+            undo_stack: undo::UndoStack::new(),
+            gizmo_was_dragging: false,
+            gizmo_drag_old_transform: None,
         }
     }
 
@@ -223,11 +252,23 @@ impl Editor {
         }
     }
 
-    /// Begin an egui frame: gather input, run the UI, produce draw commands.
+    /// Begin an egui frame: extract scene data, gather input, run the UI,
+    /// produce draw commands.
     ///
-    /// Call once per frame, before `render_overlay()`. The actual egui panels
-    /// and menus are drawn inside this call.
-    pub fn begin_frame(&mut self, window: &winit::window::Window) {
+    /// Takes `&mut Renderer` to extract scene snapshots and apply edits.
+    /// Call once per frame, before `render_overlay()`.
+    pub fn begin_frame(
+        &mut self,
+        window: &winit::window::Window,
+        renderer: &mut Renderer<WgpuBackend>,
+    ) {
+        // Advance undo merge window
+        self.undo_stack.new_frame();
+
+        // Extract scene data snapshots for the UI to read
+        self.scene_snapshot = renderer.scene_tree();
+        self.scene_lights = renderer.lights().clone();
+
         let raw_input = self.egui_winit.take_egui_input(window);
 
         // Update FPS counter
@@ -241,20 +282,78 @@ impl Editor {
         }
         self.frame_start = Instant::now();
 
-        // Run egui frame — all UI drawing happens in the closure
+        // Collect state needed inside the egui closure (avoid borrowing self)
         let mode = self.mode;
         let fps = self.fps;
         let mut pending_scene_load = None;
         let mut pending_quit = false;
         let mut toggle_mode = false;
+        let mut pending_save = false;
+        let mut pending_load = false;
+        let mut pending_undo = false;
+        let mut pending_redo = false;
+        let mut selected_node = self.selected_node.clone();
+        // Use references instead of deep-cloning the scene tree every frame.
+        // The closure captures these refs by copy (references are Copy).
+        let scene_snapshot = &self.scene_snapshot;
+        let scene_lights = &self.scene_lights;
+
+        // Undo state for the Edit menu (captured before the frame)
+        let can_undo = self.undo_stack.can_undo();
+        let can_redo = self.undo_stack.can_redo();
+        let undo_desc = self.undo_stack.undo_description();
+        let redo_desc = self.undo_stack.redo_description();
+
+        // Collect edits produced by the UI
+        let mut transform_edits: Vec<(String, glm::Mat4)> = Vec::new();
+        let mut light_edits: Vec<(usize, Light)> = Vec::new();
+        let mut light_adds: Vec<Light> = Vec::new();
+        let mut light_removes: Vec<usize> = Vec::new();
 
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
+            // Check for keyboard shortcuts
+            ctx.input(|i| {
+                if i.modifiers.command && i.key_pressed(egui::Key::S) {
+                    pending_save = true;
+                }
+                if i.modifiers.command && i.key_pressed(egui::Key::L) {
+                    pending_load = true;
+                }
+                if i.modifiers.command && !i.modifiers.shift && i.key_pressed(egui::Key::Z) {
+                    pending_undo = true;
+                }
+                if i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::Z) {
+                    pending_redo = true;
+                }
+            });
+
             if mode == EditorMode::Editor {
                 ui::draw_menu_bar(
                     ctx,
                     &mut pending_scene_load,
                     &mut pending_quit,
                     &mut toggle_mode,
+                    &mut pending_save,
+                    &mut pending_load,
+                    &mut pending_undo,
+                    &mut pending_redo,
+                    can_undo,
+                    can_redo,
+                    &undo_desc,
+                    &redo_desc,
+                );
+
+                // Left panel: scene hierarchy
+                ui::draw_hierarchy_panel(ctx, scene_snapshot, &mut selected_node);
+
+                // Right panel: inspector + light editor
+                ui::draw_inspector_panel(ctx, scene_snapshot, &selected_node, &mut transform_edits);
+                ui::draw_light_editor(
+                    ctx,
+                    scene_lights,
+                    &mut light_edits,
+                    &mut light_adds,
+                    &mut light_removes,
                 );
             }
             ui::draw_viewport_overlay(ctx, fps, mode);
@@ -263,8 +362,219 @@ impl Editor {
         self.pending_egui_output = Some(full_output);
         self.pending_scene_load = pending_scene_load;
         self.pending_quit = pending_quit;
+        self.selected_node = selected_node;
         if toggle_mode {
             self.toggle_mode();
+        }
+
+        // Handle gizmo mode keys (T/R/S) — only when egui doesn't want keyboard
+        if self.mode == EditorMode::Editor && !self.egui_wants_keyboard {
+            let (key_t, key_r, key_g) = self.egui_ctx.input(|i| {
+                (
+                    i.key_pressed(egui::Key::T),
+                    i.key_pressed(egui::Key::R),
+                    i.key_pressed(egui::Key::G),
+                )
+            });
+            if key_t {
+                self.gizmo_state.mode = gizmo::GizmoMode::Translate;
+            }
+            if key_r {
+                self.gizmo_state.mode = gizmo::GizmoMode::Rotate;
+            }
+            if key_g {
+                self.gizmo_state.mode = gizmo::GizmoMode::Scale;
+            }
+        }
+
+        // Gizmo interaction + rendering (if a node is selected)
+        let mut gizmo_consumed = false;
+        let mut gizmo_transform_edit: Option<(String, glm::Mat4)> = None;
+        if self.mode == EditorMode::Editor {
+            if let Some(ref sel_name) = self.selected_node.clone() {
+                if let Some(ref snapshot) = self.scene_snapshot {
+                    if let Some(node) = ui::find_node_pub(snapshot, sel_name) {
+                        let (vw, vh) = renderer.backend().resolution();
+                        let cam = self.orbit_camera.borrow();
+                        let view = cam.view_mat();
+                        let proj = cam.projection_mat();
+                        drop(cam);
+
+                        let gizmo_result = gizmo::draw_and_interact(
+                            &self.egui_ctx,
+                            &mut self.gizmo_state,
+                            node,
+                            &view,
+                            &proj,
+                            vw as f32,
+                            vh as f32,
+                        );
+
+                        gizmo_consumed = gizmo_result.consumed_pointer;
+                        if let Some(new_mat) = gizmo_result.transform_edit {
+                            gizmo_transform_edit = Some((sel_name.clone(), new_mat));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Track gizmo drag start/end for undo recording.
+        // Gizmo edits are applied every frame during drag, but recorded as a
+        // single undo command spanning drag-start to drag-end.
+        let gizmo_is_dragging = self.gizmo_state.active_axis.is_some();
+        if gizmo_is_dragging && !self.gizmo_was_dragging {
+            // Drag started: save the original transform from gizmo's start_transform
+            if let Some(ref st) = self.gizmo_state.start_transform {
+                self.gizmo_drag_old_transform = Some(st.to_mat4());
+            }
+        }
+        if !gizmo_is_dragging && self.gizmo_was_dragging {
+            // Drag ended: push a single undo command (old -> final)
+            if let Some(old_mat) = self.gizmo_drag_old_transform.take() {
+                if let Some(ref sel_name) = self.selected_node {
+                    if let Some(ref snapshot) = self.scene_snapshot {
+                        if let Some(node) = ui::find_node_pub(snapshot, sel_name) {
+                            // The snapshot was captured at the start of this frame,
+                            // reflecting the last gizmo edit from the previous frame
+                            // (the final dragged position).
+                            self.undo_stack.push(undo::Command::SetNodeTransform {
+                                node_name: sel_name.clone(),
+                                old_transform: old_mat,
+                                new_transform: node.local_transform,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        self.gizmo_was_dragging = gizmo_is_dragging;
+
+        // Viewport picking: left-click in the 3D viewport selects a node
+        // (only if gizmo didn't consume the click)
+        if self.mode == EditorMode::Editor && !gizmo_consumed {
+            let clicked_primary = self
+                .egui_ctx
+                .input(|i| i.pointer.button_clicked(egui::PointerButton::Primary));
+            if clicked_primary && !self.egui_wants_pointer {
+                if let Some(pos) = self.egui_ctx.input(|i| i.pointer.interact_pos()) {
+                    let (vw, vh) = renderer.backend().resolution();
+                    let cam = self.orbit_camera.borrow();
+                    let view = cam.view_mat();
+                    let proj = cam.projection_mat();
+                    let ray =
+                        picking::screen_to_ray(pos.x, pos.y, vw as f32, vh as f32, &view, &proj);
+                    drop(cam);
+
+                    if let Some(ref snapshot) = self.scene_snapshot {
+                        if let Some(hit) = picking::pick_node(&ray, snapshot) {
+                            self.selected_node = Some(hit.node_name);
+                        } else {
+                            // Clicked empty space — deselect
+                            self.selected_node = None;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Apply inspector transform edits (with undo recording via merge)
+        for (name, new_mat) in &transform_edits {
+            if let Some(ref snapshot) = self.scene_snapshot {
+                if let Some(node) = ui::find_node_pub(snapshot, name) {
+                    self.undo_stack
+                        .push_or_merge(undo::Command::SetNodeTransform {
+                            node_name: name.clone(),
+                            old_transform: node.local_transform,
+                            new_transform: *new_mat,
+                        });
+                }
+            }
+            renderer.set_node_transform(name, *new_mat);
+        }
+
+        // Apply gizmo transform edit (undo recorded separately on drag end)
+        if let Some((name, new_mat)) = gizmo_transform_edit {
+            renderer.set_node_transform(&name, new_mat);
+        }
+
+        // Apply light edits (with undo recording via merge)
+        for (idx, new_light) in &light_edits {
+            if *idx < self.scene_lights.len() {
+                self.undo_stack.push_or_merge(undo::Command::UpdateLight {
+                    index: *idx,
+                    old_light: self.scene_lights[*idx].clone(),
+                    new_light: new_light.clone(),
+                });
+            }
+            renderer.update_light(*idx, new_light.clone());
+        }
+
+        // Remove lights in reverse order so indices stay valid
+        light_removes.sort_unstable();
+        for idx in light_removes.into_iter().rev() {
+            if idx < self.scene_lights.len() {
+                self.undo_stack.push(undo::Command::RemoveLight {
+                    light: self.scene_lights[idx].clone(),
+                    index: idx,
+                });
+            }
+            renderer.remove_light(idx);
+        }
+
+        // Add lights
+        for light in &light_adds {
+            let index = renderer.lights().len();
+            renderer.add_light(light.clone());
+            self.undo_stack.push(undo::Command::AddLight {
+                light: light.clone(),
+                index,
+            });
+        }
+
+        // Handle undo/redo
+        if pending_undo {
+            self.undo_stack.undo(renderer);
+        }
+        if pending_redo {
+            self.undo_stack.redo(renderer);
+        }
+
+        // Handle save/load
+        if pending_save {
+            self.save_scene(renderer);
+        }
+        if pending_load {
+            self.load_scene_data(renderer);
+        }
+    }
+
+    /// Save the current scene state to a .ron file next to the glTF file.
+    fn save_scene(&self, renderer: &Renderer<WgpuBackend>) {
+        if let Some(data) = renderer.extract_scene_data() {
+            let save_path = scene_save_path(renderer.scene_file());
+            match data.save_to_file(&save_path) {
+                Ok(()) => println!("Scene saved to: {}", save_path),
+                Err(e) => eprintln!("Failed to save scene: {}", e),
+            }
+        } else {
+            eprintln!("No scene loaded — nothing to save.");
+        }
+    }
+
+    /// Load a scene overlay from a .ron file and apply it.
+    fn load_scene_data(&mut self, renderer: &mut Renderer<WgpuBackend>) {
+        use crate::engine::scene_data::SceneData;
+
+        let load_path = scene_save_path(renderer.scene_file());
+        match SceneData::load_from_file(&load_path) {
+            Ok(data) => {
+                renderer.apply_scene_data(&data);
+                println!("Scene loaded from: {}", load_path);
+            }
+            Err(e) => {
+                eprintln!("Failed to load scene: {}", e);
+            }
         }
     }
 
@@ -327,10 +637,9 @@ fn render_egui(
     clipped_primitives: &[egui::ClippedPrimitive],
     screen_descriptor: &egui_wgpu::ScreenDescriptor,
 ) {
-    let mut encoder =
-        device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("egui_encoder"),
-        });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("egui_encoder"),
+    });
 
     egui_renderer.update_buffers(
         device,
@@ -368,4 +677,20 @@ fn render_egui(
     }
 
     queue.submit(std::iter::once(encoder.finish()));
+}
+
+/// Derive the .ron save path from the glTF scene file path.
+///
+/// Example: "assets/glTF/Sponza.gltf" -> "assets/glTF/Sponza.scene.ron"
+fn scene_save_path(scene_file: Option<&str>) -> String {
+    match scene_file {
+        Some(path) => {
+            let base = path
+                .strip_suffix(".gltf")
+                .or_else(|| path.strip_suffix(".glb"))
+                .unwrap_or(path);
+            format!("{}.scene.ron", base)
+        }
+        None => "scene.ron".to_string(),
+    }
 }

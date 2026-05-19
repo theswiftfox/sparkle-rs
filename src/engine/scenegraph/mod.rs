@@ -45,6 +45,25 @@ impl<B: GpuBackend> Scenegraph<B> {
         &self.lights
     }
 
+    pub fn clear_lights(&mut self) {
+        self.lights.clear();
+    }
+
+    pub fn remove_light(&mut self, index: usize) -> Result<(), SceneGraphError> {
+        if index >= self.lights.len() {
+            return Err(SceneGraphError::new(
+                "Light index out of bounds",
+                &ErrorCause::NotFound,
+            ));
+        }
+        self.lights.remove(index);
+        Ok(())
+    }
+
+    pub fn root(&self) -> &Option<Rc<RefCell<Node<B>>>> {
+        &self.root
+    }
+
     pub fn build_matrices(&mut self, backend: &B) {
         if let Some(root) = &mut self.root {
             root.borrow_mut().build_model(backend, &self.transform);

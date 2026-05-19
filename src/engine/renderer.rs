@@ -10,6 +10,8 @@
 use super::backend::*;
 use super::draw_programs::*;
 use super::geometry::{Light, LightType};
+use super::scene_data::{self, LightData, NodeTransform, SceneData};
+use super::scene_info::NodeInfo;
 use super::scenegraph::Scenegraph;
 use super::settings::Settings;
 use super::skybox::Skybox;
@@ -35,6 +37,8 @@ pub struct Renderer<B: GpuBackend> {
     skybox: Option<Skybox<B>>,
     ssao_program: Option<SsaoPass<B>>,
     output_program: Option<OutputPass<B>>,
+    /// Path to the currently loaded glTF scene file.
+    scene_file: Option<String>,
     input_handler: Option<Rc<RefCell<dyn InputHandler>>>,
     camera: Option<Rc<RefCell<dyn Camera>>>,
     backend: B,
@@ -63,6 +67,7 @@ impl<B: GpuBackend> Renderer<B> {
             skybox: None,
             ssao_program: None,
             output_program: None,
+            scene_file: None,
             input_handler: None,
             camera: None,
             backend,
@@ -80,6 +85,108 @@ impl<B: GpuBackend> Renderer<B> {
 
     pub fn settings(&self) -> &Settings {
         &self.settings
+    }
+
+    // ---- Scene data accessors for editor ----
+
+    /// Extract a lightweight snapshot of the entire scenegraph tree.
+    ///
+    /// Returns `None` if no scene is loaded (no root node).
+    pub fn scene_tree(&self) -> Option<NodeInfo> {
+        self.scene.root().as_ref().map(|root| NodeInfo::from_node(root))
+    }
+
+    /// Get a reference to the scene's lights.
+    pub fn lights(&self) -> &Vec<Light> {
+        self.scene.get_lights()
+    }
+
+    /// Update a light at the given index.
+    pub fn update_light(&mut self, index: usize, light: Light) {
+        let _ = self.scene.update_light(light, index);
+    }
+
+    /// Add a new light to the scene. Returns its index.
+    pub fn add_light(&mut self, light: Light) -> usize {
+        self.scene.add_light(light);
+        self.scene.get_lights().len() - 1
+    }
+
+    /// Remove a light by index.
+    pub fn remove_light(&mut self, index: usize) {
+        let _ = self.scene.remove_light(index);
+    }
+
+    /// Set the local transform of a node identified by name, then rebuild
+    /// the world matrices for the entire scene.
+    pub fn set_node_transform(&mut self, name: &str, transform: glm::Mat4) {
+        if let Ok(node) = self.scene.get_node_named(name) {
+            node.borrow_mut().set_local_transform(transform);
+            self.scene.build_matrices(&self.backend);
+        }
+    }
+
+    /// Returns the currently loaded scene file path (if any).
+    pub fn scene_file(&self) -> Option<&str> {
+        self.scene_file.as_deref()
+    }
+
+    /// Extract the current scene state as a serializable `SceneData`.
+    ///
+    /// Captures all node transforms and lights. Returns `None` if no scene
+    /// is loaded.
+    pub fn extract_scene_data(&self) -> Option<SceneData> {
+        let scene_file = self.scene_file.as_ref()?.clone();
+
+        // Collect node transforms by traversing the scenegraph
+        let mut node_transforms = Vec::new();
+        if let Some(root) = self.scene.root() {
+            let nodes = root.borrow().traverse();
+            for node_rc in &nodes {
+                let node = node_rc.borrow();
+                if let Some(ref name) = node.name {
+                    node_transforms.push(NodeTransform {
+                        name: name.clone(),
+                        transform: scene_data::mat4_to_array(&node.local_transform()),
+                    });
+                }
+            }
+        }
+
+        // Collect lights
+        let lights: Vec<LightData> = self.scene.get_lights()
+            .iter()
+            .map(LightData::from)
+            .collect();
+
+        Some(SceneData {
+            scene_file,
+            node_transforms,
+            lights,
+        })
+    }
+
+    /// Apply a loaded `SceneData` overlay to the current scene.
+    ///
+    /// Sets node transforms by name and replaces all lights.
+    /// The base glTF scene must already be loaded.
+    pub fn apply_scene_data(&mut self, data: &SceneData) {
+        // Apply node transform overrides
+        for nt in &data.node_transforms {
+            let mat = scene_data::array_to_mat4(&nt.transform);
+            if let Ok(node) = self.scene.get_node_named(&nt.name) {
+                node.borrow_mut().set_local_transform(mat);
+            }
+        }
+
+        // Replace lights
+        self.scene.clear_lights();
+        for ld in &data.lights {
+            self.scene.add_light(ld.to_light());
+        }
+
+        // Rebuild world matrices
+        self.scene.build_matrices(&self.backend);
     }
 
     pub fn set_input_handler(&mut self, handler: Rc<RefCell<dyn InputHandler>>) {
@@ -108,10 +215,31 @@ impl<B: GpuBackend> Renderer<B> {
         self.camera = Some(cam);
     }
 
-    /// Resize the backend and (future) render targets.
+    /// Resize the backend and all resolution-dependent render targets.
     pub fn resize(&mut self, width: u32, height: u32) {
         self.backend.resize(width, height);
-        // TODO: recreate draw program render targets at new resolution
+
+        let resolution = (width, height);
+        if let Some(ref mut dp) = self.deferred_program_pre {
+            if let Err(e) = dp.resize(&self.backend, resolution) {
+                eprintln!("Failed to resize deferred pre targets: {}", e);
+            }
+        }
+        if let Some(ref mut ssao) = self.ssao_program {
+            if let Err(e) = ssao.resize(&self.backend, resolution) {
+                eprintln!("Failed to resize SSAO targets: {}", e);
+            }
+        }
+        if let Some(ref mut dl) = self.deferred_program_light {
+            if let Err(e) = dl.resize(&self.backend, resolution) {
+                eprintln!("Failed to resize deferred light target: {}", e);
+            }
+        }
+        if let Some(ref mut fwd) = self.forward_program {
+            if let Err(e) = fwd.resize(&self.backend, resolution) {
+                eprintln!("Failed to resize forward target: {}", e);
+            }
+        }
     }
 
     /// Initialize all draw programs from compiled WGSL shaders.
@@ -199,6 +327,7 @@ impl<B: GpuBackend> Renderer<B> {
         let node = import::load_gltf(scene_file, &self.backend)?;
         println!("Processing scene...");
         self.scene.set_root(node);
+        self.scene_file = Some(scene_file.to_string());
 
         // Ambient light — color controls fill intensity in shadowed areas
         self.scene.add_light(Light {

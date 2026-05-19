@@ -2,7 +2,7 @@
 name = "sparkle"
 version = "0.1.0"
 authors = ["Elena Gantner <elena.gantner@linesofcode.at>"]
-edition = "2018"
+edition = "2024"
 build = "build.rs"
 
 [dependencies]
@@ -18,6 +18,8 @@ bytemuck = { version = "1", features = ["derive"] }
 egui = "0.31"
 egui-wgpu = "0.31"
 egui-winit = "0.31"
+serde = { version = "1", features = ["derive"] }
+ron = "0.8"
 
 # From doc.rust-lang.org:
 # The development profile, used for `cargo build`.

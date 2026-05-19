@@ -88,10 +88,7 @@ impl Window {
         }
     }
 
-    pub fn set_input_handler(
-        &mut self,
-        handler: Rc<RefCell<dyn InputHandler>>,
-    ) {
+    pub fn set_input_handler(&mut self, handler: Rc<RefCell<dyn InputHandler>>) {
         self.input_handler = Some(handler);
     }
 
@@ -110,10 +107,7 @@ impl Window {
     ///
     /// Called whenever the cursor moves, with (dx, dy). Used by the editor
     /// to drive the orbit camera.
-    pub fn set_mouse_delta_callback(
-        &mut self,
-        callback: impl FnMut(f32, f32) + 'static,
-    ) {
+    pub fn set_mouse_delta_callback(&mut self, callback: impl FnMut(f32, f32) + 'static) {
         self.mouse_delta_callback = Some(Box::new(callback));
     }
 
@@ -153,8 +147,7 @@ impl Window {
         }
 
         // Forward to event filter first (editor / egui).
-        let consumed = if let (Some(ref mut filter), Some(ref w)) =
-            (&mut self.event_filter, &self.winit_window)
+        let consumed = if let (Some(filter), Some(w)) = (&mut self.event_filter, &self.winit_window)
         {
             filter(w, &event)
         } else {
@@ -179,9 +172,7 @@ impl Window {
                 // when the event was NOT consumed by the editor).
                 if !consumed {
                     if let Some(ref handler) = self.input_handler {
-                        handler
-                            .borrow_mut()
-                            .handle_mouse_move(dx as i32, dy as i32);
+                        handler.borrow_mut().handle_mouse_move(dx as i32, dy as i32);
                     }
                 }
             }
@@ -190,9 +181,7 @@ impl Window {
                     let size = w.inner_size();
                     let cx = size.width as f64 / 2.0;
                     let cy = size.height as f64 / 2.0;
-                    let _ = w.set_cursor_position(
-                        winit::dpi::PhysicalPosition::new(cx, cy),
-                    );
+                    let _ = w.set_cursor_position(winit::dpi::PhysicalPosition::new(cx, cy));
                     self.last_pos = Some((cx, cy));
                 }
             } else {

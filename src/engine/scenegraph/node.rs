@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::engine::backend::{Drawable, GpuBackend, ObjType};
+use crate::engine::geometry::AABB;
 use super::{ErrorCause, SceneGraphError};
 
 pub struct Node<B: GpuBackend> {
@@ -165,7 +166,52 @@ impl<B: GpuBackend> Node<B> {
         self.model = glm::scale(&self.model, &glm::vec3(s, s, s));
     }
 
+    /// Returns the local transform matrix (model_orig).
+    pub fn local_transform(&self) -> glm::Mat4 {
+        self.model_orig
+    }
+
+    /// Returns the computed world-space transform matrix.
+    pub fn world_transform(&self) -> glm::Mat4 {
+        self.model
+    }
+
+    /// Set the local transform matrix (model_orig).
+    ///
+    /// Call `build_model()` afterwards to propagate to children.
+    pub fn set_local_transform(&mut self, mat: glm::Mat4) {
+        self.model_orig = mat;
+    }
+
+    /// Returns a list of direct children as `Rc<RefCell<Node<B>>>`.
+    ///
+    /// Order is not guaranteed (HashMap iteration order).
+    pub fn children_list(&self) -> Vec<Rc<RefCell<Node<B>>>> {
+        self.children.values().cloned().collect()
+    }
+
+    /// Returns the number of drawables on this node.
+    pub fn num_drawables(&self) -> usize {
+        self.drawables.len()
+    }
+
     pub fn get_bounding_volume(&self) {}
+
+    /// Compute the local-space AABB for this node by merging all drawable AABBs.
+    ///
+    /// Returns `AABB::empty()` if the node has no drawables.
+    pub fn local_aabb(&self) -> AABB {
+        let mut aabb = AABB::empty();
+        for drawable in &self.drawables {
+            aabb.merge(drawable.borrow().aabb());
+        }
+        aabb
+    }
+
+    /// Compute the world-space AABB by transforming the local AABB.
+    pub fn world_aabb(&self) -> AABB {
+        self.local_aabb().transformed(&self.model)
+    }
 
     pub fn build_model(&mut self, backend: &B, model: &glm::Mat4) {
         self.model = model * self.model_orig;
