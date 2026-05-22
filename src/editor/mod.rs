@@ -80,6 +80,13 @@ pub struct Editor {
     gizmo_was_dragging: bool,
     /// The node's local transform mat4 when gizmo drag started (for undo).
     gizmo_drag_old_transform: Option<glm::Mat4>,
+
+    /// Panel visibility flags (toggled via View menu or keyboard shortcuts).
+    show_hierarchy: bool,
+    show_inspector: bool,
+    show_lights: bool,
+    /// Last frame's elapsed time in milliseconds (for the FPS overlay).
+    frame_time_ms: f32,
 }
 
 impl Editor {
@@ -141,6 +148,10 @@ impl Editor {
             undo_stack: undo::UndoStack::new(),
             gizmo_was_dragging: false,
             gizmo_drag_old_transform: None,
+            show_hierarchy: false,
+            show_inspector: false,
+            show_lights: false,
+            frame_time_ms: 0.0,
         }
     }
 
@@ -275,6 +286,7 @@ impl Editor {
         self.frame_count += 1;
         let elapsed = self.frame_start.elapsed().as_secs_f32();
         self.fps_update_timer += elapsed;
+        self.frame_time_ms = elapsed * 1000.0;
         if self.fps_update_timer >= 0.5 {
             self.fps = self.frame_count as f32 / self.fps_update_timer;
             self.frame_count = 0;
@@ -285,6 +297,7 @@ impl Editor {
         // Collect state needed inside the egui closure (avoid borrowing self)
         let mode = self.mode;
         let fps = self.fps;
+        let frame_time_ms = self.frame_time_ms;
         let mut pending_scene_load = None;
         let mut pending_quit = false;
         let mut toggle_mode = false;
@@ -298,6 +311,11 @@ impl Editor {
         let scene_snapshot = &self.scene_snapshot;
         let scene_lights = &self.scene_lights;
 
+        // Panel visibility flags (captured as mutable for the closure).
+        let mut show_hierarchy = self.show_hierarchy;
+        let mut show_inspector = self.show_inspector;
+        let mut show_lights = self.show_lights;
+
         // Undo state for the Edit menu (captured before the frame)
         let can_undo = self.undo_stack.can_undo();
         let can_redo = self.undo_stack.can_redo();
@@ -309,6 +327,28 @@ impl Editor {
         let mut light_edits: Vec<(usize, Light)> = Vec::new();
         let mut light_adds: Vec<Light> = Vec::new();
         let mut light_removes: Vec<usize> = Vec::new();
+
+        // Extract gizmo state for use inside the egui closure.  This avoids a
+        // borrow conflict: self.egui_ctx.run() borrows the context while the
+        // gizmo needs &mut gizmo_state (another field of self).  We swap it
+        // out, use it in the closure, and restore it afterward.
+        let mut gizmo_state = std::mem::replace(
+            &mut self.gizmo_state,
+            gizmo::GizmoState::new(),
+        );
+
+        // Pre-capture camera matrices and editor flags for gizmo + picking.
+        let cam = self.orbit_camera.borrow();
+        let cam_view = cam.view_mat();
+        let cam_proj = cam.projection_mat();
+        drop(cam);
+        let egui_wants_keyboard = self.egui_wants_keyboard;
+        let egui_wants_pointer = self.egui_wants_pointer;
+
+        // Gizmo + picking results, written inside the closure.
+        let mut gizmo_consumed = false;
+        let mut gizmo_transform_edit: Option<(String, glm::Mat4)> = None;
+        let mut orientation_snap: Option<(f32, f32)> = None;
 
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
             // Check for keyboard shortcuts
@@ -328,7 +368,8 @@ impl Editor {
             });
 
             if mode == EditorMode::Editor {
-                ui::draw_menu_bar(
+                // Hamburger menu (top-left)
+                ui::draw_hamburger_menu(
                     ctx,
                     &mut pending_scene_load,
                     &mut pending_quit,
@@ -341,83 +382,144 @@ impl Editor {
                     can_redo,
                     &undo_desc,
                     &redo_desc,
+                    &mut show_hierarchy,
+                    &mut show_inspector,
+                    &mut show_lights,
                 );
 
-                // Left panel: scene hierarchy
-                ui::draw_hierarchy_panel(ctx, scene_snapshot, &mut selected_node);
-
-                // Right panel: inspector + light editor
-                ui::draw_inspector_panel(ctx, scene_snapshot, &selected_node, &mut transform_edits);
-                ui::draw_light_editor(
+                // Floating panels (only when visible)
+                ui::draw_hierarchy_window(ctx, &mut show_hierarchy, scene_snapshot, &mut selected_node);
+                ui::draw_inspector_window(ctx, &mut show_inspector, scene_snapshot, &selected_node, &mut transform_edits);
+                ui::draw_light_window(
                     ctx,
+                    &mut show_lights,
                     scene_lights,
                     &mut light_edits,
                     &mut light_adds,
                     &mut light_removes,
                 );
+
+                // Camera orientation gizmo (top-right)
+                let orient_result = gizmo::draw_orientation_gizmo(ctx, &cam_view);
+                if orient_result.snap_to.is_some() {
+                    orientation_snap = orient_result.snap_to;
+                }
             }
-            ui::draw_viewport_overlay(ctx, fps, mode);
+            // FPS + frame time overlay (bottom-left, always visible)
+            ui::draw_viewport_overlay(ctx, fps, frame_time_ms);
+
+            // --- Gizmo mode keys (T/R/S) ---
+            // Must be inside run() so ctx.input() reads valid frame input.
+            if mode == EditorMode::Editor && !egui_wants_keyboard {
+                let (key_t, key_r, key_g) = ctx.input(|i| {
+                    (
+                        i.key_pressed(egui::Key::T),
+                        i.key_pressed(egui::Key::R),
+                        i.key_pressed(egui::Key::G),
+                    )
+                });
+                if key_t {
+                    gizmo_state.mode = gizmo::GizmoMode::Translate;
+                }
+                if key_r {
+                    gizmo_state.mode = gizmo::GizmoMode::Rotate;
+                }
+                if key_g {
+                    gizmo_state.mode = gizmo::GizmoMode::Scale;
+                }
+
+                // Panel toggle keys (H / I / J)
+                let (key_h, key_i, key_j) = ctx.input(|i| {
+                    (
+                        i.key_pressed(egui::Key::H),
+                        i.key_pressed(egui::Key::I),
+                        i.key_pressed(egui::Key::J),
+                    )
+                });
+                if key_h {
+                    show_hierarchy = !show_hierarchy;
+                }
+                if key_i {
+                    show_inspector = !show_inspector;
+                }
+                if key_j {
+                    show_lights = !show_lights;
+                }
+            }
+
+            // --- Gizmo interaction + rendering ---
+            if mode == EditorMode::Editor {
+                if let Some(ref sel_name) = selected_node.clone() {
+                    if let Some(snapshot) = scene_snapshot {
+                        if let Some(node) = ui::find_node_pub(snapshot, sel_name) {
+                            let screen_rect = ctx.screen_rect();
+                            let gizmo_result = gizmo::draw_and_interact(
+                                ctx,
+                                &mut gizmo_state,
+                                node,
+                                &cam_view,
+                                &cam_proj,
+                                screen_rect.width(),
+                                screen_rect.height(),
+                            );
+
+                            gizmo_consumed = gizmo_result.consumed_pointer;
+                            if let Some(new_mat) = gizmo_result.transform_edit {
+                                gizmo_transform_edit = Some((sel_name.clone(), new_mat));
+                            }
+                        }
+                    }
+                }
+            }
+
+            // --- Viewport picking ---
+            if mode == EditorMode::Editor && !gizmo_consumed {
+                let clicked_primary = ctx
+                    .input(|i| i.pointer.button_clicked(egui::PointerButton::Primary));
+                if clicked_primary && !egui_wants_pointer {
+                    if let Some(pos) = ctx.input(|i| i.pointer.interact_pos()) {
+                        let screen_rect = ctx.screen_rect();
+                        let ray = picking::screen_to_ray(
+                            pos.x,
+                            pos.y,
+                            screen_rect.width(),
+                            screen_rect.height(),
+                            &cam_view,
+                            &cam_proj,
+                        );
+
+                        if let Some(snapshot) = scene_snapshot {
+                            if let Some(hit) = picking::pick_node(&ray, snapshot) {
+                                selected_node = Some(hit.node_name);
+                            } else {
+                                // Clicked empty space — deselect
+                                selected_node = None;
+                            }
+                        }
+                    }
+                }
+            }
         });
 
         self.pending_egui_output = Some(full_output);
         self.pending_scene_load = pending_scene_load;
         self.pending_quit = pending_quit;
         self.selected_node = selected_node;
+        self.show_hierarchy = show_hierarchy;
+        self.show_inspector = show_inspector;
+        self.show_lights = show_lights;
         if toggle_mode {
             self.toggle_mode();
         }
 
-        // Handle gizmo mode keys (T/R/S) — only when egui doesn't want keyboard
-        if self.mode == EditorMode::Editor && !self.egui_wants_keyboard {
-            let (key_t, key_r, key_g) = self.egui_ctx.input(|i| {
-                (
-                    i.key_pressed(egui::Key::T),
-                    i.key_pressed(egui::Key::R),
-                    i.key_pressed(egui::Key::G),
-                )
-            });
-            if key_t {
-                self.gizmo_state.mode = gizmo::GizmoMode::Translate;
-            }
-            if key_r {
-                self.gizmo_state.mode = gizmo::GizmoMode::Rotate;
-            }
-            if key_g {
-                self.gizmo_state.mode = gizmo::GizmoMode::Scale;
-            }
+        // Apply orientation gizmo camera snap
+        if let Some((az, el)) = orientation_snap {
+            self.orbit_camera.borrow_mut().set_orientation(az, el);
         }
 
-        // Gizmo interaction + rendering (if a node is selected)
-        let mut gizmo_consumed = false;
-        let mut gizmo_transform_edit: Option<(String, glm::Mat4)> = None;
-        if self.mode == EditorMode::Editor {
-            if let Some(ref sel_name) = self.selected_node.clone() {
-                if let Some(ref snapshot) = self.scene_snapshot {
-                    if let Some(node) = ui::find_node_pub(snapshot, sel_name) {
-                        let (vw, vh) = renderer.backend().resolution();
-                        let cam = self.orbit_camera.borrow();
-                        let view = cam.view_mat();
-                        let proj = cam.projection_mat();
-                        drop(cam);
-
-                        let gizmo_result = gizmo::draw_and_interact(
-                            &self.egui_ctx,
-                            &mut self.gizmo_state,
-                            node,
-                            &view,
-                            &proj,
-                            vw as f32,
-                            vh as f32,
-                        );
-
-                        gizmo_consumed = gizmo_result.consumed_pointer;
-                        if let Some(new_mat) = gizmo_result.transform_edit {
-                            gizmo_transform_edit = Some((sel_name.clone(), new_mat));
-                        }
-                    }
-                }
-            }
-        }
+        // Restore gizmo state (was extracted before run() to avoid borrow
+        // conflict with self.egui_ctx).
+        self.gizmo_state = gizmo_state;
 
         // Track gizmo drag start/end for undo recording.
         // Gizmo edits are applied every frame during drag, but recorded as a
@@ -449,34 +551,6 @@ impl Editor {
             }
         }
         self.gizmo_was_dragging = gizmo_is_dragging;
-
-        // Viewport picking: left-click in the 3D viewport selects a node
-        // (only if gizmo didn't consume the click)
-        if self.mode == EditorMode::Editor && !gizmo_consumed {
-            let clicked_primary = self
-                .egui_ctx
-                .input(|i| i.pointer.button_clicked(egui::PointerButton::Primary));
-            if clicked_primary && !self.egui_wants_pointer {
-                if let Some(pos) = self.egui_ctx.input(|i| i.pointer.interact_pos()) {
-                    let (vw, vh) = renderer.backend().resolution();
-                    let cam = self.orbit_camera.borrow();
-                    let view = cam.view_mat();
-                    let proj = cam.projection_mat();
-                    let ray =
-                        picking::screen_to_ray(pos.x, pos.y, vw as f32, vh as f32, &view, &proj);
-                    drop(cam);
-
-                    if let Some(ref snapshot) = self.scene_snapshot {
-                        if let Some(hit) = picking::pick_node(&ray, snapshot) {
-                            self.selected_node = Some(hit.node_name);
-                        } else {
-                            // Clicked empty space — deselect
-                            self.selected_node = None;
-                        }
-                    }
-                }
-            }
-        }
 
         // Apply inspector transform edits (with undo recording via merge)
         for (name, new_mat) in &transform_edits {

@@ -1,28 +1,21 @@
 //! Editor UI panels drawn with egui.
 //!
-//! This module contains the actual panel/menu layout code, kept separate
-//! from the Editor struct's lifecycle management in `mod.rs`.
-//!
-//! Layout:
-//! - Top: menu bar (File, View)
-//! - Left panel: scene hierarchy tree
-//! - Right panel: node inspector (P/R/S) + light editor (below)
-//! - Center: 3D viewport (passthrough, no egui content)
-//! - Overlay: FPS counter + mode indicator
+//! Viewport-dominant design: the 3D viewport fills the entire window.
+//! UI elements are minimal overlays:
+//! - Top-left: hamburger menu button (File / Edit / View)
+//! - Bottom-left: FPS counter + frame time
+//! - Floating windows: Hierarchy, Inspector, Lights (togglable via View menu
+//!   or keyboard shortcuts H / I / L)
 
-use super::EditorMode;
 use super::transform::DecomposedTransform;
 use crate::engine::geometry::{Light, LightType};
 use crate::engine::scene_info::NodeInfo;
 
-/// Draw the top menu bar (File, Edit, View).
+/// Draw a compact hamburger menu button in the top-left corner.
 ///
-/// Outputs are communicated via the mutable references:
-/// - `pending_scene_load`: set to Some(path) if the user clicks "Open Scene"
-/// - `pending_quit`: set to true if the user clicks Quit
-/// - `toggle_mode`: set to true if the user clicks the mode toggle
-/// - `pending_undo`/`pending_redo`: set to true if the user clicks Undo/Redo
-pub fn draw_menu_bar(
+/// Clicking the button opens a popup containing File, Edit, and View
+/// sections.  Panel visibility is controlled via the View section.
+pub fn draw_hamburger_menu(
     ctx: &egui::Context,
     pending_scene_load: &mut Option<String>,
     pending_quit: &mut bool,
@@ -35,105 +28,153 @@ pub fn draw_menu_bar(
     can_redo: bool,
     undo_desc: &Option<String>,
     redo_desc: &Option<String>,
+    show_hierarchy: &mut bool,
+    show_inspector: &mut bool,
+    show_lights: &mut bool,
 ) {
-    egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
-        egui::menu::bar(ui, |ui| {
-            ui.menu_button("File", |ui| {
-                if ui.button("Open glTF Scene...").clicked() {
-                    *pending_scene_load = Some("assets/glTF/Sponza.gltf".to_string());
-                    ui.close_menu();
-                }
-                ui.separator();
-                if ui.button("Save Scene (Ctrl+S)").clicked() {
-                    *pending_save = true;
-                    ui.close_menu();
-                }
-                if ui.button("Load Scene (Ctrl+L)").clicked() {
-                    *pending_load = true;
-                    ui.close_menu();
-                }
-                ui.separator();
-                if ui.button("Quit").clicked() {
-                    *pending_quit = true;
-                    ui.close_menu();
-                }
-            });
+    egui::Area::new(egui::Id::new("hamburger_area"))
+        .fixed_pos(egui::pos2(8.0, 8.0))
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(egui::Color32::from_black_alpha(180))
+                .corner_radius(4.0)
+                .inner_margin(egui::Margin::same(2))
+                .show(ui, |ui| {
+                    ui.menu_button(
+                        egui::RichText::new("\u{2261}")
+                            .size(20.0)
+                            .color(egui::Color32::WHITE),
+                        |ui| {
+                            // --- File ---
+                            ui.label(egui::RichText::new("File").strong());
+                            if ui.button("  Open glTF Scene...").clicked() {
+                                *pending_scene_load =
+                                    Some("assets/glTF/Sponza.gltf".to_string());
+                                ui.close_menu();
+                            }
+                            if ui.button("  Save Scene  (Ctrl+S)").clicked() {
+                                *pending_save = true;
+                                ui.close_menu();
+                            }
+                            if ui.button("  Load Scene  (Ctrl+L)").clicked() {
+                                *pending_load = true;
+                                ui.close_menu();
+                            }
+                            ui.separator();
 
-            ui.menu_button("Edit", |ui| {
-                let undo_label = match undo_desc {
-                    Some(d) => format!("Undo: {} (Ctrl+Z)", d),
-                    None => "Undo (Ctrl+Z)".to_string(),
-                };
-                if ui
-                    .add_enabled(can_undo, egui::Button::new(undo_label))
-                    .clicked()
-                {
-                    *pending_undo = true;
-                    ui.close_menu();
-                }
+                            // --- Edit ---
+                            ui.label(egui::RichText::new("Edit").strong());
+                            let undo_label = match undo_desc {
+                                Some(d) => format!("  Undo: {}  (Ctrl+Z)", d),
+                                None => "  Undo  (Ctrl+Z)".to_string(),
+                            };
+                            if ui
+                                .add_enabled(can_undo, egui::Button::new(undo_label))
+                                .clicked()
+                            {
+                                *pending_undo = true;
+                                ui.close_menu();
+                            }
+                            let redo_label = match redo_desc {
+                                Some(d) => format!("  Redo: {}  (Ctrl+Shift+Z)", d),
+                                None => "  Redo  (Ctrl+Shift+Z)".to_string(),
+                            };
+                            if ui
+                                .add_enabled(can_redo, egui::Button::new(redo_label))
+                                .clicked()
+                            {
+                                *pending_redo = true;
+                                ui.close_menu();
+                            }
+                            ui.separator();
 
-                let redo_label = match redo_desc {
-                    Some(d) => format!("Redo: {} (Ctrl+Shift+Z)", d),
-                    None => "Redo (Ctrl+Shift+Z)".to_string(),
-                };
-                if ui
-                    .add_enabled(can_redo, egui::Button::new(redo_label))
-                    .clicked()
-                {
-                    *pending_redo = true;
-                    ui.close_menu();
-                }
-            });
+                            // --- View ---
+                            ui.label(egui::RichText::new("View").strong());
+                            ui.checkbox(show_hierarchy, "  Hierarchy  (H)");
+                            ui.checkbox(show_inspector, "  Inspector  (I)");
+                            ui.checkbox(show_lights, "  Lights  (J)");
+                            ui.separator();
 
-            ui.menu_button("View", |ui| {
-                if ui.button("Toggle Play Mode (F1)").clicked() {
-                    *toggle_mode = true;
-                    ui.close_menu();
-                }
-            });
+                            if ui.button("  Toggle Play Mode  (F1)").clicked() {
+                                *toggle_mode = true;
+                                ui.close_menu();
+                            }
+                            if ui
+                                .button(
+                                    egui::RichText::new("  Quit")
+                                        .color(egui::Color32::LIGHT_RED),
+                                )
+                                .clicked()
+                            {
+                                *pending_quit = true;
+                                ui.close_menu();
+                            }
+                            ui.separator();
+
+                            // --- Shortcuts ---
+                            ui.label(egui::RichText::new("Shortcuts").strong());
+                            let grey = egui::Color32::from_white_alpha(140);
+                            for line in [
+                                "T / R / G      Translate / Rotate / Scale",
+                                "H / I / J       Hierarchy / Inspector / Lights",
+                                "F1                Toggle Play Mode",
+                                "RMB drag    Orbit camera",
+                                "MMB drag    Pan camera",
+                                "Scroll            Zoom",
+                            ] {
+                                ui.label(egui::RichText::new(line).size(11.0).color(grey));
+                            }
+                        },
+                    );
+                });
         });
-    });
 }
 
-/// Draw the viewport overlay (FPS counter, mode indicator).
-pub fn draw_viewport_overlay(ctx: &egui::Context, fps: f32, mode: EditorMode) {
-    let mode_label = match mode {
-        EditorMode::Editor => "EDITOR",
-        EditorMode::Play => "PLAY",
-    };
+/// Draw the viewport overlay: FPS counter and frame time at the bottom-left.
+pub fn draw_viewport_overlay(ctx: &egui::Context, fps: f32, frame_time_ms: f32) {
+    let screen = ctx.screen_rect();
 
     egui::Area::new(egui::Id::new("viewport_overlay"))
-        .fixed_pos(egui::pos2(10.0, 40.0))
+        .fixed_pos(egui::pos2(10.0, screen.max.y - 32.0))
+        .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             egui::Frame::new()
                 .fill(egui::Color32::from_black_alpha(160))
                 .corner_radius(4.0)
                 .inner_margin(egui::Margin::same(6))
                 .show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new(format!("{:.0} FPS | {} (F1)", fps, mode_label))
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{:.0} FPS  {:.2} ms",
+                                fps, frame_time_ms
+                            ))
                             .color(egui::Color32::WHITE)
                             .size(13.0),
-                    );
+                        );
+                    });
                 });
         });
 }
 
-/// Left panel: Scene hierarchy
+/// Scene hierarchy as a floating window.
 ///
-/// Shows a recursive tree of all nodes. Clicking a node selects it.
-pub fn draw_hierarchy_panel(
+/// The `open` flag is toggled by the X button on the window title bar
+/// and by keyboard shortcut / View menu.
+pub fn draw_hierarchy_window(
     ctx: &egui::Context,
+    open: &mut bool,
     scene_snapshot: &Option<NodeInfo>,
     selected_node: &mut Option<String>,
 ) {
-    egui::SidePanel::left("hierarchy_panel")
+    egui::Window::new("Hierarchy")
+        .open(open)
+        .default_pos(egui::pos2(10.0, 50.0))
         .default_width(220.0)
+        .default_height(400.0)
         .resizable(true)
         .show(ctx, |ui| {
-            ui.heading("Scene Hierarchy");
-            ui.separator();
-
             if let Some(root) = scene_snapshot {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     draw_node_tree(ui, root, selected_node, 0);
@@ -161,7 +202,6 @@ fn draw_node_tree(
     };
 
     if has_children {
-        // Use CollapsingHeader for nodes with children
         let id = egui::Id::new(format!("node_{}_{}", node.name, depth));
         let header =
             egui::CollapsingHeader::new(egui::RichText::new(&label_text).color(if is_selected {
@@ -178,12 +218,10 @@ fn draw_node_tree(
             }
         });
 
-        // Click on header to select
         if response.header_response.clicked() {
             *selected_node = Some(node.name.clone());
         }
     } else {
-        // Leaf node — simple selectable label
         let response = ui.selectable_label(is_selected, &label_text);
         if response.clicked() {
             *selected_node = Some(node.name.clone());
@@ -191,23 +229,23 @@ fn draw_node_tree(
     }
 }
 
-/// Right panel: Inspector (top) + Light Editor (bottom)
+/// Node inspector as a floating window.
 ///
 /// Shows the selected node's transform decomposed into Position, Rotation
-/// (Euler degrees), and Scale, with editable DragValue fields.
-pub fn draw_inspector_panel(
+/// (Euler degrees), and Scale with editable drag-value fields.
+pub fn draw_inspector_window(
     ctx: &egui::Context,
+    open: &mut bool,
     scene_snapshot: &Option<NodeInfo>,
     selected_node: &Option<String>,
     transform_edits: &mut Vec<(String, glm::Mat4)>,
 ) {
-    egui::SidePanel::right("inspector_panel")
+    egui::Window::new("Inspector")
+        .open(open)
+        .default_pos(egui::pos2(240.0, 50.0))
         .default_width(280.0)
         .resizable(true)
         .show(ctx, |ui| {
-            ui.heading("Inspector");
-            ui.separator();
-
             if let Some(sel_name) = selected_node {
                 if let Some(root) = scene_snapshot {
                     if let Some(node) = find_node(root, sel_name) {
@@ -218,13 +256,16 @@ pub fn draw_inspector_panel(
                         ));
                         ui.separator();
 
-                        // Decompose local transform for editing
-                        let mut decomposed = DecomposedTransform::from_mat4(&node.local_transform);
+                        let mut decomposed =
+                            DecomposedTransform::from_mat4(&node.local_transform);
 
                         let mut changed = false;
-                        changed |= draw_vec3_editor(ui, "Position", &mut decomposed.position, 0.01);
-                        changed |= draw_vec3_editor(ui, "Rotation", &mut decomposed.rotation, 0.5);
-                        changed |= draw_vec3_editor(ui, "Scale", &mut decomposed.scale, 0.01);
+                        changed |=
+                            draw_vec3_editor(ui, "Position", &mut decomposed.position, 0.01);
+                        changed |=
+                            draw_vec3_editor(ui, "Rotation", &mut decomposed.rotation, 0.5);
+                        changed |=
+                            draw_vec3_editor(ui, "Scale", &mut decomposed.scale, 0.01);
 
                         if changed {
                             let new_mat = decomposed.to_mat4();
@@ -238,7 +279,7 @@ pub fn draw_inspector_panel(
                 }
             } else {
                 ui.label("No node selected.");
-                ui.label("Click a node in the hierarchy.");
+                ui.label("Click a node in the viewport or hierarchy.");
             }
         });
 }
@@ -289,41 +330,26 @@ fn draw_vec3_editor(ui: &mut egui::Ui, label: &str, values: &mut [f32; 3], speed
     changed
 }
 
-/// Recursively find a node by name in the snapshot tree (public version).
-pub fn find_node_pub<'a>(node: &'a NodeInfo, name: &str) -> Option<&'a NodeInfo> {
-    find_node(node, name)
-}
-
-/// Recursively find a node by name in the snapshot tree.
-fn find_node<'a>(node: &'a NodeInfo, name: &str) -> Option<&'a NodeInfo> {
-    if node.name == name {
-        return Some(node);
-    }
-    for child in &node.children {
-        if let Some(found) = find_node(child, name) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-/// Light Editor (bottom of right panel — drawn as a separate bottom panel)
+/// Light editor as a floating window.
 ///
 /// Lists all lights with editable type, color, direction/position, and radius.
 /// Supports adding and removing lights.
-pub fn draw_light_editor(
+pub fn draw_light_window(
     ctx: &egui::Context,
+    open: &mut bool,
     lights: &[Light],
     light_edits: &mut Vec<(usize, Light)>,
     light_adds: &mut Vec<Light>,
     light_removes: &mut Vec<usize>,
 ) {
-    egui::TopBottomPanel::bottom("light_editor")
+    egui::Window::new("Lights")
+        .open(open)
+        .default_pos(egui::pos2(10.0, 460.0))
+        .default_width(320.0)
         .default_height(180.0)
         .resizable(true)
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.heading("Lights");
                 if ui.button("+ Add Light").clicked() {
                     light_adds.push(Light {
                         position: glm::vec3(0.0, -1.0, 0.0),
@@ -384,7 +410,6 @@ pub fn draw_light_editor(
                                     edited_light.color.y,
                                     edited_light.color.z,
                                 ];
-                                // Use DragValues for HDR color (values can exceed 1.0)
                                 for (i, label) in ["R", "G", "B"].iter().enumerate() {
                                     ui.label(*label);
                                     if ui
@@ -472,4 +497,22 @@ pub fn draw_light_editor(
                 }
             });
         });
+}
+
+/// Recursively find a node by name in the snapshot tree (public version).
+pub fn find_node_pub<'a>(node: &'a NodeInfo, name: &str) -> Option<&'a NodeInfo> {
+    find_node(node, name)
+}
+
+/// Recursively find a node by name in the snapshot tree.
+fn find_node<'a>(node: &'a NodeInfo, name: &str) -> Option<&'a NodeInfo> {
+    if node.name == name {
+        return Some(node);
+    }
+    for child in &node.children {
+        if let Some(found) = find_node(child, name) {
+            return Some(found);
+        }
+    }
+    None
 }

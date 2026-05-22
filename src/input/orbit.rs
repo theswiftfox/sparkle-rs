@@ -67,6 +67,14 @@ impl OrbitCamera {
         self.focus = self.focus - right * dx * scale + up * dy * scale;
     }
 
+    /// Snap the camera to a specific orientation.
+    ///
+    /// Used by the orientation gizmo for axis-click view alignment.
+    pub fn set_orientation(&mut self, azimuth: f32, elevation: f32) {
+        self.azimuth = azimuth;
+        self.elevation = elevation.clamp(-89.9, 89.9);
+    }
+
     /// Zoom in/out by adjusting the distance from focus.
     /// `delta` is the scroll amount (positive = zoom in).
     pub fn zoom(&mut self, delta: f32) {

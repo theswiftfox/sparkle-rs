@@ -333,3 +333,177 @@ pub fn draw_and_interact(
 
     result
 }
+
+// Camera orientation gizmo (top-right corner)
+
+/// Result of orientation gizmo interaction.
+pub struct OrientationGizmoResult {
+    /// If the user clicked an axis, the target (azimuth, elevation) in degrees.
+    pub snap_to: Option<(f32, f32)>,
+}
+
+/// Draw an interactive camera orientation gizmo in the top-right corner.
+///
+/// Shows the three world axes (X/Y/Z) projected through the current camera
+/// rotation, with colored lines and labeled endpoints.  Clicking an axis
+/// endpoint snaps the orbit camera to face along that axis.
+pub fn draw_orientation_gizmo(
+    ctx: &egui::Context,
+    view: &glm::Mat4,
+) -> OrientationGizmoResult {
+    let mut result = OrientationGizmoResult { snap_to: None };
+
+    let screen_rect = ctx.screen_rect();
+    let gizmo_radius = 50.0;
+    let axis_len = 40.0;
+    let margin = 24.0;
+    let center = egui::Pos2::new(
+        screen_rect.max.x - gizmo_radius - margin,
+        gizmo_radius + margin + 8.0,
+    );
+
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        egui::Id::new("orientation_gizmo"),
+    ));
+
+    // Semi-transparent background circle
+    painter.circle_filled(
+        center,
+        gizmo_radius,
+        egui::Color32::from_black_alpha(80),
+    );
+    painter.circle_stroke(
+        center,
+        gizmo_radius,
+        egui::Stroke::new(1.0, egui::Color32::from_white_alpha(40)),
+    );
+
+    // Axis definitions:  label, world direction, color, snap (azimuth, elevation)
+    //
+    // OrbitCamera places the eye at:
+    //   focus + (dist*cos(el)*cos(az), dist*sin(el), dist*cos(el)*sin(az))
+    // and looks toward focus.
+    //
+    // Snap angles position the camera so it looks along the negative of the
+    // corresponding world axis (e.g., clicking +X places the camera on the
+    // +X side, looking toward -X).
+    let axes_pos: [(&str, [f32; 3], egui::Color32, (f32, f32)); 3] = [
+        ("X", [1.0, 0.0, 0.0], COLOR_X, (0.0, 0.0)),
+        ("Y", [0.0, 1.0, 0.0], COLOR_Y, (-90.0, 89.9)),
+        ("Z", [0.0, 0.0, 1.0], COLOR_Z, (90.0, 0.0)),
+    ];
+    let axes_neg: [(&str, [f32; 3], egui::Color32, (f32, f32)); 3] = [
+        ("", [-1.0, 0.0, 0.0], COLOR_X, (180.0, 0.0)),
+        ("", [0.0, -1.0, 0.0], COLOR_Y, (-90.0, -89.9)),
+        ("", [0.0, 0.0, -1.0], COLOR_Z, (-90.0, 0.0)),
+    ];
+
+    // Project each axis direction through the view rotation (upper-left 3x3).
+    // view_dir.x  -> screen right
+    // view_dir.y  -> screen up  (negated for screen coords)
+    // view_dir.z  -> depth into screen (used for draw ordering)
+    struct Endpoint {
+        screen: egui::Pos2,
+        depth: f32,
+        color: egui::Color32,
+        label: &'static str,
+        snap: (f32, f32),
+        is_positive: bool,
+    }
+
+    let project = |dir: [f32; 3]| -> (egui::Pos2, f32) {
+        let vx = view[(0, 0)] * dir[0] + view[(0, 1)] * dir[1] + view[(0, 2)] * dir[2];
+        let vy = view[(1, 0)] * dir[0] + view[(1, 1)] * dir[1] + view[(1, 2)] * dir[2];
+        let vz = view[(2, 0)] * dir[0] + view[(2, 1)] * dir[1] + view[(2, 2)] * dir[2];
+        let pos = egui::Pos2::new(center.x + vx * axis_len, center.y - vy * axis_len);
+        (pos, vz)
+    };
+
+    let mut endpoints: Vec<Endpoint> = Vec::with_capacity(6);
+    for &(label, dir, color, snap) in &axes_pos {
+        let (screen, depth) = project(dir);
+        endpoints.push(Endpoint {
+            screen,
+            depth,
+            color,
+            label,
+            snap,
+            is_positive: true,
+        });
+    }
+    for &(label, dir, color, snap) in &axes_neg {
+        let (screen, depth) = project(dir);
+        endpoints.push(Endpoint {
+            screen,
+            depth,
+            color,
+            label,
+            snap,
+            is_positive: false,
+        });
+    }
+
+    // Sort back-to-front (most negative depth drawn first).
+    endpoints.sort_by(|a, b| a.depth.partial_cmp(&b.depth).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Input state for click detection.
+    let pointer_pos = ctx.input(|i| i.pointer.hover_pos());
+    let clicked = ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary));
+
+    for ep in &endpoints {
+        // Draw line from center to endpoint
+        let alpha = ((ep.depth * 0.5 + 0.5).clamp(0.2, 1.0) * 255.0) as u8;
+        let line_color = egui::Color32::from_rgba_unmultiplied(
+            ep.color.r(),
+            ep.color.g(),
+            ep.color.b(),
+            alpha,
+        );
+        painter.line_segment([center, ep.screen], egui::Stroke::new(2.0, line_color));
+
+        if ep.is_positive {
+            // Positive endpoint: colored filled circle + label
+            let tip_color = egui::Color32::from_rgba_unmultiplied(
+                ep.color.r(),
+                ep.color.g(),
+                ep.color.b(),
+                alpha.max(180),
+            );
+            painter.circle_filled(ep.screen, 11.0, tip_color);
+            painter.text(
+                ep.screen,
+                egui::Align2::CENTER_CENTER,
+                ep.label,
+                egui::FontId::proportional(11.0),
+                egui::Color32::WHITE,
+            );
+        } else {
+            // Negative endpoint: small dark dot
+            painter.circle_filled(
+                ep.screen,
+                4.0,
+                egui::Color32::from_rgba_unmultiplied(100, 100, 100, alpha),
+            );
+        }
+
+        // Click detection
+        let hit_radius = if ep.is_positive { 14.0 } else { 8.0 };
+        if let Some(pos) = pointer_pos {
+            if clicked && (pos - ep.screen).length() < hit_radius {
+                result.snap_to = Some(ep.snap);
+            }
+        }
+    }
+
+    // "<Persp>" label below the gizmo
+    painter.text(
+        egui::Pos2::new(center.x, center.y + gizmo_radius + 6.0),
+        egui::Align2::CENTER_TOP,
+        "<Persp>",
+        egui::FontId::proportional(10.0),
+        egui::Color32::from_white_alpha(160),
+    );
+
+    result
+}
