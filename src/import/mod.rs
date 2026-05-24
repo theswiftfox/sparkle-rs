@@ -53,7 +53,7 @@ pub fn load_gltf<B: GpuBackend>(
     // Load fallback "missing texture" placeholder
     let img = image::open("images/textures/missing_tex.png")
         .map_err(|e| ImportError::from("Image Load", &format!("{}", e)))?;
-    let rgba = img.to_rgba();
+    let rgba = img.to_rgba8();
     let (w, h) = (rgba.width(), rgba.height());
     let pixels = rgba.into_raw();
     let missing_tex = Rc::new(
@@ -414,25 +414,26 @@ impl<'a, B: GpuBackend> GltfImporter<'a, B> {
                 };
                 (img_raw.pixels.as_slice(), fmt)
             }
-            gltf::image::Format::B8G8R8 => {
-                // Pad 3-channel BGR to 4-channel BGRA (alpha = 255)
-                image_data = convert_3ch_to_4ch_img(img_raw);
-                (image_data.as_slice(), TextureFormat::Bgra8Unorm)
-            }
-            gltf::image::Format::B8G8R8A8 => {
-                for i in (3..(img_raw.width * img_raw.height * 4) as usize).step_by(4) {
-                    if img_raw.pixels[i] < 255 {
-                        transparent = true;
-                        break;
-                    }
-                }
-                let fmt = if srgb {
-                    TextureFormat::Bgra8UnormSrgb
-                } else {
-                    TextureFormat::Bgra8Unorm
-                };
-                (img_raw.pixels.as_slice(), fmt)
-            }
+            // gltf::image::Format::B8G8R8 => {
+            //     // Pad 3-channel BGR to 4-channel BGRA (alpha = 255)
+            //     image_data = convert_3ch_to_4ch_img(img_raw);
+            //     (image_data.as_slice(), TextureFormat::Bgra8Unorm)
+            // }
+            // gltf::image::Format::B8G8R8A8 => {
+            //     for i in (3..(img_raw.width * img_raw.height * 4) as usize).step_by(4) {
+            //         if img_raw.pixels[i] < 255 {
+            //             transparent = true;
+            //             break;
+            //         }
+            //     }
+            //     let fmt = if srgb {
+            //         TextureFormat::Bgra8UnormSrgb
+            //     } else {
+            //         TextureFormat::Bgra8Unorm
+            //     };
+            //     (img_raw.pixels.as_slice(), fmt)
+            // }
+            format => panic!("Unsupported image format {:?} for texture index {}", format, index),
         };
 
         let tex = Rc::new(

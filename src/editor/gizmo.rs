@@ -353,7 +353,7 @@ pub fn draw_orientation_gizmo(
 ) -> OrientationGizmoResult {
     let mut result = OrientationGizmoResult { snap_to: None };
 
-    let screen_rect = ctx.screen_rect();
+    let screen_rect = ctx.content_rect();
     let gizmo_radius = 50.0;
     let axis_len = 40.0;
     let margin = 24.0;

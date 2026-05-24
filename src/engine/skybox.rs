@@ -89,7 +89,7 @@ impl<B: GpuBackend> Skybox<B> {
 
         // Convert all faces to RGBA and validate dimensions
         let rgba_images: Vec<image::RgbaImage> =
-            images.iter().map(|img| img.to_rgba()).collect();
+            images.iter().map(|img| img.to_rgba8()).collect();
         let face_width = rgba_images[0].width();
         let face_height = rgba_images[0].height();
 

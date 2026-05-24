@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 pub struct WgpuPipeline {
     pub(crate) pipeline: wgpu::RenderPipeline,
-    pub(crate) bind_group_layouts: Vec<wgpu::BindGroupLayout>,
+    pub(crate) bind_group_layouts: Vec<Option<wgpu::BindGroupLayout>>,
     pub(crate) bind_group_descriptors: Vec<Vec<BindingType>>,
     /// Pre-created bind groups for groups with empty descriptors.
     pub(crate) empty_bind_groups: Vec<Option<wgpu::BindGroup>>,
@@ -88,7 +88,7 @@ pub struct WgpuBackend {
     pending_pass: Option<PendingPass>,
 
     // Binding accumulation state (active during a render pass)
-    current_pipeline_layouts: Vec<wgpu::BindGroupLayout>,
+    current_pipeline_layouts: Vec<Option<wgpu::BindGroupLayout>>,
     current_pipeline_descriptors: Vec<Vec<BindingType>>,
     current_empty_bind_groups: Vec<Option<wgpu::BindGroup>>,
     /// Per-group pending bindings. Index = binding index within that group.
@@ -277,9 +277,13 @@ impl WgpuBackend {
         let width = size.width.max(1);
         let height = size.height.max(1);
 
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::PRIMARY,
-            ..Default::default()
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::PRIMARY | wgpu::Backends::GL,
+            flags: wgpu::InstanceFlags::default(),
+            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+            backend_options: wgpu::BackendOptions::default(),
+            display: None,
+            
         });
 
         let surface = instance
@@ -298,9 +302,9 @@ impl WgpuBackend {
                 force_fallback_adapter: false,
             },
         ))
-        .ok_or_else(|| {
+        .map_err(|e| {
             GpuError::new(
-                "No suitable GPU adapter found",
+                format!("No suitable GPU adapter found: {e}"),
                 GpuErrorKind::DeviceCreation,
             )
         })?;
@@ -312,7 +316,6 @@ impl WgpuBackend {
                 label: Some("sparkle-rs"),
                 ..Default::default()
             },
-            None,
         ))
         .map_err(|e| {
             GpuError::new(
@@ -521,7 +524,7 @@ impl GpuBackend for WgpuBackend {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: to_wgpu_filter(desc.sampler.filter),
             min_filter: to_wgpu_filter(desc.sampler.filter),
-            mipmap_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             compare: desc.sampler.compare.map(to_wgpu_compare),
             anisotropy_clamp: aniso,
             ..Default::default()
@@ -609,7 +612,7 @@ impl GpuBackend for WgpuBackend {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: to_wgpu_filter(sampler.filter),
             min_filter: to_wgpu_filter(sampler.filter),
-            mipmap_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             compare: sampler.compare.map(to_wgpu_compare),
             anisotropy_clamp: aniso,
             ..Default::default()
@@ -689,7 +692,7 @@ impl GpuBackend for WgpuBackend {
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: to_wgpu_filter(desc.sampler.filter),
             min_filter: to_wgpu_filter(desc.sampler.filter),
-            mipmap_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             compare: desc.sampler.compare.map(to_wgpu_compare),
             ..Default::default()
         });
@@ -726,7 +729,7 @@ impl GpuBackend for WgpuBackend {
                 });
 
         // Build bind group layouts (one per group, up to 4)
-        let mut bind_group_layouts: Vec<wgpu::BindGroupLayout> = Vec::new();
+        let mut bind_group_layouts: Vec<Option<wgpu::BindGroupLayout>> = Vec::new();
         let mut bind_group_descriptors: Vec<Vec<BindingType>> = Vec::new();
         let mut empty_bind_groups: Vec<Option<wgpu::BindGroup>> = Vec::new();
 
@@ -766,20 +769,22 @@ impl GpuBackend for WgpuBackend {
                 None
             };
 
-            bind_group_layouts.push(layout);
+            bind_group_layouts.push(Some(layout));
             bind_group_descriptors.push(bindings.to_vec());
             empty_bind_groups.push(empty_bg);
         }
 
         // Create pipeline layout
-        let layout_refs: Vec<&wgpu::BindGroupLayout> =
-            bind_group_layouts.iter().collect();
+        let layout_refs: Vec<Option<&wgpu::BindGroupLayout>> =
+            bind_group_layouts.iter().map(
+                |x| x.as_ref()
+            ).collect();
         let pipeline_layout =
             self.device
                 .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some(desc.label),
                     bind_group_layouts: &layout_refs,
-                    push_constant_ranges: &[],
+                    immediate_size: 0,
                 });
 
         // Build vertex buffer layout
@@ -842,8 +847,8 @@ impl GpuBackend for WgpuBackend {
         // Depth/stencil state
         let depth_stencil = desc.depth_format.map(|fmt| wgpu::DepthStencilState {
             format: to_wgpu_format(fmt),
-            depth_write_enabled: desc.depth_write,
-            depth_compare: to_wgpu_compare(desc.depth_compare),
+            depth_write_enabled: Some(desc.depth_write),
+            depth_compare: Some(to_wgpu_compare(desc.depth_compare)),
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         });
@@ -891,8 +896,8 @@ impl GpuBackend for WgpuBackend {
                     },
                     depth_stencil,
                     multisample: wgpu::MultisampleState::default(),
-                    multiview: None,
                     cache: None,
+                    multiview_mask: None,
                 });
 
         Ok(WgpuPipeline {
@@ -913,12 +918,19 @@ impl GpuBackend for WgpuBackend {
 
     fn begin_frame(&mut self) -> Result<(), GpuError> {
         let surface_texture =
-            self.surface.get_current_texture().map_err(|e| {
-                GpuError::new(
-                    format!("Failed to acquire surface texture: {}", e),
-                    GpuErrorKind::Present,
-                )
-            })?;
+            match self.surface.get_current_texture() {
+                wgpu::CurrentSurfaceTexture::Success(surface_texture) => surface_texture,
+                wgpu::CurrentSurfaceTexture::Suboptimal(surface_texture) => {
+                    println!("Surface texture is suboptimal, but will try to use it anyway");
+                    surface_texture
+                },
+                reason => {
+                    return Err(GpuError::new(
+                        format!("Failed to acquire surface texture: {reason:?}"),
+                        GpuErrorKind::Present,
+                    ));
+                }
+            };
         let surface_view = surface_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -1014,6 +1026,7 @@ impl GpuBackend for WgpuBackend {
                                 view: &att.view,
                                 resolve_target: None,
                                 ops: att.ops,
+                                depth_slice: None,
                             })
                         })
                         .collect();
@@ -1034,6 +1047,7 @@ impl GpuBackend for WgpuBackend {
                         depth_stencil_attachment: depth_attachment,
                         timestamp_writes: None,
                         occlusion_query_set: None,
+                        multiview_mask: None,
                     });
 
                 // Replay deferred commands
@@ -1330,17 +1344,19 @@ impl GpuBackend for WgpuBackend {
                     return;
                 }
 
-                let bind_group =
-                    self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: None,
-                        layout: &self.current_pipeline_layouts[group_idx],
-                        entries: &entries,
+                if let Some(ref layout) = self.current_pipeline_layouts[group_idx] {
+                    let bind_group =
+                        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: None,
+                            layout,
+                            entries: &entries,
                     });
 
-                pass.commands.push(RenderCommand::BindGroup(
-                    group_idx as u32,
-                    bind_group,
-                ));
+                    pass.commands.push(RenderCommand::BindGroup(
+                        group_idx as u32,
+                        bind_group,
+                    ));
+                }
             }
 
             pass.commands.push(RenderCommand::DrawIndexed {

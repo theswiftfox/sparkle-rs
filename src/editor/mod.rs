@@ -115,9 +115,7 @@ impl Editor {
         let egui_renderer = egui_wgpu::Renderer::new(
             backend.device(),
             backend.surface_format(),
-            None, // depth format (egui renders as overlay, no depth)
-            1,    // sample count
-            false,
+            egui_wgpu::RendererOptions::PREDICTABLE
         );
 
         let orbit_camera = OrbitCamera::new_ptr(aspect, fov, near, far);
@@ -733,10 +731,12 @@ fn render_egui(
                     load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 },
+                depth_slice: None,
             })],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
+            multiview_mask: None,
         });
 
         // forget_lifetime() erases the compile-time borrow tie between the

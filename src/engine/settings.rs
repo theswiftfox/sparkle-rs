@@ -2,6 +2,8 @@ use ini::Ini;
 
 const SETTINGS_FILE: &str = "assets/settings.ini";
 
+// todo: replace this with deserialize using serde.
+
 pub struct Settings {
     // Rendering
     pub resolution: (u32, u32),
@@ -17,6 +19,16 @@ pub struct Settings {
     pub gpu_validation: bool,
 
     pub ssao: bool,
+
+    pub sync_mode: SyncMode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum SyncMode {
+    VSync,
+    AdaptiveVSync,
+    Immediate,
+    Mailbox,
 }
 
 impl Settings {
@@ -75,6 +87,7 @@ impl Settings {
                 _ => (),
             };
         }
+        // todo: read sync mode and ssao settings
 
         settings
     }
@@ -90,6 +103,7 @@ impl std::default::Default for Settings {
             view_distance: 1000.0,
             gpu_validation: false,
             ssao: true,
+            sync_mode: SyncMode::VSync,
         }
     }
 }

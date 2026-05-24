@@ -277,8 +277,6 @@ impl Window {
     }
 }
 
-// -- Event loop integration via ApplicationHandler (winit 0.30) --
-
 struct WindowApp {
     window: Window,
     frame_fn: Box<dyn FnMut(&mut Window)>,

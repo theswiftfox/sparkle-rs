@@ -6,20 +6,21 @@ edition = "2024"
 build = "build.rs"
 
 [dependencies]
-nalgebra-glm = "0.5.0"
-image = "0.22.2"
-gltf = "0.14"
-rust-ini = "0.13.0"
-rand = "0.7.2"
+ash = "0.38.0"
+nalgebra-glm = "0.20.0"
+image = "0.25.2"
+gltf = "1.4.1"
+rust-ini = "0.21.3"
+rand = "0.10.1"
 winit = "0.30"
-wgpu = "24"
+wgpu = "29.0.3"
 pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
-egui = "0.31"
-egui-wgpu = "0.31"
-egui-winit = "0.31"
+egui = "0.34.2"
+egui-wgpu = "0.34.2"
+egui-winit = "0.34.2"
 serde = { version = "1", features = ["derive"] }
-ron = "0.8"
+ron = "0.12.1"
 
 # From doc.rust-lang.org:
 # The development profile, used for `cargo build`.

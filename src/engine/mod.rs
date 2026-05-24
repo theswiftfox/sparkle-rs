@@ -1,5 +1,6 @@
 pub mod backend;
 pub mod wgpu_backend;
+pub mod vulkan_backend;
 pub mod renderer;
 pub(crate) mod draw_programs;
 pub(crate) mod geometry;
