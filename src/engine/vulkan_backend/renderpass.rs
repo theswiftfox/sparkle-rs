@@ -263,9 +263,13 @@ impl VulkanBackend {
             ..Default::default()
         };
 
+        // unsafe {
+        //     self.device
+        //         .cmd_pipeline_barrier2(self.command_buffer, &dependency_info);
+        // };
         unsafe {
-            self.device
+            self.khr_sync
                 .cmd_pipeline_barrier2(self.command_buffer, &dependency_info);
-        };
+        }
     }
 }

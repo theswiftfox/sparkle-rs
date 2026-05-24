@@ -4,8 +4,6 @@ use std::{
     sync::Arc,
 };
 
-use wgpu::wgc::command;
-
 use crate::engine::{
     backend::{GpuError, GpuErrorKind},
     settings::{Settings, SyncMode},
@@ -18,9 +16,10 @@ const VALIDATION_LAYER: &CStr =
     unsafe { CStr::from_bytes_with_nul_unchecked(b"VK_LAYER_KHRONOS_validation\0") };
 const SHADER_ENTRY_POINT: &CStr = unsafe { CStr::from_bytes_with_nul_unchecked(b"main\0") };
 
-const REQUIRED_EXTS: [&CStr; 2] = [
+const REQUIRED_EXTS: [&CStr; 3] = [
     ash::vk::KHR_SWAPCHAIN_NAME,
     ash::vk::KHR_SHADER_DRAW_PARAMETERS_NAME,
+    ash::vk::KHR_SYNCHRONIZATION2_NAME,
 ];
 
 struct Instance {
@@ -82,6 +81,7 @@ pub struct VulkanBackend {
     command_pool: ash::vk::CommandPool,
     command_buffer: ash::vk::CommandBuffer,
     sync_objects: SyncObjects,
+    khr_sync: ash::khr::synchronization2::Device,
 }
 
 pub fn initialize(
@@ -127,6 +127,8 @@ pub fn initialize(
 
     let sync_objects = create_sync_objs(&logical_device)?;
 
+    let khr_sync = ash::khr::synchronization2::Device::new(&instance, &logical_device);
+
     Ok(VulkanBackend {
         context,
         instance,
@@ -139,6 +141,7 @@ pub fn initialize(
         command_pool,
         command_buffer,
         sync_objects,
+        khr_sync,
     })
 }
 
@@ -545,6 +548,7 @@ fn create_logical_device(
     };
     let mut vk_13_feats = ash::vk::PhysicalDeviceVulkan13Features {
         dynamic_rendering: ash::vk::TRUE,
+        synchronization2: ash::vk::TRUE,
         p_next: &mut ext_state_struct as *mut _ as *mut std::ffi::c_void,
         ..Default::default()
     };
