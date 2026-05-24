@@ -1,62 +1,118 @@
 use crate::engine::{
     backend::{GpuError, GpuErrorKind},
-    vulkan_backend::VulkanBackend,
+    vulkan_backend::{FRAMES_IN_FLIGHT, Swapchain, VulkanBackend, create_swapchain},
 };
 
 impl VulkanBackend {
-    pub fn draw(&self) -> Result<(), GpuError> {
-        unsafe {
-            self.device
-                .wait_for_fences(&[self.sync_objects.draw_fence], true, u64::MAX)
-        }
-        .map_err(|e| {
+    pub fn wait_idle(&self) -> Result<(), GpuError> {
+        unsafe { self.device.device_wait_idle() }.map_err(|e| {
+            GpuError::new(
+                format!("Failed to wait for device idle: {e:?}"),
+                GpuErrorKind::Other,
+            )
+        })
+    }
+
+    pub fn draw(&mut self) -> Result<(), GpuError> {
+        let frame_idx = self.frame_idx;
+        self.frame_idx = (self.frame_idx + 1) % (FRAMES_IN_FLIGHT as usize);
+
+        let fence = *self
+            .sync_objects
+            .draw_fences
+            .get(frame_idx)
+            .ok_or_else(|| {
+                gpu_error_out_of_range(
+                    "Frame Fence",
+                    frame_idx,
+                    self.sync_objects.draw_fences.len(),
+                )
+            })?;
+        let present_semaphore = *self
+            .sync_objects
+            .present_completed_sems
+            .get(frame_idx)
+            .ok_or_else(|| {
+                gpu_error_out_of_range(
+                    "Present Completed Semaphore",
+                    frame_idx,
+                    self.sync_objects.present_completed_sems.len(),
+                )
+            })?;
+
+        let command_buffer = *self.command_buffers.get(frame_idx).ok_or_else(|| {
+            gpu_error_out_of_range("Command Buffer", frame_idx, self.command_buffers.len())
+        })?;
+
+        unsafe { self.device.wait_for_fences(&[fence], true, u64::MAX) }.map_err(|e| {
             GpuError::new(
                 format!("Wait for Fences failed: {e:?}"),
                 GpuErrorKind::Other,
             )
         })?;
-        unsafe { self.device.reset_fences(&[self.sync_objects.draw_fence]) }.map_err(|e| {
-            GpuError::new(format!("Reset Fences failed: {e:?}"), GpuErrorKind::Other)
-        })?;
 
-        let (idx, optimal) = unsafe {
+        let (idx, _optimal) = match unsafe {
             self.swapchain.fn_ptr.acquire_next_image(
                 self.swapchain.swapchain,
                 u64::MAX,
-                self.sync_objects.present_sem,
+                present_semaphore,
                 ash::vk::Fence::null(),
             )
+        } {
+            Ok(res) => res,
+            Err(e) => {
+                if e == ash::vk::Result::ERROR_OUT_OF_DATE_KHR {
+                    return self.recreate_swapchain();
+                }
+                return Err(GpuError::new(
+                    format!("Failed to get new swapchain image: {e:?}"),
+                    GpuErrorKind::ResourceUpdate,
+                ));
+            }
+        };
+
+        let render_semaphore = *self
+            .sync_objects
+            .render_completed_sems
+            .get(idx as usize)
+            .ok_or_else(|| {
+                gpu_error_out_of_range(
+                    "Render Completed Semaphore",
+                    idx as usize,
+                    self.sync_objects.render_completed_sems.len(),
+                )
+            })?;
+
+        unsafe { self.device.reset_fences(&[fence]) }.map_err(|e| {
+            GpuError::new(format!("Reset Fences failed: {e:?}"), GpuErrorKind::Other)
+        })?;
+
+        unsafe {
+            self.device
+                .reset_command_buffer(command_buffer, ash::vk::CommandBufferResetFlags::empty())
         }
         .map_err(|e| {
             GpuError::new(
-                format!("Failed to get new swapchain image: {e:?}"),
-                GpuErrorKind::ResourceUpdate,
+                format!("Failed to reset command buffer: {e:?}"),
+                GpuErrorKind::Other,
             )
         })?;
 
-        if !optimal {
-            println!("Suboptimal Swapchain image. Still continuing..");
-        }
-
-        self.render_pass(idx)?;
+        self.render_pass(command_buffer, idx)?;
 
         let wait_flags = ash::vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT;
         let submit_info = ash::vk::SubmitInfo {
             wait_semaphore_count: 1,
-            p_wait_semaphores: &self.sync_objects.present_sem,
+            p_wait_semaphores: &present_semaphore,
             p_wait_dst_stage_mask: &wait_flags,
             command_buffer_count: 1,
-            p_command_buffers: &self.command_buffer,
+            p_command_buffers: &command_buffer,
             signal_semaphore_count: 1,
-            p_signal_semaphores: &self.sync_objects.render_sem,
+            p_signal_semaphores: &render_semaphore,
             ..Default::default()
         };
 
-        unsafe {
-            self.device
-                .queue_submit(self.queue, &[submit_info], self.sync_objects.draw_fence)
-        }
-        .map_err(|e| {
+        unsafe { self.device.queue_submit(self.queue, &[submit_info], fence) }.map_err(|e| {
             GpuError::new(
                 format!("Failed to submit render pass to queue: {e:?}"),
                 GpuErrorKind::Present,
@@ -65,32 +121,46 @@ impl VulkanBackend {
 
         let present_info = ash::vk::PresentInfoKHR {
             wait_semaphore_count: 1,
-            p_wait_semaphores: &self.sync_objects.render_sem,
+            p_wait_semaphores: &render_semaphore,
             swapchain_count: 1,
             p_swapchains: &self.swapchain.swapchain,
             p_image_indices: &idx,
             ..Default::default()
         };
 
-        unsafe {
+        match unsafe {
             self.swapchain
                 .fn_ptr
                 .queue_present(self.queue, &present_info)
+        } {
+            Ok(suboptimal) => {
+                if suboptimal {
+                    return self.recreate_swapchain();
+                }
+            }
+            Err(e) => {
+                if e == ash::vk::Result::SUBOPTIMAL_KHR
+                    || e == ash::vk::Result::ERROR_OUT_OF_DATE_KHR
+                {
+                    return self.recreate_swapchain();
+                }
+                return Err(GpuError::new(
+                    format!("Queue Present failed: {e:?}"),
+                    GpuErrorKind::Present,
+                ));
+            }
         }
-        .map_err(|e| {
-            GpuError::new(
-                format!("Queue Present failed: {e:?}"),
-                GpuErrorKind::Present,
-            )
-        })?;
-
         Ok(())
     }
 
-    fn render_pass(&self, image_idx: u32) -> Result<(), GpuError> {
+    fn render_pass(
+        &self,
+        command_buffer: ash::vk::CommandBuffer,
+        image_idx: u32,
+    ) -> Result<(), GpuError> {
         unsafe {
             self.device.begin_command_buffer(
-                self.command_buffer,
+                command_buffer,
                 &ash::vk::CommandBufferBeginInfo {
                     ..Default::default()
                 },
@@ -128,6 +198,7 @@ impl VulkanBackend {
         })?;
 
         self.transition_image_layout(
+            command_buffer,
             image,
             ash::vk::ImageLayout::UNDEFINED,
             ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
@@ -165,12 +236,12 @@ impl VulkanBackend {
 
         unsafe {
             self.device
-                .cmd_begin_rendering(self.command_buffer, &rendering_info);
+                .cmd_begin_rendering(command_buffer, &rendering_info);
         }
 
         unsafe {
             self.device.cmd_bind_pipeline(
-                self.command_buffer,
+                command_buffer,
                 ash::vk::PipelineBindPoint::GRAPHICS,
                 self.graphics_pipeline,
             );
@@ -185,10 +256,7 @@ impl VulkanBackend {
             max_depth: 1.0f32,
         };
 
-        unsafe {
-            self.device
-                .cmd_set_viewport(self.command_buffer, 0, &[viewport])
-        }
+        unsafe { self.device.cmd_set_viewport(command_buffer, 0, &[viewport]) }
 
         let scissor = ash::vk::Rect2D {
             offset: ash::vk::Offset2D { x: 0i32, y: 0i32 },
@@ -196,19 +264,19 @@ impl VulkanBackend {
         };
 
         unsafe {
-            self.device
-                .cmd_set_scissor(self.command_buffer, 0, &[scissor]);
+            self.device.cmd_set_scissor(command_buffer, 0, &[scissor]);
         }
 
         unsafe {
-            self.device.cmd_draw(self.command_buffer, 3, 1, 0, 0);
+            self.device.cmd_draw(command_buffer, 3, 1, 0, 0);
         }
 
         unsafe {
-            self.device.cmd_end_rendering(self.command_buffer);
+            self.device.cmd_end_rendering(command_buffer);
         }
 
         self.transition_image_layout(
+            command_buffer,
             image,
             ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             ash::vk::ImageLayout::PRESENT_SRC_KHR,
@@ -218,7 +286,7 @@ impl VulkanBackend {
             ash::vk::PipelineStageFlags2::BOTTOM_OF_PIPE,
         );
 
-        unsafe { self.device.end_command_buffer(self.command_buffer) }.map_err(|e| {
+        unsafe { self.device.end_command_buffer(command_buffer) }.map_err(|e| {
             GpuError::new(
                 format!("CommandBuffer recording failed: {e:?}"),
                 GpuErrorKind::RenderPass,
@@ -226,8 +294,9 @@ impl VulkanBackend {
         })
     }
 
-    pub fn transition_image_layout(
+    fn transition_image_layout(
         &self,
+        command_buffer: ash::vk::CommandBuffer,
         image: ash::vk::Image,
         old_layout: ash::vk::ImageLayout,
         new_layout: ash::vk::ImageLayout,
@@ -263,13 +332,54 @@ impl VulkanBackend {
             ..Default::default()
         };
 
-        // unsafe {
-        //     self.device
-        //         .cmd_pipeline_barrier2(self.command_buffer, &dependency_info);
-        // };
         unsafe {
-            self.khr_sync
-                .cmd_pipeline_barrier2(self.command_buffer, &dependency_info);
-        }
+            self.device
+                .cmd_pipeline_barrier2(command_buffer, &dependency_info);
+        };
     }
+
+    fn recreate_swapchain(&mut self) -> Result<(), GpuError> {
+        unsafe { self.device.device_wait_idle() }.map_err(|e| {
+            GpuError::new(
+                format!("Failed to wait for device idle during swapchain recreation: {e:?}"),
+                GpuErrorKind::Other,
+            )
+        })?;
+
+        let mut old = Swapchain {
+            swapchain: ash::vk::SwapchainKHR::null(),
+            swapchain_images: Vec::new(),
+            swapchain_extent: ash::vk::Extent2D::default(),
+            fn_ptr: self.swapchain.fn_ptr.clone(),
+            surface_format: ash::vk::SurfaceFormatKHR::default(),
+            surface: ash::vk::SurfaceKHR::null(),
+            sync_mode: self.swapchain.sync_mode,
+        };
+        std::mem::swap(&mut old, &mut self.swapchain);
+
+        unsafe {
+            self.swapchain.fn_ptr.destroy_swapchain(old.swapchain, None);
+        }
+
+        let mut new_swapchain = create_swapchain(
+            &self.context,
+            &self.instance,
+            &self.window,
+            self.phys_device,
+            &self.device,
+            old.surface,
+            old.sync_mode,
+        )?;
+
+        std::mem::swap(&mut self.swapchain, &mut new_swapchain);
+
+        Ok(())
+    }
+}
+
+fn gpu_error_out_of_range(resource_name: &str, idx: usize, len: usize) -> GpuError {
+    GpuError::new(
+        format!("Index {idx} outside of range for {resource_name} with length {len}"),
+        GpuErrorKind::ResourceUpdate,
+    )
 }

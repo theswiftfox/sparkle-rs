@@ -1,5 +1,5 @@
 use std::{
-    ffi::{CStr, c_char, c_void},
+    ffi::{CStr, c_void},
     ops::Deref,
     sync::Arc,
 };
@@ -12,6 +12,8 @@ use crate::engine::{
 mod renderpass;
 mod util;
 
+const VK_API_VERSION: u32 = ash::vk::API_VERSION_1_3;
+
 const VALIDATION_LAYER: &CStr =
     unsafe { CStr::from_bytes_with_nul_unchecked(b"VK_LAYER_KHRONOS_validation\0") };
 const SHADER_ENTRY_POINT: &CStr = unsafe { CStr::from_bytes_with_nul_unchecked(b"main\0") };
@@ -21,6 +23,8 @@ const REQUIRED_EXTS: [&CStr; 3] = [
     ash::vk::KHR_SHADER_DRAW_PARAMETERS_NAME,
     ash::vk::KHR_SYNCHRONIZATION2_NAME,
 ];
+
+const FRAMES_IN_FLIGHT: u32 = 2u32;
 
 struct Instance {
     instance: ash::Instance,
@@ -61,15 +65,18 @@ struct Swapchain {
     swapchain_images: Vec<ash::vk::Image>,
     swapchain_extent: ash::vk::Extent2D,
     surface_format: ash::vk::SurfaceFormatKHR,
+    surface: ash::vk::SurfaceKHR,
+    sync_mode: SyncMode,
 }
 
 struct SyncObjects {
-    present_sem: ash::vk::Semaphore,
-    render_sem: ash::vk::Semaphore,
-    draw_fence: ash::vk::Fence,
+    present_completed_sems: Vec<ash::vk::Semaphore>,
+    render_completed_sems: Vec<ash::vk::Semaphore>,
+    draw_fences: Vec<ash::vk::Fence>,
 }
 
 pub struct VulkanBackend {
+    window: Arc<winit::window::Window>,
     context: ash::Entry,
     instance: Instance,
     phys_device: ash::vk::PhysicalDevice,
@@ -79,9 +86,10 @@ pub struct VulkanBackend {
     image_views: Vec<ash::vk::ImageView>,
     graphics_pipeline: ash::vk::Pipeline,
     command_pool: ash::vk::CommandPool,
-    command_buffer: ash::vk::CommandBuffer,
+    command_buffers: Vec<ash::vk::CommandBuffer>,
     sync_objects: SyncObjects,
     khr_sync: ash::khr::synchronization2::Device,
+    frame_idx: usize,
 }
 
 pub fn initialize(
@@ -94,11 +102,11 @@ pub fn initialize(
     let context = unsafe { ash::Entry::load() }
         .map_err(|_| GpuError::new("Failed to load Vulkan entry", GpuErrorKind::Other))?;
 
-    let instance = create_instance(&context, &window, enable_validation)?;
+    let mut instance = create_instance(&context, &window, enable_validation)?;
 
-    // if instance.validation_enabled {
-    //     instance.debug_messenger = Some(setup_debug_messenger(&context, &instance)?);
-    // }
+    if instance.validation_enabled {
+        instance.debug_messenger = Some(setup_debug_messenger(&context, &instance)?);
+    }
 
     let physical_device = get_physical_device(&instance)?;
 
@@ -123,13 +131,14 @@ pub fn initialize(
 
     let command_pool = create_command_pool(&logical_device)?;
 
-    let command_buffer = create_command_buffer(&logical_device, command_pool)?;
+    let command_buffers = create_command_buffers(&logical_device, command_pool)?;
 
-    let sync_objects = create_sync_objs(&logical_device)?;
+    let sync_objects = create_sync_objs(&logical_device, &swapchain)?;
 
     let khr_sync = ash::khr::synchronization2::Device::new(&instance, &logical_device);
 
     Ok(VulkanBackend {
+        window,
         context,
         instance,
         phys_device: physical_device,
@@ -139,20 +148,21 @@ pub fn initialize(
         image_views,
         graphics_pipeline: pipeline,
         command_pool,
-        command_buffer,
+        command_buffers,
         sync_objects,
         khr_sync,
+        frame_idx: 0,
     })
 }
 
-fn create_command_buffer(
+fn create_command_buffers(
     device: &LogicalDevice,
     command_pool: ash::vk::CommandPool,
-) -> Result<ash::vk::CommandBuffer, GpuError> {
+) -> Result<Vec<ash::vk::CommandBuffer>, GpuError> {
     let alloc_info = ash::vk::CommandBufferAllocateInfo {
         command_pool,
         level: ash::vk::CommandBufferLevel::PRIMARY,
-        command_buffer_count: 1,
+        command_buffer_count: FRAMES_IN_FLIGHT,
         ..Default::default()
     };
 
@@ -163,12 +173,7 @@ fn create_command_buffer(
         )
     })?;
 
-    command_buffers.into_iter().next().ok_or_else(|| {
-        GpuError::new(
-            "Allocate command buffers returned empty result.",
-            GpuErrorKind::ResourceCreation,
-        )
-    })
+    Ok(command_buffers)
 }
 
 fn create_command_pool(device: &LogicalDevice) -> Result<ash::vk::CommandPool, GpuError> {
@@ -186,7 +191,10 @@ fn create_command_pool(device: &LogicalDevice) -> Result<ash::vk::CommandPool, G
     })
 }
 
-fn create_sync_objs(device: &LogicalDevice) -> Result<SyncObjects, GpuError> {
+fn create_sync_objs(
+    device: &LogicalDevice,
+    swapchain: &Swapchain,
+) -> Result<SyncObjects, GpuError> {
     fn create_default_sem(device: &LogicalDevice) -> Result<ash::vk::Semaphore, GpuError> {
         unsafe {
             device.create_semaphore(
@@ -203,28 +211,38 @@ fn create_sync_objs(device: &LogicalDevice) -> Result<SyncObjects, GpuError> {
             )
         })
     }
-    let present_complete_sem = create_default_sem(device)?;
-    let render_finished_sem = create_default_sem(device)?;
-    let draw_fence = unsafe {
-        device.create_fence(
-            &ash::vk::FenceCreateInfo {
-                flags: ash::vk::FenceCreateFlags::SIGNALED,
-                ..Default::default()
-            },
-            None,
-        )
-    }
-    .map_err(|e| {
-        GpuError::new(
-            format!("Fence create failed: {e:?}"),
-            GpuErrorKind::ResourceCreation,
-        )
-    })?;
+    let render_completed_sems = (0..swapchain.swapchain_images.len())
+        .map(|_| create_default_sem(device))
+        .collect::<Result<Vec<_>, GpuError>>()?;
+
+    let (present_completed_sems, draw_fences) = (0..FRAMES_IN_FLIGHT)
+        .map(|_| {
+            let present_completed_sems = create_default_sem(device)?;
+            let draw_fence = unsafe {
+                device.create_fence(
+                    &ash::vk::FenceCreateInfo {
+                        flags: ash::vk::FenceCreateFlags::SIGNALED,
+                        ..Default::default()
+                    },
+                    None,
+                )
+            }
+            .map_err(|e| {
+                GpuError::new(
+                    format!("Fence create failed: {e:?}"),
+                    GpuErrorKind::ResourceCreation,
+                )
+            })?;
+            Ok((present_completed_sems, draw_fence))
+        })
+        .collect::<Result<Vec<_>, GpuError>>()?
+        .into_iter()
+        .unzip();
 
     Ok(SyncObjects {
-        present_sem: present_complete_sem,
-        render_sem: render_finished_sem,
-        draw_fence,
+        present_completed_sems,
+        render_completed_sems,
+        draw_fences,
     })
 }
 
@@ -498,6 +516,8 @@ fn create_swapchain(
         swapchain_images,
         swapchain_extent: swap_extent,
         surface_format: swap_format,
+        surface,
+        sync_mode,
     })
 }
 
@@ -616,7 +636,7 @@ fn get_physical_device(instance: &ash::Instance) -> Result<ash::vk::PhysicalDevi
             let properties = unsafe { instance.get_physical_device_properties(*device) };
 
             // require vulkan 1.3
-            if properties.api_version < ash::vk::API_VERSION_1_2 {
+            if properties.api_version < VK_API_VERSION {
                 println!(
                     "Physical device {:?} does not support Vulkan 1.3), skipping",
                     device,
@@ -756,17 +776,13 @@ fn create_instance(
         application_version,
         p_engine_name: engine_name_cstr.as_ptr(),
         engine_version,
-        api_version: ash::vk::API_VERSION_1_2,
+        api_version: VK_API_VERSION,
         ..Default::default()
     };
 
-    let instance_exts = util::get_instance_extensions(&window)?;
-    let instance_exts_ptr = instance_exts
-        .iter()
-        .map(|ext| ext.as_ptr())
-        .collect::<Vec<_>>();
+    let mut instance_exts = util::get_instance_extensions(&window)?;
 
-    let mut extension_properties = unsafe { context.enumerate_instance_extension_properties(None) }
+    let extension_properties = unsafe { context.enumerate_instance_extension_properties(None) }
         .map_err(|_| {
             GpuError::new(
                 "Failed to enumerate instance extensions",
@@ -790,13 +806,18 @@ fn create_instance(
     }
 
     let (validation_layers, layers_enabled) = if enable_validation {
-        setup_validation_layers(&context, &mut extension_properties)?
+        setup_validation_layers(&context, &mut instance_exts)?
     } else {
         (Vec::new(), false)
     };
     let validation_layers_ptr = validation_layers
         .iter()
         .map(|layer| layer.as_ptr())
+        .collect::<Vec<_>>();
+
+    let instance_exts_ptr = instance_exts
+        .iter()
+        .map(|ext| ext.as_ptr())
         .collect::<Vec<_>>();
 
     let instance_info = ash::vk::InstanceCreateInfo {
@@ -820,7 +841,7 @@ fn create_instance(
 
 fn setup_validation_layers(
     context: &ash::Entry,
-    extension_properties: &mut Vec<ash::vk::ExtensionProperties>,
+    instance_exts: &mut Vec<&'static CStr>,
 ) -> Result<(Vec<&'static CStr>, bool), GpuError> {
     let layer_properties = unsafe { context.enumerate_instance_layer_properties() }
         .map_err(|_| GpuError::new("Failed to enumerate instance layers", GpuErrorKind::Other))?;
@@ -834,18 +855,7 @@ fn setup_validation_layers(
         );
         Ok((Vec::new(), false))
     } else {
-        let dbg_ext = ash::vk::EXT_DEBUG_UTILS_NAME
-            .to_bytes_with_nul()
-            .iter()
-            .map(|&b| b as c_char)
-            .collect::<Vec<_>>();
-        let n = dbg_ext.len().min(256);
-        let mut debug_ext_name: [c_char; 256] = [0; 256];
-        debug_ext_name[0..n].copy_from_slice(dbg_ext.as_slice());
-        extension_properties.push(ash::vk::ExtensionProperties {
-            extension_name: debug_ext_name,
-            spec_version: ash::vk::EXT_DEBUG_UTILS_SPEC_VERSION,
-        });
+        instance_exts.push(ash::vk::EXT_DEBUG_UTILS_NAME);
         Ok((vec![VALIDATION_LAYER], true))
     }
 }

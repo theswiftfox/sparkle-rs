@@ -8,8 +8,7 @@ mod import;
 mod input;
 mod window;
 
-use std::io;
-use std::io::prelude::*;
+use std::io::{Read as _, Write as _};
 
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
@@ -23,8 +22,8 @@ use crate::{
     },
 };
 fn pause() {
-    let mut stdin = io::stdin();
-    let mut stdout = io::stdout();
+    let mut stdin = std::io::stdin();
+    let mut stdout = std::io::stdout();
 
     write!(stdout, "Press enter to continue...").unwrap();
     stdout.flush().unwrap();
@@ -44,11 +43,17 @@ fn run_vulkan() -> Result<(), Box<dyn std::error::Error>> {
     let (window, event_loop) = window::Window::new(width, height, "Sparkle-rs")?;
     let w = window.winit_window_arc();
 
-    let vulkan_backend = engine::vulkan_backend::initialize(w, &settings)?;
+    let mut vk_backend = engine::vulkan_backend::initialize(w, &settings)?;
 
-    window.run(event_loop, move |window, events| {
+    window.run(event_loop, move |_window, events| {
+        if events.contains(&WindowEvent::CloseRequested) {
+            if let Err(e) = vk_backend.wait_idle() {
+                println!("Error while waiting for GPU to idle: {e:?}");
+            }
+            return;
+        }
         // handle_events(events, &mut editor, &mut last_cursor_pos, &mut fps, window);
-        if let Err(e) = vulkan_backend.draw() {
+        if let Err(e) = vk_backend.draw() {
             println!("Draw failed: {e:?}");
         }
     })?;

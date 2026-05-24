@@ -1,7 +1,6 @@
 use std::ffi::{CStr, c_void};
 
 use wgpu::rwh::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
-use winit::dpi::LogicalSize;
 
 use crate::engine::{
     backend::{GpuError, GpuErrorKind},
@@ -281,8 +280,9 @@ pub fn choose_swap_extent(
         capabilities.current_extent
     } else {
         // The surface allows us to choose the extent, so we use the window size clamped to the allowed range
-        let LogicalSize::<u32> { width, height } =
-            window.inner_size().to_logical(window.scale_factor());
+        // let winit::dpi::LogicalSize::<u32> { width, height } =
+        //     window.inner_size().to_logical(window.scale_factor());
+        let winit::dpi::PhysicalSize::<u32> { width, height } = window.inner_size();
         ash::vk::Extent2D {
             width: width.clamp(
                 capabilities.min_image_extent.width,

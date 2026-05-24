@@ -1,6 +1,7 @@
 /target
 **/*.rs.bk
 
+assets/
 assets/**/*.jpg
 assets/**/*.png
 assets/**/*.bin
