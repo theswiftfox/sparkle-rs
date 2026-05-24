@@ -17,10 +17,8 @@ use super::settings::Settings;
 use super::skybox::Skybox;
 
 use crate::import;
-use crate::input::input_handler::InputHandler;
 use crate::input::Camera;
 
-use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -39,8 +37,6 @@ pub struct Renderer<B: GpuBackend> {
     output_program: Option<OutputPass<B>>,
     /// Path to the currently loaded glTF scene file.
     scene_file: Option<String>,
-    input_handler: Option<Rc<RefCell<dyn InputHandler>>>,
-    camera: Option<Rc<RefCell<dyn Camera>>>,
     backend: B,
     clock: Instant,
 }
@@ -68,8 +64,6 @@ impl<B: GpuBackend> Renderer<B> {
             ssao_program: None,
             output_program: None,
             scene_file: None,
-            input_handler: None,
-            camera: None,
             backend,
             clock: Instant::now(),
         })
@@ -85,6 +79,10 @@ impl<B: GpuBackend> Renderer<B> {
 
     pub fn settings(&self) -> &Settings {
         &self.settings
+    }
+
+    pub fn settings_mut(&mut self) -> &mut Settings {
+        &mut self.settings
     }
 
     // ---- Scene data accessors for editor ----
@@ -189,14 +187,11 @@ impl<B: GpuBackend> Renderer<B> {
         self.scene.build_matrices(&self.backend);
     }
 
-    pub fn set_input_handler(&mut self, handler: Rc<RefCell<dyn InputHandler>>) {
-        self.input_handler = Some(handler);
-    }
-
-    /// Set the camera and propagate its projection matrix to all passes.
-    pub fn set_camera(&mut self, cam: Rc<RefCell<dyn Camera>>) {
-        let proj = cam.borrow().projection_mat();
-        let (near, far) = cam.borrow().near_far();
+    /// Propagate the camera's projection matrix to all passes.
+    /// Call once after creating the renderer or when switching cameras.
+    pub fn set_camera_projection(&mut self, camera: &dyn Camera) {
+        let proj = camera.projection_mat();
+        let (near, far) = camera.near_far();
 
         if let Some(ref mut fwd) = self.forward_program {
             fwd.set_proj(proj);
@@ -211,8 +206,6 @@ impl<B: GpuBackend> Renderer<B> {
         if let Some(ref mut ssao) = self.ssao_program {
             ssao.set_proj(proj);
         }
-
-        self.camera = Some(cam);
     }
 
     /// Resize the backend and all resolution-dependent render targets.
@@ -607,39 +600,27 @@ impl<B: GpuBackend> Renderer<B> {
     /// frame timing (dt), FPS tracking, and window title updates.
     ///
     /// For editor integration, use the three-step flow instead:
-    ///   1. `update_state(dt)` — process input and camera
-    ///   2. `render_scene()` — execute all render passes (no present)
+    ///   1. `update_state(dt, camera)` — update camera matrices and uniforms
+    ///   2. `render_scene(camera)` — execute all render passes (no present)
     ///   3. `finish_frame()` — submit commands and present
     /// Between steps 2 and 3, the editor can render its overlay (egui).
-    pub fn update(&mut self, dt: f32) -> Result<(), GpuError> {
-        self.update_state(dt);
-        self.render_scene()?;
+    pub fn update(&mut self, dt: f32, camera: &mut dyn Camera) -> Result<(), GpuError> {
+        self.update_state(dt, camera);
+        self.render_scene(camera)?;
         self.finish_frame()
     }
 
-    /// Step 1: Update input and camera state. Call before render_scene().
-    pub fn update_state(&mut self, dt: f32) {
-        // Update camera direction vectors first (from Euler angles + mouse input)
-        // so that movement uses the current frame's direction, not last frame's.
-        if let Some(cam) = self.camera.clone() {
-            cam.borrow_mut().update(dt);
-        }
-
-        // Apply movement (uses the freshly-computed front/right vectors)
-        if let Some(ref ih) = self.input_handler {
-            ih.borrow_mut().update(dt, &mut self.settings);
-        }
-
-        // Propagate final camera state to GPU uniform buffers
-        if let Some(cam) = self.camera.clone() {
-            self.update_camera_uniforms(&cam);
-        }
+    /// Step 1: Update camera state and propagate to GPU uniform buffers.
+    /// Call before render_scene().
+    pub fn update_state(&mut self, dt: f32, camera: &mut dyn Camera) {
+        camera.update(dt);
+        self.update_camera_uniforms(camera);
     }
 
     /// Step 2: Execute the full rendering pipeline (all passes), but do NOT
     /// present. Call after update_state() and before finish_frame().
-    pub fn render_scene(&mut self) -> Result<(), GpuError> {
-        self.render()
+    pub fn render_scene(&mut self, camera: &dyn Camera) -> Result<(), GpuError> {
+        self.render(camera)
     }
 
     /// Step 3: Submit GPU commands and present the frame.
@@ -650,10 +631,9 @@ impl<B: GpuBackend> Renderer<B> {
     }
 
     /// Upload current camera state to all pass uniform buffers.
-    fn update_camera_uniforms(&mut self, cam: &Rc<RefCell<dyn Camera>>) {
-        let cam = cam.borrow();
-        let view = cam.view_mat();
-        let pos = cam.position();
+    fn update_camera_uniforms(&mut self, camera: &dyn Camera) {
+        let view = camera.view_mat();
+        let pos = camera.position();
         let ssao_enabled = self.settings.ssao;
 
         if let Some(ref mut fwd) = self.forward_program {
@@ -683,7 +663,7 @@ impl<B: GpuBackend> Renderer<B> {
     }
 
     /// Execute the full rendering pipeline for one frame.
-    fn render(&mut self) -> Result<(), GpuError> {
+    fn render(&mut self, camera: &dyn Camera) -> Result<(), GpuError> {
         self.backend.begin_frame()?;
 
         let backbuffer = self.backend.backbuffer().clone();
@@ -805,16 +785,14 @@ impl<B: GpuBackend> Renderer<B> {
         for mut light in lights {
             if light.t != LightType::Ambient {
                 // Calculate light-space matrix for shadow mapping
-                if let Some(ref cam) = self.camera {
-                    let dir = light.position * (-1.0) * self.shadow_dist;
-                    let mut up = glm::vec3(0.0, 1.0, 0.0);
-                    if (up.dot(&dir.normalize()) - 1.0).abs() <= 0.0000001 {
-                        up = glm::vec3(0.0, 0.0, 1.0);
-                    }
-                    let pos = cam.borrow().position();
-                    let light_view = glm::look_at(&(pos + dir), &pos, &up);
-                    light.light_proj = light.light_proj * light_view;
+                let dir = light.position * (-1.0) * self.shadow_dist;
+                let mut up = glm::vec3(0.0, 1.0, 0.0);
+                if (up.dot(&dir.normalize()) - 1.0).abs() <= 0.0000001 {
+                    up = glm::vec3(0.0, 0.0, 1.0);
                 }
+                let pos = camera.position();
+                let light_view = glm::look_at(&(pos + dir), &pos, &up);
+                light.light_proj = light.light_proj * light_view;
 
                 // Shadow pass
                 if let Some(ref mut shadow) = self.shadow_program {

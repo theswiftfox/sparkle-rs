@@ -20,8 +20,6 @@ use crate::engine::wgpu_backend::WgpuBackend;
 use crate::input::Camera;
 use crate::input::orbit::OrbitCamera;
 
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::time::Instant;
 
 /// Whether the application is in editor or play mode.
@@ -49,7 +47,7 @@ pub struct Editor {
     egui_ctx: egui::Context,
     egui_winit: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
-    orbit_camera: Rc<RefCell<OrbitCamera>>,
+    orbit_camera: OrbitCamera,
     mouse_state: MouseState,
     frame_start: Instant,
     frame_count: u32,
@@ -118,7 +116,7 @@ impl Editor {
             egui_wgpu::RendererOptions::PREDICTABLE
         );
 
-        let orbit_camera = OrbitCamera::new_ptr(aspect, fov, near, far);
+        let orbit_camera = OrbitCamera::new(aspect, fov, near, far);
 
         Editor {
             mode: EditorMode::Editor,
@@ -157,8 +155,8 @@ impl Editor {
         self.mode
     }
 
-    pub fn orbit_camera(&self) -> Rc<RefCell<OrbitCamera>> {
-        self.orbit_camera.clone()
+    pub fn orbit_camera(&mut self) -> &mut OrbitCamera {
+        &mut self.orbit_camera
     }
 
     /// Returns true if egui consumed pointer input this frame
@@ -238,7 +236,7 @@ impl Editor {
                     MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 24.0,
                 };
                 if scroll.abs() > 0.0 {
-                    self.orbit_camera.borrow_mut().zoom(scroll);
+                    self.orbit_camera.zoom(scroll);
                 }
             }
             _ => {}
@@ -255,9 +253,9 @@ impl Editor {
             return;
         }
         if self.mouse_state.right_down {
-            self.orbit_camera.borrow_mut().orbit(dx, dy);
+            self.orbit_camera.orbit(dx, dy);
         } else if self.mouse_state.middle_down {
-            self.orbit_camera.borrow_mut().pan(dx, dy);
+            self.orbit_camera.pan(dx, dy);
         }
     }
 
@@ -336,10 +334,8 @@ impl Editor {
         );
 
         // Pre-capture camera matrices and editor flags for gizmo + picking.
-        let cam = self.orbit_camera.borrow();
-        let cam_view = cam.view_mat();
-        let cam_proj = cam.projection_mat();
-        drop(cam);
+        let cam_view = self.orbit_camera.view_mat();
+        let cam_proj = self.orbit_camera.projection_mat();
         let egui_wants_keyboard = self.egui_wants_keyboard;
         let egui_wants_pointer = self.egui_wants_pointer;
 
@@ -512,7 +508,7 @@ impl Editor {
 
         // Apply orientation gizmo camera snap
         if let Some((az, el)) = orientation_snap {
-            self.orbit_camera.borrow_mut().set_orientation(az, el);
+            self.orbit_camera.set_orientation(az, el);
         }
 
         // Restore gizmo state (was extracted before run() to avoid borrow

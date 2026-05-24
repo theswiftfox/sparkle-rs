@@ -41,15 +41,6 @@ impl OrbitCamera {
         }
     }
 
-    pub fn new_ptr(
-        aspect: f32,
-        fov: f32,
-        near: f32,
-        far: f32,
-    ) -> std::rc::Rc<std::cell::RefCell<Self>> {
-        std::rc::Rc::new(std::cell::RefCell::new(Self::new(aspect, fov, near, far)))
-    }
-
     /// Rotate the camera around the focus point.
     /// `dx` and `dy` are pixel deltas from mouse movement.
     pub fn orbit(&mut self, dx: f32, dy: f32) {

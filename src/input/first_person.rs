@@ -135,16 +135,6 @@ impl FPSController {
             settings: AppSettings::default(),
         }
     }
-    pub fn create_ptr(
-        aspect: f32,
-        fov: f32,
-        near: f32,
-        far: f32,
-    ) -> std::rc::Rc<std::cell::RefCell<FPSController>> {
-        std::rc::Rc::new(std::cell::RefCell::from(FPSController::create(
-            aspect, fov, near, far,
-        )))
-    }
     fn get_front(&self) -> glm::Vec3 {
         self.front.clone()
     }

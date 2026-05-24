@@ -10,6 +10,18 @@ mod window;
 
 use std::io;
 use std::io::prelude::*;
+
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+
+use crate::{
+    engine::backend::GpuBackend as _,
+    input::{
+        first_person::FPSController,
+        input_handler::{
+            Action, ApplicationRequest, Button, InputHandler as _, ScrollAxis, translate_key,
+        },
+    },
+};
 fn pause() {
     let mut stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -20,12 +32,25 @@ fn pause() {
     let _ = stdin.read(&mut [0u8]).unwrap();
 }
 
-fn run() -> Result<(), Box<dyn std::error::Error>> {
-    use engine::backend::GpuBackend;
-    use input::first_person::FPSController;
-    use std::cell::RefCell;
-    use std::rc::Rc;
+fn run_vulkan() -> Result<(), Box<dyn std::error::Error>> {
+    let settings = engine::settings::Settings::load();
+    let (width, height) = settings.resolution;
 
+    println!(
+        "sparkle-rs: creating {}x{} window with Vulkan backend.",
+        width, height
+    );
+
+    let (window, event_loop) = window::Window::new(width, height, "Sparkle-rs")?;
+    let _event_loop = event_loop;
+    let w = window.winit_window_arc();
+
+    let _ = engine::vulkan_backend::initialize(w, &settings)?;
+
+    Ok(())
+}
+
+fn run_wgpu() -> Result<(), Box<dyn std::error::Error>> {
     let settings = engine::settings::Settings::load();
     let (width, height) = settings.resolution;
     println!(
@@ -33,229 +58,216 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         width, height
     );
 
-    let window = window::Window::new(width, height, "Sparkle-rs");
+    let (window, event_loop) = window::Window::new(width, height, "Sparkle-rs")?;
+    let w = window.winit_window_arc();
 
-    let mut renderer: Option<engine::renderer::Renderer<engine::wgpu_backend::WgpuBackend>> = None;
-    let mut settings_opt = Some(settings);
+    let aspect = width as f32 / height as f32;
+    let fov = settings.camera_fov;
+    let view_distance = settings.view_distance;
 
-    // Shared editor state for event callbacks.
-    // The Rc<RefCell<Option<...>>> pattern lets us set the editor in the frame
-    // callback while having the event callbacks (set earlier) reference it.
-    let editor_rc: Rc<RefCell<Option<editor::Editor>>> = Rc::new(RefCell::new(None));
+    let backend = engine::wgpu_backend::WgpuBackend::init(w.clone())?;
+    let mut renderer = engine::renderer::Renderer::create(backend, settings)?;
 
-    // FPS controller — stored in a shared Rc so the event filter
-    // callback (which captures this) can switch cameras on mode change.
-    let fps_for_f1: Rc<RefCell<Option<Rc<RefCell<FPSController>>>>> =
-        Rc::new(RefCell::new(None));
+    let mut fps = FPSController::create(aspect, fov, 0.1, view_distance);
 
-    // Track the last editor mode to detect mode changes and switch cameras.
+    match renderer.init_draw_programs() {
+        Ok(()) => {}
+        Err(e) => {
+            eprintln!(
+                "Warning: draw program init failed: {} (falling back to clear-only)",
+                e
+            );
+        }
+    }
+
+    let mut editor = editor::Editor::new(&w, renderer.backend(), aspect, fov, 0.1, view_distance);
+    renderer.set_camera_projection(editor.orbit_camera());
+
+    let scene_path = "assets/glTF/Sponza.gltf";
+    match renderer.load_scene(scene_path) {
+        Ok(()) => println!("Scene loaded: {}", scene_path),
+        Err(e) => {
+            eprintln!("Warning: scene loading failed: {}", e);
+        }
+    }
+
     let mut last_mode: Option<editor::EditorMode> = None;
+    let mut last_cursor_pos: Option<(f64, f64)> = None;
 
-    // Set up the event filter closure that forwards events to the editor.
-    let editor_for_events = editor_rc.clone();
+    window.run(event_loop, move |window, events| {
+        handle_events(events, &mut editor, &mut last_cursor_pos, &mut fps, window);
 
-    window.run(move |window| {
-        // ---- One-time initialization (first frame) ----
-        if renderer.is_none() {
-            if let Some(w) = window.winit_window_arc() {
-                match engine::wgpu_backend::WgpuBackend::init(w.clone()) {
-                    Ok(backend) => {
-                        let s = settings_opt.take().unwrap();
-                        let aspect = width as f32 / height as f32;
-                        let fov = s.camera_fov;
-                        let view_distance = s.view_distance;
+        let (ww, wh) = window.get_resolution();
+        let (bw, bh) = renderer.backend().resolution();
+        if ww != bw || wh != bh {
+            renderer.resize(ww, wh);
+        }
 
-                        match engine::renderer::Renderer::create(backend, s) {
-                            Ok(mut r) => {
-                                // Create FPS camera controller
-                                let fps = FPSController::create_ptr(
-                                    aspect,
-                                    fov,
-                                    0.1,
-                                    view_distance,
-                                );
-                                *fps_for_f1.borrow_mut() = Some(fps.clone());
+        let current_mode = editor.mode();
+        if last_mode != Some(current_mode) {
+            match current_mode {
+                editor::EditorMode::Editor => {
+                    renderer.set_camera_projection(editor.orbit_camera());
+                    println!("Switched to Editor mode (orbit camera)");
+                }
+                editor::EditorMode::Play => {
+                    renderer.set_camera_projection(&fps);
+                    println!("Switched to Play mode (FPS camera)");
+                }
+            }
+            last_mode = Some(current_mode);
+        }
 
-                                // Wire input handler to window + renderer
-                                window.set_input_handler(fps.clone());
-                                r.set_input_handler(fps.clone());
+        editor.begin_frame(window.winit_window(), &mut renderer);
 
-                                // Initialize all draw programs (shaders + pipelines)
-                                match r.init_draw_programs() {
-                                    Ok(()) => {}
-                                    Err(e) => {
-                                        eprintln!(
-                                            "Warning: draw program init failed: {} \
-                                             (falling back to clear-only)",
-                                            e
-                                        );
-                                    }
-                                }
+        if editor.pending_quit {
+            window.request_quit();
+            return;
+        }
 
-                                // Create the editor
-                                let ed = editor::Editor::new(
-                                    &w,
-                                    r.backend(),
-                                    aspect,
-                                    fov,
-                                    0.1,
-                                    view_distance,
-                                );
+        if let Some(ref _path) = editor.pending_scene_load.take() {}
 
-                                // Editor starts in Editor mode — use orbit camera
-                                let orbit = ed.orbit_camera();
-                                r.set_camera(orbit);
+        match current_mode {
+            editor::EditorMode::Editor => {
+                renderer.update_state(0.016, editor.orbit_camera());
 
-                                // Store the editor in the shared Rc so event
-                                // callbacks can access it.
-                                *editor_for_events.borrow_mut() = Some(ed);
+                if let Err(e) = renderer.render_scene(editor.orbit_camera()) {
+                    eprintln!("Render error: {}", e);
+                    return;
+                }
+            }
+            editor::EditorMode::Play => {
+                fps.update(0.016, &mut renderer.settings_mut());
+                renderer.update_state(0.016, &mut fps);
 
-                                // Set up event filter: forward events to editor/egui
-                                let editor_for_filter = editor_for_events.clone();
-                                window.set_event_filter(move |winit_win, event| {
-                                    let mut editor_cell = editor_for_filter.borrow_mut();
-                                    if let Some(ref mut ed) = *editor_cell {
-                                        // Handle F1 mode toggle before egui processes
-                                        // the event. This is never consumed by egui.
-                                        if let winit::event::WindowEvent::KeyboardInput {
-                                            event: key_event,
-                                            ..
-                                        } = event
-                                        {
-                                            if key_event.state
-                                                == winit::event::ElementState::Pressed
-                                                && !key_event.repeat
-                                            {
-                                                if let winit::keyboard::PhysicalKey::Code(
-                                                    winit::keyboard::KeyCode::F1,
-                                                ) = key_event.physical_key
-                                                {
-                                                    ed.toggle_mode();
-                                                    // Don't consume — let it fall through
-                                                    // so the frame callback sees the new mode.
-                                                }
-                                            }
-                                        }
-
-                                        return ed.handle_window_event(winit_win, event);
-                                    }
-                                    false
-                                });
-
-                                // Set up mouse delta callback for orbit camera
-                                let editor_for_delta = editor_for_events.clone();
-                                window.set_mouse_delta_callback(move |dx, dy| {
-                                    let mut editor_cell = editor_for_delta.borrow_mut();
-                                    if let Some(ref mut ed) = *editor_cell {
-                                        ed.handle_mouse_delta(dx, dy);
-                                    }
-                                });
-
-                                // Load glTF scene
-                                let scene_path = "assets/glTF/Sponza.gltf";
-                                match r.load_scene(scene_path) {
-                                    Ok(()) => println!("Scene loaded: {}", scene_path),
-                                    Err(e) => {
-                                        eprintln!(
-                                            "Warning: scene loading failed: {}",
-                                            e
-                                        );
-                                    }
-                                }
-                                renderer = Some(r);
-                            }
-                            Err(e) => {
-                                eprintln!("Failed to create renderer: {}", e);
-                                return;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to initialize wgpu backend: {}", e);
-                        return;
-                    }
+                if let Err(e) = renderer.render_scene(&fps) {
+                    eprintln!("Render error: {}", e);
+                    return;
                 }
             }
         }
 
-        // ---- Per-frame update ----
-        if let Some(ref mut r) = renderer {
-            // Handle resize
-            let (ww, wh) = window.get_resolution();
-            let (bw, bh) = r.backend().resolution();
-            if ww != bw || wh != bh {
-                r.resize(ww, wh);
-            }
+        editor.render_overlay(&mut renderer);
 
-            // Borrow the editor for this frame
-            let mut editor_cell = editor_for_events.borrow_mut();
-            if let Some(ref mut ed) = *editor_cell {
-                // Detect mode changes and switch cameras accordingly
-                let current_mode = ed.mode();
-                if last_mode != Some(current_mode) {
-                    match current_mode {
-                        editor::EditorMode::Editor => {
-                            let orbit = ed.orbit_camera();
-                            r.set_camera(orbit);
-                            println!("Switched to Editor mode (orbit camera)");
-                        }
-                        editor::EditorMode::Play => {
-                            if let Some(ref fps) = *fps_for_f1.borrow() {
-                                r.set_camera(fps.clone());
-                                println!("Switched to Play mode (FPS camera)");
-                            }
-                        }
-                    }
-                    last_mode = Some(current_mode);
-                }
-
-                // Begin egui frame (draws UI, extracts scene data, applies edits)
-                if let Some(w) = window.winit_window() {
-                    ed.begin_frame(w, r);
-                }
-
-                // Handle pending actions from editor UI
-                if ed.pending_quit {
-                    window.request_quit();
-                    return;
-                }
-
-                // Handle scene load requests
-                if let Some(ref _path) = ed.pending_scene_load.take() {
-                    // Scene loading will be improved in Phase 3 with a file dialog.
-                    // For now the menu just reloads the default scene.
-                }
-
-                // Step 1: Update input and camera state
-                r.update_state(0.016);
-
-                // Step 2: Render the scene (all passes, no present)
-                if let Err(e) = r.render_scene() {
-                    eprintln!("Render error: {}", e);
-                    return;
-                }
-
-                // Step 3: Render egui overlay on top of the scene
-                ed.render_overlay(r);
-
-                // Step 4: Submit and present
-                if let Err(e) = r.finish_frame() {
-                    eprintln!("Frame finish error: {}", e);
-                }
-            } else {
-                // No editor — use the legacy single-call path
-                if let Err(e) = r.update(0.016) {
-                    eprintln!("Render error: {}", e);
-                }
-            }
+        if let Err(e) = renderer.finish_frame() {
+            eprintln!("Frame finish error: {}", e);
         }
-    });
+    })?;
 
     Ok(())
 }
 
+fn handle_events(
+    events: &[WindowEvent],
+    editor: &mut editor::Editor,
+    last_cursor_pos: &mut Option<(f64, f64)>,
+    fps: &mut FPSController,
+    window: &mut window::Window,
+) {
+    for event in events {
+        if let WindowEvent::KeyboardInput {
+            event: key_event, ..
+        } = event
+        {
+            if key_event.state == ElementState::Pressed && !key_event.repeat {
+                if let winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::F1) =
+                    key_event.physical_key
+                {
+                    editor.toggle_mode();
+                }
+            }
+        }
+
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            if let Some((lx, ly)) = last_cursor_pos {
+                let dx = position.x - *lx;
+                let dy = position.y - *ly;
+
+                editor.handle_mouse_delta(dx as f32, dy as f32);
+
+                if editor.mode() == editor::EditorMode::Play {
+                    fps.handle_mouse_move(dx as i32, dy as i32);
+                }
+            }
+            *last_cursor_pos = Some((position.x, position.y));
+        }
+
+        let consumed = editor.handle_window_event(window.winit_window(), event);
+
+        if consumed {
+            continue;
+        }
+
+        match event {
+            WindowEvent::KeyboardInput {
+                event: key_event, ..
+            } => {
+                let action = match key_event.state {
+                    ElementState::Pressed => Action::Down,
+                    ElementState::Released => Action::Up,
+                };
+                let key = match key_event.physical_key {
+                    winit::keyboard::PhysicalKey::Code(code) => translate_key(code),
+                    _ => input::input_handler::Key::None,
+                };
+                match fps.handle_key(key, action) {
+                    ApplicationRequest::Quit => window.request_quit(),
+                    _ => {}
+                }
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                let action = match state {
+                    ElementState::Pressed => Action::Down,
+                    ElementState::Released => Action::Up,
+                };
+                let btn = match button {
+                    MouseButton::Left => Button::Left,
+                    MouseButton::Right => Button::Right,
+                    MouseButton::Middle => Button::Middle,
+                    _ => continue,
+                };
+                match fps.handle_mouse(btn, action) {
+                    ApplicationRequest::SnapMouse => {
+                        window.winit_window().set_cursor_visible(false);
+                        let size = window.winit_window().inner_size();
+                        let cx = size.width as f64 / 2.0;
+                        let cy = size.height as f64 / 2.0;
+                        let _ = window
+                            .winit_window()
+                            .set_cursor_position(winit::dpi::PhysicalPosition::new(cx, cy));
+                        *last_cursor_pos = Some((cx, cy));
+                    }
+                    ApplicationRequest::UnsnapMouse => {
+                        window.winit_window().set_cursor_visible(true);
+                    }
+                    _ => {}
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => match delta {
+                MouseScrollDelta::LineDelta(x, y) => {
+                    if y.abs() > 0.0 {
+                        fps.handle_wheel(ScrollAxis::Vertical, y * 24.0);
+                    }
+                    if x.abs() > 0.0 {
+                        fps.handle_wheel(ScrollAxis::Horizontal, x * 24.0);
+                    }
+                }
+                MouseScrollDelta::PixelDelta(pos) => {
+                    if pos.y.abs() > 0.0 {
+                        fps.handle_wheel(ScrollAxis::Vertical, pos.y as f32);
+                    }
+                    if pos.x.abs() > 0.0 {
+                        fps.handle_wheel(ScrollAxis::Horizontal, pos.x as f32);
+                    }
+                }
+            },
+            _ => {}
+        }
+    }
+}
+
 fn main() {
-    match run() {
+    match run_wgpu() {
         Ok(_) => (),
         Err(e) => {
             println!("{}", e);
