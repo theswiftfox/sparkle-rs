@@ -1,6 +1,7 @@
 use std::ffi::{CStr, c_void};
 
 use wgpu::rwh::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
+use winit::dpi::LogicalSize;
 
 use crate::engine::{
     backend::{GpuError, GpuErrorKind},
@@ -269,4 +270,50 @@ pub fn choose_present_mode(
             // Fallback to FIFO if the preferred mode isn't found, as it's guaranteed to be supported
             ash::vk::PresentModeKHR::FIFO
         }))
+}
+
+pub fn choose_swap_extent(
+    capabilities: &ash::vk::SurfaceCapabilitiesKHR,
+    window: &winit::window::Window,
+) -> ash::vk::Extent2D {
+    if capabilities.current_extent.width != u32::MAX {
+        // The surface has specified a fixed size, so we must use it
+        capabilities.current_extent
+    } else {
+        // The surface allows us to choose the extent, so we use the window size clamped to the allowed range
+        let LogicalSize::<u32> { width, height } =
+            window.inner_size().to_logical(window.scale_factor());
+        ash::vk::Extent2D {
+            width: width.clamp(
+                capabilities.min_image_extent.width,
+                capabilities.max_image_extent.width,
+            ),
+            height: height.clamp(
+                capabilities.min_image_extent.height,
+                capabilities.max_image_extent.height,
+            ),
+        }
+    }
+}
+
+pub fn choose_swap_min_image_count(capabilities: &ash::vk::SurfaceCapabilitiesKHR) -> u32 {
+    let min_image_count = capabilities.min_image_count.max(3); // Prefer triple buffering if supported
+    if capabilities.max_image_count > 0 && min_image_count > capabilities.max_image_count {
+        println!(
+            "Requested swapchain image count {} exceeds the maximum supported {}, falling back to max",
+            min_image_count, capabilities.max_image_count
+        );
+        capabilities.max_image_count
+    } else {
+        min_image_count
+    }
+}
+
+pub fn load_shader_blob(path: impl AsRef<std::path::Path>) -> Result<Vec<u8>, GpuError> {
+    std::fs::read(path).map_err(|e| {
+        GpuError::new(
+            format!("Failed to read shader SPIR-V blob: {e}"),
+            GpuErrorKind::Other,
+        )
+    })
 }

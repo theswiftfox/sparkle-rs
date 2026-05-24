@@ -1,18 +1,41 @@
 use std::{
-    ffi::{CStr, c_char},
+    ffi::{CStr, c_char, c_void},
     ops::Deref,
     sync::Arc,
 };
 
+use wgpu::wgc::command;
+
 use crate::engine::{
     backend::{GpuError, GpuErrorKind},
-    settings::Settings,
+    settings::{Settings, SyncMode},
 };
 
+mod renderpass;
 mod util;
 
 const VALIDATION_LAYER: &CStr =
     unsafe { CStr::from_bytes_with_nul_unchecked(b"VK_LAYER_KHRONOS_validation\0") };
+const SHADER_ENTRY_POINT: &CStr = unsafe { CStr::from_bytes_with_nul_unchecked(b"main\0") };
+
+const REQUIRED_EXTS: [&CStr; 2] = [
+    ash::vk::KHR_SWAPCHAIN_NAME,
+    ash::vk::KHR_SHADER_DRAW_PARAMETERS_NAME,
+];
+
+struct Instance {
+    instance: ash::Instance,
+    debug_messenger: Option<ash::vk::DebugUtilsMessengerEXT>,
+    validation_enabled: bool,
+}
+
+impl Deref for Instance {
+    type Target = ash::Instance;
+
+    fn deref(&self) -> &Self::Target {
+        &self.instance
+    }
+}
 
 struct LogicalDevice {
     device: ash::Device,
@@ -33,7 +56,38 @@ impl Deref for LogicalDevice {
     }
 }
 
-pub fn initialize(window: Arc<winit::window::Window>, settings: &Settings) -> Result<(), GpuError> {
+struct Swapchain {
+    fn_ptr: ash::khr::swapchain::Device,
+    swapchain: ash::vk::SwapchainKHR,
+    swapchain_images: Vec<ash::vk::Image>,
+    swapchain_extent: ash::vk::Extent2D,
+    surface_format: ash::vk::SurfaceFormatKHR,
+}
+
+struct SyncObjects {
+    present_sem: ash::vk::Semaphore,
+    render_sem: ash::vk::Semaphore,
+    draw_fence: ash::vk::Fence,
+}
+
+pub struct VulkanBackend {
+    context: ash::Entry,
+    instance: Instance,
+    phys_device: ash::vk::PhysicalDevice,
+    device: LogicalDevice,
+    swapchain: Swapchain,
+    queue: ash::vk::Queue,
+    image_views: Vec<ash::vk::ImageView>,
+    graphics_pipeline: ash::vk::Pipeline,
+    command_pool: ash::vk::CommandPool,
+    command_buffer: ash::vk::CommandBuffer,
+    sync_objects: SyncObjects,
+}
+
+pub fn initialize(
+    window: Arc<winit::window::Window>,
+    settings: &Settings,
+) -> Result<VulkanBackend, GpuError> {
     let enable_validation = settings.gpu_validation;
     let sync_mode = settings.sync_mode;
 
@@ -42,11 +96,9 @@ pub fn initialize(window: Arc<winit::window::Window>, settings: &Settings) -> Re
 
     let instance = create_instance(&context, &window, enable_validation)?;
 
-    let debug_messenger = if enable_validation {
-        Some(setup_debug_messenger(&context, &instance)?)
-    } else {
-        None
-    };
+    // if instance.validation_enabled {
+    //     instance.debug_messenger = Some(setup_debug_messenger(&context, &instance)?);
+    // }
 
     let physical_device = get_physical_device(&instance)?;
 
@@ -56,16 +108,319 @@ pub fn initialize(window: Arc<winit::window::Window>, settings: &Settings) -> Re
 
     let queue = logical_device.get_graphics_queue();
 
-    todo!()
+    let swapchain = create_swapchain(
+        &context,
+        &instance,
+        &window,
+        physical_device,
+        &logical_device,
+        surface,
+        sync_mode,
+    )?;
+    let image_views = create_image_views(&logical_device, &swapchain)?;
+
+    let pipeline = create_graphics_pipeline(&logical_device, &swapchain)?;
+
+    let command_pool = create_command_pool(&logical_device)?;
+
+    let command_buffer = create_command_buffer(&logical_device, command_pool)?;
+
+    let sync_objects = create_sync_objs(&logical_device)?;
+
+    Ok(VulkanBackend {
+        context,
+        instance,
+        phys_device: physical_device,
+        device: logical_device,
+        swapchain,
+        queue,
+        image_views,
+        graphics_pipeline: pipeline,
+        command_pool,
+        command_buffer,
+        sync_objects,
+    })
+}
+
+fn create_command_buffer(
+    device: &LogicalDevice,
+    command_pool: ash::vk::CommandPool,
+) -> Result<ash::vk::CommandBuffer, GpuError> {
+    let alloc_info = ash::vk::CommandBufferAllocateInfo {
+        command_pool,
+        level: ash::vk::CommandBufferLevel::PRIMARY,
+        command_buffer_count: 1,
+        ..Default::default()
+    };
+
+    let command_buffers = unsafe { device.allocate_command_buffers(&alloc_info) }.map_err(|e| {
+        GpuError::new(
+            format!("Failed to allocate command buffer: {e:?}"),
+            GpuErrorKind::ResourceCreation,
+        )
+    })?;
+
+    command_buffers.into_iter().next().ok_or_else(|| {
+        GpuError::new(
+            "Allocate command buffers returned empty result.",
+            GpuErrorKind::ResourceCreation,
+        )
+    })
+}
+
+fn create_command_pool(device: &LogicalDevice) -> Result<ash::vk::CommandPool, GpuError> {
+    let pool_create_info = ash::vk::CommandPoolCreateInfo {
+        flags: ash::vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
+        queue_family_index: device.graphics_queue_index,
+        ..Default::default()
+    };
+
+    unsafe { device.create_command_pool(&pool_create_info, None) }.map_err(|e| {
+        GpuError::new(
+            format!("Failed to create command pool: {e:?}"),
+            GpuErrorKind::ResourceCreation,
+        )
+    })
+}
+
+fn create_sync_objs(device: &LogicalDevice) -> Result<SyncObjects, GpuError> {
+    fn create_default_sem(device: &LogicalDevice) -> Result<ash::vk::Semaphore, GpuError> {
+        unsafe {
+            device.create_semaphore(
+                &ash::vk::SemaphoreCreateInfo {
+                    ..Default::default()
+                },
+                None,
+            )
+        }
+        .map_err(|e| {
+            GpuError::new(
+                format!("Failed to create semaphore: {e:?}"),
+                GpuErrorKind::ResourceCreation,
+            )
+        })
+    }
+    let present_complete_sem = create_default_sem(device)?;
+    let render_finished_sem = create_default_sem(device)?;
+    let draw_fence = unsafe {
+        device.create_fence(
+            &ash::vk::FenceCreateInfo {
+                flags: ash::vk::FenceCreateFlags::SIGNALED,
+                ..Default::default()
+            },
+            None,
+        )
+    }
+    .map_err(|e| {
+        GpuError::new(
+            format!("Fence create failed: {e:?}"),
+            GpuErrorKind::ResourceCreation,
+        )
+    })?;
+
+    Ok(SyncObjects {
+        present_sem: present_complete_sem,
+        render_sem: render_finished_sem,
+        draw_fence,
+    })
+}
+
+fn create_graphics_pipeline(
+    device: &ash::Device,
+    swapchain: &Swapchain,
+) -> Result<ash::vk::Pipeline, GpuError> {
+    let shader_vert = util::load_shader_blob("target/debug/assets/shaders/spv/example.vert.spv")?;
+    let shader_pxl = util::load_shader_blob("target/debug/assets/shaders/spv/example.pxl.spv")?;
+
+    let shader_module_vert = create_shader_module(&shader_vert, device, "Vertex Shader")?;
+    let shader_module_pxl = create_shader_module(&shader_pxl, device, "Pixel Shader")?;
+
+    let vtx_shader_stage_create = ash::vk::PipelineShaderStageCreateInfo {
+        stage: ash::vk::ShaderStageFlags::VERTEX,
+        module: shader_module_vert,
+        p_name: SHADER_ENTRY_POINT.as_ptr(),
+        ..Default::default()
+    };
+    let pxl_shader_stage_create = ash::vk::PipelineShaderStageCreateInfo {
+        stage: ash::vk::ShaderStageFlags::FRAGMENT,
+        module: shader_module_pxl,
+        p_name: SHADER_ENTRY_POINT.as_ptr(),
+        ..Default::default()
+    };
+    let shader_stages = [vtx_shader_stage_create, pxl_shader_stage_create];
+
+    let dynamic_states = [
+        ash::vk::DynamicState::VIEWPORT,
+        ash::vk::DynamicState::SCISSOR,
+    ];
+
+    let dynamic_state_create_info = ash::vk::PipelineDynamicStateCreateInfo {
+        dynamic_state_count: dynamic_states.len() as u32,
+        p_dynamic_states: dynamic_states.as_ptr(),
+        ..Default::default()
+    };
+
+    let vtx_input_state_info = ash::vk::PipelineVertexInputStateCreateInfo {
+        ..Default::default()
+    };
+    let input_assembly_info = ash::vk::PipelineInputAssemblyStateCreateInfo {
+        topology: ash::vk::PrimitiveTopology::TRIANGLE_LIST,
+        ..Default::default()
+    };
+
+    let viewport_create_info = ash::vk::PipelineViewportStateCreateInfo {
+        viewport_count: 1,
+        scissor_count: 1,
+        ..Default::default()
+    };
+
+    let rasterization_state_create_info = ash::vk::PipelineRasterizationStateCreateInfo {
+        depth_clamp_enable: ash::vk::FALSE,
+        rasterizer_discard_enable: ash::vk::FALSE,
+        polygon_mode: ash::vk::PolygonMode::FILL,
+        cull_mode: ash::vk::CullModeFlags::BACK,
+        front_face: ash::vk::FrontFace::CLOCKWISE,
+        depth_bias_enable: ash::vk::FALSE,
+        line_width: 1.0f32,
+        ..Default::default()
+    };
+
+    let multisample_state_create_info = ash::vk::PipelineMultisampleStateCreateInfo {
+        rasterization_samples: ash::vk::SampleCountFlags::TYPE_1,
+        sample_shading_enable: ash::vk::FALSE,
+        ..Default::default()
+    };
+
+    let blend_attachment_state = ash::vk::PipelineColorBlendAttachmentState {
+        blend_enable: ash::vk::FALSE,
+        color_write_mask: ash::vk::ColorComponentFlags::RGBA,
+        ..Default::default()
+    };
+    let blend_state_create_info = ash::vk::PipelineColorBlendStateCreateInfo {
+        logic_op_enable: ash::vk::FALSE,
+        logic_op: ash::vk::LogicOp::COPY,
+        attachment_count: 1,
+        p_attachments: &blend_attachment_state as *const _,
+        ..Default::default()
+    };
+
+    let pipeline_layout_create_info = ash::vk::PipelineLayoutCreateInfo {
+        set_layout_count: 0,
+        push_constant_range_count: 0,
+        ..Default::default()
+    };
+    let pipeline_layout =
+        unsafe { device.create_pipeline_layout(&pipeline_layout_create_info, None) }.map_err(
+            |e| {
+                GpuError::new(
+                    format!("Pipeline Layout creation failed: {e:?}"),
+                    GpuErrorKind::ResourceCreation,
+                )
+            },
+        )?;
+    let rendering_create_info = ash::vk::PipelineRenderingCreateInfo {
+        color_attachment_count: 1,
+        p_color_attachment_formats: &swapchain.surface_format.format as *const _,
+        ..Default::default()
+    };
+
+    let pipeline_create_info = ash::vk::GraphicsPipelineCreateInfo {
+        stage_count: 2,
+        p_stages: shader_stages.as_ptr(),
+        p_vertex_input_state: &vtx_input_state_info as *const _,
+        p_input_assembly_state: &input_assembly_info as *const _,
+        p_viewport_state: &viewport_create_info as *const _,
+        p_rasterization_state: &rasterization_state_create_info as *const _,
+        p_multisample_state: &multisample_state_create_info as *const _,
+        p_color_blend_state: &blend_state_create_info as *const _,
+        p_dynamic_state: &dynamic_state_create_info as *const _,
+        layout: pipeline_layout,
+        render_pass: ash::vk::RenderPass::null(),
+        p_next: &rendering_create_info as *const _ as *const c_void,
+        ..Default::default()
+    };
+
+    let pipeline = unsafe {
+        device.create_graphics_pipelines(
+            ash::vk::PipelineCache::null(),
+            &[pipeline_create_info],
+            None,
+        )
+    }
+    .map_err(|e| {
+        GpuError::new(
+            format!("Failed to create graphics pipeline: {e:?}"),
+            GpuErrorKind::ResourceCreation,
+        )
+    })?;
+
+    pipeline.into_iter().next().ok_or_else(|| {
+        GpuError::new(
+            "Create pipeline returned empty response",
+            GpuErrorKind::ResourceCreation,
+        )
+    })
+}
+
+fn create_shader_module(
+    code: &[u8],
+    device: &ash::Device,
+    module_desc: &str,
+) -> Result<ash::vk::ShaderModule, GpuError> {
+    let create_info = ash::vk::ShaderModuleCreateInfo {
+        code_size: code.len(),
+        p_code: code.as_ptr() as *const u32,
+        ..Default::default()
+    };
+
+    unsafe { device.create_shader_module(&create_info, None) }.map_err(|e| {
+        GpuError::new(
+            format!("Failed to create shader module {module_desc}: {e:?}"),
+            GpuErrorKind::ResourceCreation,
+        )
+    })
+}
+
+fn create_image_views(
+    device: &LogicalDevice,
+    swapchain: &Swapchain,
+) -> Result<Vec<ash::vk::ImageView>, GpuError> {
+    let create_info = ash::vk::ImageViewCreateInfo {
+        view_type: ash::vk::ImageViewType::TYPE_2D,
+        format: swapchain.surface_format.format,
+        subresource_range: ash::vk::ImageSubresourceRange {
+            aspect_mask: ash::vk::ImageAspectFlags::COLOR,
+            layer_count: 1,
+            level_count: 1,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let mut image_views = Vec::new();
+    for image in &swapchain.swapchain_images {
+        let create_info = create_info.image(*image);
+        let img_view = unsafe { device.create_image_view(&create_info, None) }.map_err(|e| {
+            GpuError::new(
+                format!("Failed to create ImageView: {:?}", e),
+                GpuErrorKind::ResourceCreation,
+            )
+        })?;
+        image_views.push(img_view)
+    }
+
+    Ok(image_views)
 }
 
 fn create_swapchain(
     context: &ash::Entry,
     instance: &ash::Instance,
+    window: &winit::window::Window,
     physical_device: ash::vk::PhysicalDevice,
-    surface: ash::vk::SurfaceKHR,
     logical_device: &LogicalDevice,
-) -> Result<(), GpuError> {
+    surface: ash::vk::SurfaceKHR,
+    sync_mode: SyncMode,
+) -> Result<Swapchain, GpuError> {
     let surface_khr = ash::khr::surface::Instance::new(context, instance);
 
     let surface_capababilities = unsafe {
@@ -98,8 +453,49 @@ fn create_swapchain(
                 )
             })?
     };
+    let swap_extent = util::choose_swap_extent(&surface_capababilities, &window);
+    let swap_image_count = util::choose_swap_min_image_count(&surface_capababilities);
+    let swap_format = util::choose_swapchain_format(&surface_formats)?;
+    let present_mode = util::choose_present_mode(&present_modes, sync_mode)?;
 
-    todo!()
+    let create_info = ash::vk::SwapchainCreateInfoKHR {
+        surface,
+        min_image_count: swap_image_count,
+        image_format: swap_format.format,
+        image_color_space: swap_format.color_space,
+        image_extent: swap_extent,
+        image_array_layers: 1,
+        image_usage: ash::vk::ImageUsageFlags::COLOR_ATTACHMENT,
+        image_sharing_mode: ash::vk::SharingMode::EXCLUSIVE,
+        pre_transform: surface_capababilities.current_transform,
+        composite_alpha: ash::vk::CompositeAlphaFlagsKHR::OPAQUE,
+        present_mode,
+        clipped: ash::vk::TRUE,
+        ..Default::default()
+    };
+
+    let swapchain_khr = ash::khr::swapchain::Device::new(instance, logical_device);
+    let swapchain = unsafe { swapchain_khr.create_swapchain(&create_info, None) }.map_err(|e| {
+        GpuError::new(
+            format!("Failed to create swapchain: {:?}", e),
+            GpuErrorKind::ResourceCreation,
+        )
+    })?;
+    let swapchain_images =
+        unsafe { swapchain_khr.get_swapchain_images(swapchain) }.map_err(|e| {
+            GpuError::new(
+                format!("Failed to retrieve swapchain images: {:?}", e),
+                GpuErrorKind::ResourceCreation,
+            )
+        })?;
+
+    Ok(Swapchain {
+        fn_ptr: swapchain_khr,
+        swapchain,
+        swapchain_images,
+        swapchain_extent: swap_extent,
+        surface_format: swap_format,
+    })
 }
 
 fn create_logical_device(
@@ -139,6 +535,7 @@ fn create_logical_device(
     let queue_info = ash::vk::DeviceQueueCreateInfo {
         queue_family_index: idx as u32,
         p_queue_priorities: &prio,
+        queue_count: 1,
         ..Default::default()
     };
 
@@ -155,7 +552,7 @@ fn create_logical_device(
         p_next: &mut vk_13_feats as *mut _ as *mut std::ffi::c_void,
         ..Default::default()
     };
-    let device_exts = [ash::vk::KHR_SWAPCHAIN_NAME];
+    let device_exts = REQUIRED_EXTS;
     let device_exts_ptr = device_exts
         .iter()
         .map(|ext| ext.as_ptr())
@@ -215,7 +612,7 @@ fn get_physical_device(instance: &ash::Instance) -> Result<ash::vk::PhysicalDevi
             let properties = unsafe { instance.get_physical_device_properties(*device) };
 
             // require vulkan 1.3
-            if properties.api_version < ash::vk::API_VERSION_1_3 {
+            if properties.api_version < ash::vk::API_VERSION_1_2 {
                 println!(
                     "Physical device {:?} does not support Vulkan 1.3), skipping",
                     device,
@@ -242,8 +639,8 @@ fn get_physical_device(instance: &ash::Instance) -> Result<ash::vk::PhysicalDevi
                     .enumerate_device_extension_properties(*device)
                     .unwrap_or_default()
             };
-            let required_exts = [ash::vk::KHR_SWAPCHAIN_NAME];
-            if let Some(ext) = required_exts.iter().find(|ext| {
+
+            if let Some(ext) = REQUIRED_EXTS.iter().find(|ext| {
                 !device_exts.iter().any(|prop| {
                     let extension_name = unsafe { CStr::from_ptr(prop.extension_name.as_ptr()) };
                     extension_name == **ext
@@ -282,10 +679,16 @@ fn get_physical_device(instance: &ash::Instance) -> Result<ash::vk::PhysicalDevi
             }
 
             let discrete = properties.device_type == ash::vk::PhysicalDeviceType::DISCRETE_GPU;
+            let is_gpu = properties.device_type == ash::vk::PhysicalDeviceType::DISCRETE_GPU
+                || properties.device_type == ash::vk::PhysicalDeviceType::INTEGRATED_GPU;
             let has_preferred_features = features.tessellation_shader == ash::vk::TRUE
                 && features.sampler_anisotropy == ash::vk::TRUE;
 
-            Some((*device, discrete, has_preferred_features))
+            println!(
+                "Evaluated physical device {:?}: type={:?}, discrete={}, preferred_features={}",
+                device, properties.device_type, discrete, has_preferred_features
+            );
+            Some((*device, discrete, is_gpu, has_preferred_features))
         })
         .collect::<Vec<_>>();
 
@@ -299,7 +702,9 @@ fn get_physical_device(instance: &ash::Instance) -> Result<ash::vk::PhysicalDevi
     // rank devices by discrete > integrated, then by having preferred features
     let best_device = evaluated_devices
         .into_iter()
-        .max_by_key(|(_, discrete, has_features)| (*discrete as u8) << 1 | (*has_features as u8))
+        .max_by_key(|(_, discrete, is_gpu, has_features)| {
+            (*discrete as u8) << 3 | (*is_gpu as u8) << 2 | (*has_features as u8)
+        })
         .unwrap()
         .0;
 
@@ -332,7 +737,7 @@ fn create_instance(
     context: &ash::Entry,
     window: &winit::window::Window,
     enable_validation: bool,
-) -> Result<ash::Instance, GpuError> {
+) -> Result<Instance, GpuError> {
     let app_name = "Sparkle VK";
     let app_name_cstr = std::ffi::CString::new(app_name)
         .map_err(|_| GpuError::new("Failed to create CStr", GpuErrorKind::Other))?;
@@ -347,7 +752,7 @@ fn create_instance(
         application_version,
         p_engine_name: engine_name_cstr.as_ptr(),
         engine_version,
-        api_version: ash::vk::API_VERSION_1_3,
+        api_version: ash::vk::API_VERSION_1_2,
         ..Default::default()
     };
 
@@ -380,10 +785,10 @@ fn create_instance(
         ));
     }
 
-    let validation_layers = if enable_validation {
+    let (validation_layers, layers_enabled) = if enable_validation {
         setup_validation_layers(&context, &mut extension_properties)?
     } else {
-        Vec::new()
+        (Vec::new(), false)
     };
     let validation_layers_ptr = validation_layers
         .iter()
@@ -399,14 +804,20 @@ fn create_instance(
         ..Default::default()
     };
 
-    unsafe { context.create_instance(&instance_info, None) }
-        .map_err(|_| GpuError::new("Failed to create Vulkan instance", GpuErrorKind::Other))
+    let instance = unsafe { context.create_instance(&instance_info, None) }
+        .map_err(|_| GpuError::new("Failed to create Vulkan instance", GpuErrorKind::Other))?;
+
+    Ok(Instance {
+        instance,
+        debug_messenger: None,
+        validation_enabled: layers_enabled,
+    })
 }
 
 fn setup_validation_layers(
     context: &ash::Entry,
     extension_properties: &mut Vec<ash::vk::ExtensionProperties>,
-) -> Result<Vec<&'static CStr>, GpuError> {
+) -> Result<(Vec<&'static CStr>, bool), GpuError> {
     let layer_properties = unsafe { context.enumerate_instance_layer_properties() }
         .map_err(|_| GpuError::new("Failed to enumerate instance layers", GpuErrorKind::Other))?;
     if !layer_properties.iter().any(|prop| {
@@ -417,22 +828,21 @@ fn setup_validation_layers(
             "Warning: Validation layer {} not found, skipping validation",
             VALIDATION_LAYER.to_string_lossy()
         );
-        Ok(Vec::new())
+        Ok((Vec::new(), false))
     } else {
+        let dbg_ext = ash::vk::EXT_DEBUG_UTILS_NAME
+            .to_bytes_with_nul()
+            .iter()
+            .map(|&b| b as c_char)
+            .collect::<Vec<_>>();
+        let n = dbg_ext.len().min(256);
         let mut debug_ext_name: [c_char; 256] = [0; 256];
-        debug_ext_name.copy_from_slice(
-            ash::vk::EXT_DEBUG_UTILS_NAME
-                .to_bytes_with_nul()
-                .iter()
-                .map(|&b| b as c_char)
-                .collect::<Vec<_>>()
-                .as_slice(),
-        );
+        debug_ext_name[0..n].copy_from_slice(dbg_ext.as_slice());
         extension_properties.push(ash::vk::ExtensionProperties {
             extension_name: debug_ext_name,
             spec_version: ash::vk::EXT_DEBUG_UTILS_SPEC_VERSION,
         });
-        Ok(vec![VALIDATION_LAYER])
+        Ok((vec![VALIDATION_LAYER], true))
     }
 }
 

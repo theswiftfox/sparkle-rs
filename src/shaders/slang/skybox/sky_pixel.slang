@@ -6,6 +6,7 @@ struct PS_IN {
 TextureCube skybox : register(t0);
 SamplerState skyboxSampler: register(s0);
 
+[shader("pixel")]
 float4 main(PS_IN input) : SV_TARGET {
     return float4(skybox.Sample(skyboxSampler, input.texCoord).rgb, 1.0);
 }

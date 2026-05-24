@@ -21,11 +21,12 @@ SamplerState samplerMR: register(s1);
 Texture2D txNormal : register(t2);
 SamplerState samplerNormal: register(s2);
 
-cbuffer ubo : register(b0) {
+[[vk::push_constant]] cbuffer ubo : register(b0) {
 	float3 cameraPos;
 	bool ssao;
 }
 
+[shader("pixel")]
 PS_OUT main(PS_IN input) {
 	PS_OUT output;
 	float4 alb = txDiffuse.Sample(samplerLinear, input.txCoord);

@@ -1,5 +1,5 @@
 struct VS_IN {
-	float3 pos			: SV_Position;
+	float3 pos			: POSITION;
 	float3 normal		: NORMAL;
 	float3 tangent		: TANGENT0;
 	float3 bitangent	: BITANGENT0;
@@ -11,15 +11,16 @@ struct VS_OUT {
     float3 texCoord: TEXCOORD;
 };
 
-cbuffer FrameConsts : register(b0) {
+[[vk::push_constant]] cbuffer FrameConsts : register(b0) {
 	float4x4 view;
 	float4x4 proj;
 };
 
-cbuffer PerInstance : register(b1) {
+[[vk::push_constant]] cbuffer PerInstance : register(b1) {
 	float4x4 model;
 };
 
+[shader("vertex")]
 VS_OUT main(VS_IN input) {
     VS_OUT output = (VS_OUT)0;
 

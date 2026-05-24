@@ -6,15 +6,16 @@ struct PS_OUT {
 	float4 color : SV_Target;
 };
 
-Texture2D<uint4> positionTex : register(t0);
-Texture2D<uint4> albedoTex : register(t1);
-Texture2D ssaoTex: register(t3);
+[[vk::binding(0, 1)]] Texture2D<uint4> positionTex : register(t0);
+[[vk::binding(0, 2)]] Texture2D<uint4> albedoTex : register(t1);
+[[vk::binding(0, 3)]] Texture2D ssaoTex: register(t3);
 
-cbuffer ubo : register(b0) {
+[[vk::push_constant]] cbuffer ubo : register(b0) {
 	float3 cameraPos;
 	bool ssao;
 }
 
+[shader("pixel")]
 PS_OUT main(float4 screenPos : SV_Position) {
     PS_OUT output;
 

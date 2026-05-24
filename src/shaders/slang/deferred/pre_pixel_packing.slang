@@ -11,7 +11,7 @@ struct PS_OUT {
 	uint4 albedo : SV_Target1;
 };
 
-cbuffer ubo : register(b0) {
+[[vk::push_constant]] cbuffer ubo : register(b0) {
 	float near_plane;
     float far_plane;
 };
@@ -29,6 +29,7 @@ SamplerState samplerMR: register(s1);
 Texture2D txNormal : register(t2);
 SamplerState samplerNormal: register(s2);
 
+[shader("pixel")]
 PS_OUT main(PS_IN input) {
     PS_OUT output = (PS_OUT)0;
 

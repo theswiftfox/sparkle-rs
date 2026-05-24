@@ -42,10 +42,16 @@ fn run_vulkan() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let (window, event_loop) = window::Window::new(width, height, "Sparkle-rs")?;
-    let _event_loop = event_loop;
     let w = window.winit_window_arc();
 
-    let _ = engine::vulkan_backend::initialize(w, &settings)?;
+    let vulkan_backend = engine::vulkan_backend::initialize(w, &settings)?;
+
+    window.run(event_loop, move |window, events| {
+        // handle_events(events, &mut editor, &mut last_cursor_pos, &mut fps, window);
+        if let Err(e) = vulkan_backend.draw() {
+            println!("Draw failed: {e:?}");
+        }
+    })?;
 
     Ok(())
 }
@@ -267,7 +273,14 @@ fn handle_events(
 }
 
 fn main() {
-    match run_wgpu() {
+    // match run_wgpu() {
+    //     Ok(_) => (),
+    //     Err(e) => {
+    //         println!("{}", e);
+    //         pause();
+    //     }
+    // }
+    match run_vulkan() {
         Ok(_) => (),
         Err(e) => {
             println!("{}", e);
