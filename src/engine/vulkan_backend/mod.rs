@@ -5,11 +5,15 @@ use std::{
 };
 
 use crate::engine::{
-    backend::{GpuError, GpuErrorKind},
+    backend::{GpuError, GpuErrorKind, TextureFormat},
     settings::{Settings, SyncMode},
+    vulkan_backend::texture::VulkanTexture,
 };
 
+mod buffer;
+mod gpu_backend_impl;
 mod renderpass;
+mod texture;
 mod util;
 
 const VK_API_VERSION: u32 = ash::vk::API_VERSION_1_3;
@@ -62,7 +66,7 @@ impl Deref for LogicalDevice {
 struct Swapchain {
     fn_ptr: ash::khr::swapchain::Device,
     swapchain: ash::vk::SwapchainKHR,
-    swapchain_images: Vec<ash::vk::Image>,
+    swapchain_images: Vec<VulkanTexture>,
     swapchain_extent: ash::vk::Extent2D,
     surface_format: ash::vk::SurfaceFormatKHR,
     surface: ash::vk::SurfaceKHR,
@@ -75,6 +79,12 @@ struct SyncObjects {
     draw_fences: Vec<ash::vk::Fence>,
 }
 
+struct Descriptors {
+    pool: ash::vk::DescriptorPool,
+    layout: ash::vk::DescriptorSetLayout,
+    sets: [ash::vk::DescriptorSet; FRAMES_IN_FLIGHT as usize],
+}
+
 pub struct VulkanBackend {
     window: Arc<winit::window::Window>,
     context: ash::Entry,
@@ -83,13 +93,15 @@ pub struct VulkanBackend {
     device: LogicalDevice,
     swapchain: Swapchain,
     queue: ash::vk::Queue,
-    image_views: Vec<ash::vk::ImageView>,
     graphics_pipeline: ash::vk::Pipeline,
+    pipeline_layout: ash::vk::PipelineLayout,
     command_pool: ash::vk::CommandPool,
-    command_buffers: Vec<ash::vk::CommandBuffer>,
+    command_buffers: [ash::vk::CommandBuffer; FRAMES_IN_FLIGHT as usize],
+    descriptors: Descriptors,
     sync_objects: SyncObjects,
     khr_sync: ash::khr::synchronization2::Device,
     frame_idx: usize,
+    render_idx: usize,
 }
 
 pub fn initialize(
@@ -125,17 +137,38 @@ pub fn initialize(
         surface,
         sync_mode,
     )?;
-    let image_views = create_image_views(&logical_device, &swapchain)?;
 
     let pipeline = create_graphics_pipeline(&logical_device, &swapchain)?;
 
     let command_pool = create_command_pool(&logical_device)?;
 
-    let command_buffers = create_command_buffers(&logical_device, command_pool)?;
+    let command_buffers = create_command_buffers(&logical_device, command_pool)?
+        .try_into()
+        .map_err(|_| {
+            GpuError::new(
+                "Command Buffers do not match expected FRAMES_IN_FLIGHT",
+                GpuErrorKind::Other,
+            )
+        })?;
 
     let sync_objects = create_sync_objs(&logical_device, &swapchain)?;
 
     let khr_sync = ash::khr::synchronization2::Device::new(&instance, &logical_device);
+
+    let desc_pool = create_descriptor_pool(&logical_device)?;
+
+    let desc_set_layout = create_descriptor_set_layout(&logical_device)?;
+
+    let desc_sets = create_descriptor_sets(&logical_device, desc_pool, desc_set_layout)?
+        .try_into()
+        .map_err(|_| {
+            GpuError::new(
+                "Descriptor Sets do not match expected FRAMES_IN_FLIGHT",
+                GpuErrorKind::Other,
+            )
+        })?;
+
+    let pipeline_layout = create_pipeline_layout(&logical_device, desc_set_layout)?;
 
     Ok(VulkanBackend {
         window,
@@ -145,13 +178,204 @@ pub fn initialize(
         device: logical_device,
         swapchain,
         queue,
-        image_views,
         graphics_pipeline: pipeline,
+        pipeline_layout,
         command_pool,
         command_buffers,
+        descriptors: Descriptors {
+            pool: desc_pool,
+            layout: desc_set_layout,
+            sets: desc_sets,
+        },
         sync_objects,
         khr_sync,
         frame_idx: 0,
+        render_idx: 0,
+    })
+}
+
+fn create_pipeline_layout(
+    device: &LogicalDevice,
+    descriptor_layout: ash::vk::DescriptorSetLayout,
+) -> Result<ash::vk::PipelineLayout, GpuError> {
+    let create_info = ash::vk::PipelineLayoutCreateInfo {
+        set_layout_count: 1,
+        p_set_layouts: &descriptor_layout,
+        ..Default::default()
+    };
+
+    unsafe { device.create_pipeline_layout(&create_info, None) }.map_err(|e| {
+        GpuError::new(
+            format!("Failed to create pipeline layout: {e:?}"),
+            GpuErrorKind::ResourceCreation,
+        )
+    })
+}
+
+fn create_descriptor_sets(
+    device: &LogicalDevice,
+    pool: ash::vk::DescriptorPool,
+    layout: ash::vk::DescriptorSetLayout,
+) -> Result<Vec<ash::vk::DescriptorSet>, GpuError> {
+    let layouts = (0..FRAMES_IN_FLIGHT).map(|_| layout).collect::<Vec<_>>();
+    let alloc_info = ash::vk::DescriptorSetAllocateInfo {
+        descriptor_pool: pool,
+        descriptor_set_count: layouts.len() as u32,
+        p_set_layouts: layouts.as_ptr(),
+        ..Default::default()
+    };
+
+    let sets = unsafe { device.allocate_descriptor_sets(&alloc_info) }.map_err(|e| {
+        GpuError::new(
+            format!("Failed to create bindless descriptor sets: {e:?}"),
+            GpuErrorKind::ResourceCreation,
+        )
+    })?;
+
+    if sets.len() != FRAMES_IN_FLIGHT as usize {
+        Err(GpuError::new(
+            "Allocate Descriptor Sets returned less Sets than expected",
+            GpuErrorKind::ResourceCreation,
+        ))
+    } else {
+        Ok(sets)
+    }
+}
+
+fn create_descriptor_set_layout(
+    device: &LogicalDevice,
+) -> Result<ash::vk::DescriptorSetLayout, GpuError> {
+    let frame_consts_binding = ash::vk::DescriptorSetLayoutBinding {
+        binding: 0,
+        descriptor_type: ash::vk::DescriptorType::UNIFORM_BUFFER,
+        descriptor_count: 1,
+        stage_flags: ash::vk::ShaderStageFlags::VERTEX | ash::vk::ShaderStageFlags::FRAGMENT,
+        ..Default::default()
+    };
+    let per_instance_binding = ash::vk::DescriptorSetLayoutBinding {
+        binding: 1,
+        descriptor_type: ash::vk::DescriptorType::UNIFORM_BUFFER,
+        descriptor_count: 1,
+        stage_flags: ash::vk::ShaderStageFlags::VERTEX | ash::vk::ShaderStageFlags::FRAGMENT,
+        ..Default::default()
+    };
+    let pixel_data_binding = ash::vk::DescriptorSetLayoutBinding {
+        binding: 2,
+        descriptor_type: ash::vk::DescriptorType::UNIFORM_BUFFER,
+        descriptor_count: 1,
+        stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
+        ..Default::default()
+    };
+    let light_data_binding = ash::vk::DescriptorSetLayoutBinding {
+        binding: 3,
+        descriptor_type: ash::vk::DescriptorType::UNIFORM_BUFFER,
+        descriptor_count: 1,
+        stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
+        ..Default::default()
+    };
+    let texture_binding = ash::vk::DescriptorSetLayoutBinding {
+        binding: 4,
+        descriptor_type: ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+        descriptor_count: 16,
+        stage_flags: ash::vk::ShaderStageFlags::VERTEX | ash::vk::ShaderStageFlags::FRAGMENT,
+        ..Default::default()
+    };
+    let comparison_img_binding = ash::vk::DescriptorSetLayoutBinding {
+        binding: 5,
+        descriptor_type: ash::vk::DescriptorType::SAMPLED_IMAGE,
+        descriptor_count: 4,
+        stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
+        ..Default::default()
+    };
+    let comparison_sampler_binding = ash::vk::DescriptorSetLayoutBinding {
+        binding: 6,
+        descriptor_type: ash::vk::DescriptorType::SAMPLER,
+        descriptor_count: 1,
+        stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
+        ..Default::default()
+    };
+    let cubemap_binding = ash::vk::DescriptorSetLayoutBinding {
+        binding: 7,
+        descriptor_type: ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+        descriptor_count: 4,
+        stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
+        ..Default::default()
+    };
+    let bindings = [
+        frame_consts_binding,
+        per_instance_binding,
+        pixel_data_binding,
+        light_data_binding,
+        texture_binding,
+        comparison_img_binding,
+        comparison_sampler_binding,
+        cubemap_binding,
+    ];
+
+    let binding_flags = ash::vk::DescriptorBindingFlags::PARTIALLY_BOUND
+        | ash::vk::DescriptorBindingFlags::UPDATE_AFTER_BIND;
+
+    let flags = (0..bindings.len())
+        .map(|_| binding_flags)
+        .collect::<Vec<_>>();
+    let binding_flags_info = ash::vk::DescriptorSetLayoutBindingFlagsCreateInfo {
+        binding_count: flags.len() as u32,
+        p_binding_flags: flags.as_ptr(),
+        ..Default::default()
+    };
+
+    let create_info = ash::vk::DescriptorSetLayoutCreateInfo {
+        flags: ash::vk::DescriptorSetLayoutCreateFlags::UPDATE_AFTER_BIND_POOL,
+        p_next: &binding_flags_info as *const _ as *const _,
+        binding_count: bindings.len() as u32,
+        p_bindings: bindings.as_ptr(),
+        ..Default::default()
+    };
+
+    unsafe { device.create_descriptor_set_layout(&create_info, None) }.map_err(|e| {
+        GpuError::new(
+            format!("Failed to create bindless descriptor set layout: {e:?}"),
+            GpuErrorKind::ResourceCreation,
+        )
+    })
+}
+
+fn create_descriptor_pool(device: &LogicalDevice) -> Result<ash::vk::DescriptorPool, GpuError> {
+    let uniform_pool_info = ash::vk::DescriptorPoolSize {
+        ty: ash::vk::DescriptorType::UNIFORM_BUFFER,
+        descriptor_count: 8,
+    };
+    let cis_pool_info = ash::vk::DescriptorPoolSize {
+        ty: ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+        descriptor_count: 40,
+    };
+    let sampled_image_pool_info = ash::vk::DescriptorPoolSize {
+        ty: ash::vk::DescriptorType::SAMPLED_IMAGE,
+        descriptor_count: 8,
+    };
+    let sampler_pool_info = ash::vk::DescriptorPoolSize {
+        ty: ash::vk::DescriptorType::SAMPLER,
+        descriptor_count: 2,
+    };
+    let pool_sizes = [
+        uniform_pool_info,
+        cis_pool_info,
+        sampled_image_pool_info,
+        sampler_pool_info,
+    ];
+    let create_info = ash::vk::DescriptorPoolCreateInfo {
+        flags: ash::vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND,
+        max_sets: FRAMES_IN_FLIGHT,
+        pool_size_count: 4,
+        p_pool_sizes: pool_sizes.as_ptr(),
+        ..Default::default()
+    };
+
+    unsafe { device.create_descriptor_pool(&create_info, None) }.map_err(|e| {
+        GpuError::new(
+            format!("Failed to create bindless descriptor pool: {e:?}"),
+            GpuErrorKind::ResourceCreation,
+        )
     })
 }
 
@@ -404,11 +628,12 @@ fn create_shader_module(
 
 fn create_image_views(
     device: &LogicalDevice,
-    swapchain: &Swapchain,
+    images: &[ash::vk::Image],
+    format: ash::vk::Format,
 ) -> Result<Vec<ash::vk::ImageView>, GpuError> {
     let create_info = ash::vk::ImageViewCreateInfo {
         view_type: ash::vk::ImageViewType::TYPE_2D,
-        format: swapchain.surface_format.format,
+        format,
         subresource_range: ash::vk::ImageSubresourceRange {
             aspect_mask: ash::vk::ImageAspectFlags::COLOR,
             layer_count: 1,
@@ -419,7 +644,7 @@ fn create_image_views(
     };
 
     let mut image_views = Vec::new();
-    for image in &swapchain.swapchain_images {
+    for image in images {
         let create_info = create_info.image(*image);
         let img_view = unsafe { device.create_image_view(&create_info, None) }.map_err(|e| {
             GpuError::new(
@@ -479,6 +704,8 @@ fn create_swapchain(
     let swap_format = util::choose_swapchain_format(&surface_formats)?;
     let present_mode = util::choose_present_mode(&present_modes, sync_mode)?;
 
+    let engine_fmt: TextureFormat = swap_format.format.try_into()?;
+
     let create_info = ash::vk::SwapchainCreateInfoKHR {
         surface,
         min_image_count: swap_image_count,
@@ -509,6 +736,45 @@ fn create_swapchain(
                 GpuErrorKind::ResourceCreation,
             )
         })?;
+
+    let swapchain_image_views =
+        create_image_views(logical_device, &swapchain_images, swap_format.format)?;
+
+    let sampler_info = ash::vk::SamplerCreateInfo {
+        mag_filter: ash::vk::Filter::LINEAR,
+        min_filter: ash::vk::Filter::LINEAR,
+        anisotropy_enable: ash::vk::FALSE,
+        mipmap_mode: ash::vk::SamplerMipmapMode::LINEAR,
+        address_mode_u: ash::vk::SamplerAddressMode::CLAMP_TO_EDGE,
+        address_mode_v: ash::vk::SamplerAddressMode::CLAMP_TO_EDGE,
+        address_mode_w: ash::vk::SamplerAddressMode::CLAMP_TO_EDGE,
+        compare_enable: ash::vk::FALSE,
+        compare_op: ash::vk::CompareOp::ALWAYS,
+        ..Default::default()
+    };
+    let sampler = unsafe { logical_device.create_sampler(&sampler_info, None) }.map_err(|e| {
+        GpuError::new(
+            format!("Failed to create swapchain sampler: {:?}", e),
+            GpuErrorKind::ResourceCreation,
+        )
+    })?;
+
+    let swapchain_images = swapchain_images
+        .into_iter()
+        .zip(swapchain_image_views.into_iter())
+        .map(|(img, view)| VulkanTexture {
+            image: img,
+            image_view: view,
+            mem: ash::vk::DeviceMemory::null(),
+            sampler,
+            width: swap_extent.width,
+            height: swap_extent.height,
+            format: engine_fmt,
+            view_type: ash::vk::ImageViewType::TYPE_2D,
+            compare_enabled: false,
+            id: 0,
+        })
+        .collect::<Vec<_>>();
 
     Ok(Swapchain {
         fn_ptr: swapchain_khr,
@@ -573,6 +839,10 @@ fn create_logical_device(
         ..Default::default()
     };
     let mut base_struct = ash::vk::PhysicalDeviceFeatures2 {
+        features: ash::vk::PhysicalDeviceFeatures {
+            sampler_anisotropy: ash::vk::TRUE,
+            ..Default::default()
+        },
         p_next: &mut vk_13_feats as *mut _ as *mut std::ffi::c_void,
         ..Default::default()
     };
@@ -623,7 +893,8 @@ fn get_physical_device(instance: &ash::Instance) -> Result<ash::vk::PhysicalDevi
         .iter()
         .filter_map(|device| {
             let features = unsafe { instance.get_physical_device_features(*device) };
-            let has_required_features = features.geometry_shader == ash::vk::TRUE;
+            let has_required_features = features.geometry_shader == ash::vk::TRUE
+                && features.sampler_anisotropy == ash::vk::TRUE;
 
             if !has_required_features {
                 println!(

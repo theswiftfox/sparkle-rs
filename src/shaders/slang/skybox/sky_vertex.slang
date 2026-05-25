@@ -11,12 +11,12 @@ struct VS_OUT {
     float3 texCoord: TEXCOORD;
 };
 
-[[vk::push_constant]] cbuffer FrameConsts : register(b0) {
+[[vk::binding(0, 0)]] cbuffer FrameConsts : register(b0) {
 	float4x4 view;
 	float4x4 proj;
 };
 
-[[vk::push_constant]] cbuffer PerInstance : register(b1) {
+[[vk::binding(0, 1)]] cbuffer PerInstance : register(b1) {
 	float4x4 model;
 };
 

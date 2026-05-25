@@ -1,7 +1,7 @@
 import light;
 
-[[vk::binding(0,5)]] Texture2D txShadowMap : register(t5);
-[[vk::binding(1,5)]] SamplerComparisonState samplerShadowMap : register(s5);
+[[vk::binding(0, 5)]] Texture2D txShadowMap : register(t5);
+[[vk::binding(0, 6)]] SamplerComparisonState samplerShadowMap : register(s5);
 
 // from https://www.geeks3d.com/20100628/3d-programming-ready-to-use-64-sample-poisson-disc/
 static float2 poissonDisk[64] = {

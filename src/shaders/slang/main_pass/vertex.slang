@@ -21,7 +21,7 @@ struct VS_OUT {
 	float4x4 proj;
 };
 
-[[vk::binding(1, 0)]] cbuffer PerInstance : register(b1) {
+[[vk::binding(0, 1)]] cbuffer PerInstance : register(b1) {
 	float4x4 model;
 };
 

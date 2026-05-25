@@ -11,7 +11,7 @@ struct PS_OUT {
 	uint4 albedo : SV_Target1;
 };
 
-[[vk::push_constant]] cbuffer ubo : register(b0) {
+[[vk::binding(0, 2)]] cbuffer ubo : register(b2) {
 	float near_plane;
     float far_plane;
 };
@@ -22,22 +22,22 @@ float calcLinearDepth(float zval)
 	return (2.0 * near_plane * far_plane) / (far_plane + near_plane - z * (far_plane - near_plane));
 }
 
-Texture2D txDiffuse : register(t0);
-SamplerState samplerLinear : register(s0);
-Texture2D txMetallicRoughness : register(t1);
-SamplerState samplerMR: register(s1);
-Texture2D txNormal : register(t2);
-SamplerState samplerNormal: register(s2);
+[[vk::binding(0, 4)]]
+Sampler2D<float4> textures[] : register(t0);
+
+static const uint POS_ALBEDO = 0;
+static const uint POS_METALLIC_ROUGHNESS = 1;
+static const uint POS_NORMALS = 2;
 
 [shader("pixel")]
 PS_OUT main(PS_IN input) {
     PS_OUT output = (PS_OUT)0;
 
-	float4 albedo = txDiffuse.Sample(samplerLinear, input.txCoord);
+	float4 albedo = textures[POS_ALBEDO].Sample(input.txCoord);
     float4 pos = input.worldPos;
 
 	// float3 normal_out = input.normal;
-	float3 normal = txNormal.Sample(samplerNormal, input.txCoord).xyz;
+	float3 normal = textures[POS_NORMALS].Sample(input.txCoord).xyz;
 	// transform to range [-1,1]
 	normal = normalize((normal * 2.0) - 1.0);
 
@@ -59,7 +59,7 @@ PS_OUT main(PS_IN input) {
 	output.albedo.g = (chalf.b << 16) | chalf.a;
 
 
-	float2 mr = txMetallicRoughness.Sample(samplerMR, input.txCoord).gb;
+	float2 mr = textures[POS_METALLIC_ROUGHNESS].Sample(input.txCoord).gb;
 
 	float roughness = mr.g;
 	float metallic = mr.r;

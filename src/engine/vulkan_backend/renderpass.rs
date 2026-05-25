@@ -173,7 +173,7 @@ impl VulkanBackend {
             )
         })?;
 
-        let image = *self
+        let (image, image_view) = self
             .swapchain
             .swapchain_images
             .get(image_idx as usize)
@@ -185,28 +185,16 @@ impl VulkanBackend {
                     ),
                     GpuErrorKind::RenderPass,
                 )
-            })?;
-
-        let image_view = *self.image_views.get(image_idx as usize).ok_or_else(|| {
-            GpuError::new(
-                format!(
-                    "ImageIdx {image_idx} outside of range for swapchain image views {}",
-                    self.image_views.len()
-                ),
-                GpuErrorKind::RenderPass,
-            )
-        })?;
+            })
+            .map(|tx| (tx.image, tx.image_view))?;
 
         self.transition_image_layout(
             command_buffer,
             image,
             ash::vk::ImageLayout::UNDEFINED,
             ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            ash::vk::AccessFlags2::empty(),
-            ash::vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-            ash::vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-            ash::vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-        );
+            1,
+        )?;
 
         let clear_value = ash::vk::ClearValue {
             color: ash::vk::ClearColorValue {
@@ -280,11 +268,8 @@ impl VulkanBackend {
             image,
             ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             ash::vk::ImageLayout::PRESENT_SRC_KHR,
-            ash::vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-            ash::vk::AccessFlags2::empty(),
-            ash::vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-            ash::vk::PipelineStageFlags2::BOTTOM_OF_PIPE,
-        );
+            1,
+        )?;
 
         unsafe { self.device.end_command_buffer(command_buffer) }.map_err(|e| {
             GpuError::new(
@@ -294,17 +279,58 @@ impl VulkanBackend {
         })
     }
 
-    fn transition_image_layout(
+    pub fn transition_image_layout(
         &self,
         command_buffer: ash::vk::CommandBuffer,
         image: ash::vk::Image,
         old_layout: ash::vk::ImageLayout,
         new_layout: ash::vk::ImageLayout,
-        src_access_mask: ash::vk::AccessFlags2,
-        dst_access_mask: ash::vk::AccessFlags2,
-        src_stage_mask: ash::vk::PipelineStageFlags2,
-        dst_stage_mask: ash::vk::PipelineStageFlags2,
-    ) {
+        layer_count: u32,
+    ) -> Result<(), GpuError> {
+        let mut src_access_mask = ash::vk::AccessFlags2::empty();
+        let mut dst_access_mask = ash::vk::AccessFlags2::empty();
+        let mut src_stage_mask = ash::vk::PipelineStageFlags2::empty();
+        let mut dst_stage_mask = ash::vk::PipelineStageFlags2::empty();
+
+        match (old_layout, new_layout) {
+            (ash::vk::ImageLayout::UNDEFINED, ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL) => {
+                dst_access_mask = ash::vk::AccessFlags2::COLOR_ATTACHMENT_WRITE;
+                src_stage_mask = ash::vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT;
+                dst_stage_mask = ash::vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT;
+            }
+            (
+                ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                ash::vk::ImageLayout::PRESENT_SRC_KHR,
+            ) => {
+                src_access_mask = ash::vk::AccessFlags2::COLOR_ATTACHMENT_WRITE;
+
+                src_stage_mask = ash::vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT;
+                dst_stage_mask = ash::vk::PipelineStageFlags2::BOTTOM_OF_PIPE;
+            }
+            (ash::vk::ImageLayout::UNDEFINED, ash::vk::ImageLayout::TRANSFER_DST_OPTIMAL) => {
+                dst_access_mask = ash::vk::AccessFlags2::TRANSFER_WRITE;
+
+                src_stage_mask = ash::vk::PipelineStageFlags2::TOP_OF_PIPE;
+                dst_stage_mask = ash::vk::PipelineStageFlags2::TRANSFER;
+            }
+            (
+                ash::vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            ) => {
+                src_access_mask = ash::vk::AccessFlags2::TRANSFER_WRITE;
+                dst_access_mask = ash::vk::AccessFlags2::SHADER_READ;
+
+                src_stage_mask = ash::vk::PipelineStageFlags2::TRANSFER;
+                dst_stage_mask = ash::vk::PipelineStageFlags2::FRAGMENT_SHADER;
+            }
+            _ => {
+                return Err(GpuError::new(
+                    format!("Invalid layout transition {old_layout:?} -> {new_layout:?}"),
+                    GpuErrorKind::ResourceUpdate,
+                ));
+            }
+        };
+
         let barrier = ash::vk::ImageMemoryBarrier2 {
             src_stage_mask,
             src_access_mask,
@@ -320,7 +346,7 @@ impl VulkanBackend {
                 base_mip_level: 0,
                 level_count: 1,
                 base_array_layer: 0,
-                layer_count: 1,
+                layer_count,
                 ..Default::default()
             },
             ..Default::default()
@@ -336,6 +362,8 @@ impl VulkanBackend {
             self.device
                 .cmd_pipeline_barrier2(command_buffer, &dependency_info);
         };
+
+        Ok(())
     }
 
     fn recreate_swapchain(&mut self) -> Result<(), GpuError> {

@@ -14,27 +14,27 @@ struct PS_OUT {
 	float4 color : SV_Target;
 };
 
-Texture2D txDiffuse : register(t0);
-SamplerState samplerLinear : register(s0);
-Texture2D txMetallicRoughness : register(t1);
-SamplerState samplerMR: register(s1);
-Texture2D txNormal : register(t2);
-SamplerState samplerNormal: register(s2);
+[[vk::binding(0, 4)]]
+Sampler2D<float4> textures[] : register(t0);
 
-[[vk::push_constant]] cbuffer ubo : register(b0) {
+static const uint POS_ALBEDO = 0;
+static const uint POS_METALLIC_ROUGHNESS = 1;
+static const uint POS_NORMALS = 2;
+
+[[vk::binding(0, 2)]] cbuffer ubo : register(b2) {
 	float3 cameraPos;
-	bool ssao;
+	uint ssao;
 }
 
 [shader("pixel")]
 PS_OUT main(PS_IN input) {
 	PS_OUT output;
-	float4 alb = txDiffuse.Sample(samplerLinear, input.txCoord);
+	float4 alb = textures[POS_ALBEDO].Sample(input.txCoord);
 	if (alb.a < 0.01) {
 		discard; // discard fully transparent fragments
 	}
-	float2 mr = txMetallicRoughness.Sample(samplerMR, input.txCoord).gb;
-	float3 normal = txNormal.Sample(samplerNormal, input.txCoord).xyz;
+	float2 mr = textures[POS_METALLIC_ROUGHNESS].Sample(input.txCoord).gb;
+	float3 normal = textures[POS_NORMALS].Sample(input.txCoord).xyz;
 
 	// transform to range [-1,1]
 	normal = normalize((normal * 2.0) - 1.0);

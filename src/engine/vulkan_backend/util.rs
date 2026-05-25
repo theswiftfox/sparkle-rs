@@ -5,6 +5,7 @@ use wgpu::rwh::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHa
 use crate::engine::{
     backend::{GpuError, GpuErrorKind},
     settings::SyncMode,
+    vulkan_backend::VulkanBackend,
 };
 
 pub fn get_instance_extensions(
@@ -316,4 +317,317 @@ pub fn load_shader_blob(path: impl AsRef<std::path::Path>) -> Result<Vec<u8>, Gp
             GpuErrorKind::Other,
         )
     })
+}
+
+impl VulkanBackend {
+    pub fn create_image(
+        &self,
+        width: u32,
+        height: u32,
+        format: ash::vk::Format,
+        mip_levels: u32,
+        tiling: ash::vk::ImageTiling,
+        usage: ash::vk::ImageUsageFlags,
+        properties: ash::vk::MemoryPropertyFlags,
+    ) -> Result<(ash::vk::Image, ash::vk::DeviceMemory), GpuError> {
+        let create_info = ash::vk::ImageCreateInfo {
+            image_type: ash::vk::ImageType::TYPE_2D,
+            format,
+            extent: ash::vk::Extent3D {
+                width,
+                height,
+                depth: 1,
+            },
+            mip_levels,
+            array_layers: 1,
+            samples: ash::vk::SampleCountFlags::TYPE_1,
+            tiling,
+            usage,
+            sharing_mode: ash::vk::SharingMode::EXCLUSIVE,
+            ..Default::default()
+        };
+
+        let image = unsafe { self.device.create_image(&create_info, None) }.map_err(|e| {
+            GpuError::new(
+                format!("Failed to create image resource: {e:?}"),
+                GpuErrorKind::ResourceCreation,
+            )
+        })?;
+
+        let mem_reqs = unsafe { self.device.get_image_memory_requirements(image) };
+        let alloc_info = ash::vk::MemoryAllocateInfo {
+            allocation_size: mem_reqs.size,
+            memory_type_index: self.find_memory_type(mem_reqs.memory_type_bits, properties)?,
+            ..Default::default()
+        };
+        let device_mem =
+            unsafe { self.device.allocate_memory(&alloc_info, None) }.map_err(|e| {
+                GpuError::new(
+                    format!("Failed to allocate Image Memory: {e:?}"),
+                    GpuErrorKind::ResourceCreation,
+                )
+            })?;
+        unsafe { self.device.bind_image_memory(image, device_mem, 0) }.map_err(|e| {
+            GpuError::new(
+                format!("Failed to bind memory to image: {e:?}"),
+                GpuErrorKind::ResourceUpdate,
+            )
+        })?;
+
+        Ok((image, device_mem))
+    }
+    pub fn create_buffer(
+        &self,
+        device_size: ash::vk::DeviceSize,
+        usage: ash::vk::BufferUsageFlags,
+        properties: ash::vk::MemoryPropertyFlags,
+    ) -> Result<(ash::vk::Buffer, ash::vk::DeviceMemory), GpuError> {
+        let create_info = ash::vk::BufferCreateInfo {
+            size: device_size,
+            usage,
+            sharing_mode: ash::vk::SharingMode::EXCLUSIVE,
+            ..Default::default()
+        };
+        let buffer = unsafe { self.device.create_buffer(&create_info, None) }.map_err(|e| {
+            GpuError::new(
+                format!("Failed to create buffer with size {device_size}, usage {usage:?}: {e:?}"),
+                GpuErrorKind::ResourceCreation,
+            )
+        })?;
+
+        let mem_reqs = unsafe { self.device.get_buffer_memory_requirements(buffer) };
+        let alloc_info = ash::vk::MemoryAllocateInfo {
+            allocation_size: mem_reqs.size,
+            memory_type_index: self.find_memory_type(mem_reqs.memory_type_bits, properties)?,
+            ..Default::default()
+        };
+        let device_mem =
+            unsafe { self.device.allocate_memory(&alloc_info, None) }.map_err(|e| {
+                GpuError::new(
+                    format!("Failed to allocate buffer: {e:?}"),
+                    GpuErrorKind::ResourceCreation,
+                )
+            })?;
+
+        unsafe { self.device.bind_buffer_memory(buffer, device_mem, 0) }.map_err(|e| {
+            GpuError::new(
+                format!("Failed to bind buffer to memory: {e:?}"),
+                GpuErrorKind::ResourceUpdate,
+            )
+        })?;
+
+        Ok((buffer, device_mem))
+    }
+
+    pub fn find_memory_type(
+        &self,
+        type_filter: u32,
+        properties: ash::vk::MemoryPropertyFlags,
+    ) -> Result<u32, GpuError> {
+        let mut mem_props = ash::vk::PhysicalDeviceMemoryProperties2 {
+            ..Default::default()
+        };
+        unsafe {
+            self.instance
+                .get_physical_device_memory_properties2(self.phys_device, &mut mem_props);
+        }
+        // find memory type where the type_filter bit is set to 1
+        for i in 0..mem_props.memory_properties.memory_type_count {
+            if type_filter & (1 << i) != 0u32
+                && mem_props.memory_properties.memory_types[i as usize].property_flags == properties
+            {
+                return Ok(i);
+            }
+        }
+
+        Err(GpuError {
+            message: format!(
+                "No suitable memory type found for filter {type_filter} and flags {properties:?}"
+            ),
+            kind: GpuErrorKind::ResourceCreation,
+        })
+    }
+
+    pub fn begin_single_time_commands(&self) -> Result<ash::vk::CommandBuffer, GpuError> {
+        let alloc_info = ash::vk::CommandBufferAllocateInfo {
+            command_pool: self.command_pool,
+            command_buffer_count: 1,
+            level: ash::vk::CommandBufferLevel::PRIMARY,
+            ..Default::default()
+        };
+        let command_buffer = unsafe { self.device.allocate_command_buffers(&alloc_info) }
+            .map_err(|e| {
+                GpuError::new(
+                    format!("Failed to allocate single use command buffer: {e:?}"),
+                    GpuErrorKind::ResourceCreation,
+                )
+            })
+            .and_then(|buffs| {
+                let buff = buffs.first().ok_or_else(|| {
+                    GpuError::new(
+                        "Allocate command buffers returned empty result",
+                        GpuErrorKind::ResourceCreation,
+                    )
+                })?;
+                Ok(*buff)
+            })?;
+
+        let begin_info = ash::vk::CommandBufferBeginInfo {
+            flags: ash::vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
+            ..Default::default()
+        };
+
+        unsafe {
+            self.device
+                .begin_command_buffer(command_buffer, &begin_info)
+        }
+        .map_err(|e| {
+            GpuError::new(
+                format!("Failed to begin one time command buffer: {e:?}"),
+                GpuErrorKind::ResourceUpdate,
+            )
+        })?;
+
+        Ok(command_buffer)
+    }
+
+    pub fn end_single_time_commands(
+        &self,
+        command_buffer: ash::vk::CommandBuffer,
+    ) -> Result<(), GpuError> {
+        unsafe { self.device.end_command_buffer(command_buffer) }.map_err(|e| {
+            GpuError::new(
+                format!("Failed to end one time command buffer: {e:?}"),
+                GpuErrorKind::ResourceUpdate,
+            )
+        })?;
+
+        let submit_info = ash::vk::SubmitInfo {
+            command_buffer_count: 1,
+            p_command_buffers: &command_buffer,
+            ..Default::default()
+        };
+
+        unsafe {
+            self.device
+                .queue_submit(self.queue, &[submit_info], ash::vk::Fence::null())
+        }
+        .map_err(|e| {
+            GpuError::new(
+                format!("Failed to submit one time command buffer: {e:?}"),
+                GpuErrorKind::Other,
+            )
+        })?;
+
+        unsafe { self.device.queue_wait_idle(self.queue) }.map_err(|e| {
+            GpuError::new(
+                format!("Failed to wait for completeion of one time command buffer: {e:?}"),
+                GpuErrorKind::Other,
+            )
+        })
+    }
+
+    pub fn copy_buffer_cmd(
+        &self,
+        src: ash::vk::Buffer,
+        src_offset: ash::vk::DeviceSize,
+        dst: ash::vk::Buffer,
+        dst_offset: ash::vk::DeviceSize,
+        size: ash::vk::DeviceSize,
+    ) -> Result<(), GpuError> {
+        let cmd_buff = self.begin_single_time_commands()?;
+
+        self.copy_buffer(cmd_buff, src, src_offset, dst, dst_offset, size);
+
+        self.end_single_time_commands(cmd_buff)
+    }
+
+    pub fn copy_buffer(
+        &self,
+        command_buffer: ash::vk::CommandBuffer,
+        src: ash::vk::Buffer,
+        src_offset: ash::vk::DeviceSize,
+        dst: ash::vk::Buffer,
+        dst_offset: ash::vk::DeviceSize,
+        size: ash::vk::DeviceSize,
+    ) {
+        unsafe {
+            self.device.cmd_copy_buffer(
+                command_buffer,
+                src,
+                dst,
+                &[ash::vk::BufferCopy {
+                    size,
+                    src_offset,
+                    dst_offset,
+                }],
+            );
+        }
+    }
+
+    pub fn copy_buffer_to_image(
+        &self,
+        command_buffer: ash::vk::CommandBuffer,
+        src: ash::vk::Buffer,
+        src_offset: ash::vk::DeviceSize,
+        dst: ash::vk::Image,
+        width: u32,
+        height: u32,
+        base_array_layer: u32,
+        layer_count: u32,
+    ) {
+        let copy_region = ash::vk::BufferImageCopy {
+            buffer_offset: src_offset,
+            buffer_row_length: 0,
+            buffer_image_height: 0,
+            image_subresource: ash::vk::ImageSubresourceLayers {
+                aspect_mask: ash::vk::ImageAspectFlags::COLOR,
+                mip_level: 0,
+                base_array_layer,
+                layer_count,
+            },
+            image_offset: ash::vk::Offset3D { x: 0, y: 0, z: 0 },
+            image_extent: ash::vk::Extent3D {
+                width,
+                height,
+                depth: 1,
+            },
+        };
+
+        unsafe {
+            self.device.cmd_copy_buffer_to_image(
+                command_buffer,
+                src,
+                dst,
+                ash::vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[copy_region],
+            );
+        }
+    }
+
+    pub fn copy_to_buffer(
+        &self,
+        staging_mem: ash::vk::DeviceMemory,
+        data: *const c_void,
+        size: ash::vk::DeviceSize,
+    ) -> Result<(), GpuError> {
+        let data_ptr = unsafe {
+            self.device
+                .map_memory(staging_mem, 0, size, ash::vk::MemoryMapFlags::empty())
+        }
+        .map_err(|e| {
+            GpuError::new(
+                format!("Map device memory failed: {e:?}"),
+                GpuErrorKind::ResourceUpdate,
+            )
+        })?;
+        unsafe {
+            data_ptr.copy_from(data, size as usize);
+        }
+        unsafe {
+            self.device.unmap_memory(staging_mem);
+        }
+
+        Ok(())
+    }
 }

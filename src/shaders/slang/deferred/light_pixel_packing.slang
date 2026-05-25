@@ -6,13 +6,12 @@ struct PS_OUT {
 	float4 color : SV_Target;
 };
 
-[[vk::binding(0, 1)]] Texture2D<uint4> positionTex : register(t0);
-[[vk::binding(0, 2)]] Texture2D<uint4> albedoTex : register(t1);
-[[vk::binding(0, 3)]] Texture2D ssaoTex: register(t3);
+[[vk::binding(0, 4)]]
+Sampler2D<uint4> gbuffer[] : register(t0);
 
-[[vk::push_constant]] cbuffer ubo : register(b0) {
+[[vk::binding(0, 2)]] cbuffer ubo : register(b2) {
 	float3 cameraPos;
-	bool ssao;
+	uint ssao;
 }
 
 [shader("pixel")]
@@ -22,8 +21,8 @@ PS_OUT main(float4 screenPos : SV_Position) {
 	int3 texPos = int3((int2)screenPos.xy, 0);
 
     // unpack
-	uint4 pos_pack = positionTex.Load(texPos);
-    uint4 alb_pack = albedoTex.Load(texPos);
+	uint4 pos_pack = gbuffer[4].Load(texPos);
+    uint4 alb_pack = gbuffer[5].Load(texPos);
 
 	float4 pos = float4(f16tof32(pos_pack.r >> 16), f16tof32(pos_pack.r), f16tof32(pos_pack.g >> 16), f16tof32(pos_pack.g));
 	float3 normal = float3(f16tof32(pos_pack.b >> 16), f16tof32(pos_pack.b), f16tof32(pos_pack.a >> 16)) * 2.0 - 1.0;
@@ -50,7 +49,7 @@ PS_OUT main(float4 screenPos : SV_Position) {
 			mr.g
 		) * shadowed;
 	} else {
-		float ambientOcclusion = ssao ? ssaoTex.Load(texPos).r : 1.0;
+		float ambientOcclusion = ssao ? gbuffer[6].Load(texPos).r : 1.0;
 		float3 ambient = 0.15 * albedo.rgb * ambientOcclusion;
 		color = ambient;
 	}
