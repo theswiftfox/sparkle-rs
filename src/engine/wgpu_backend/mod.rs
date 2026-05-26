@@ -1,8 +1,8 @@
-mod texture;
 mod buffer;
+mod texture;
 
-pub use texture::{WgpuTexture, WgpuRenderTarget};
 pub use buffer::WgpuBuffer;
+pub use texture::{WgpuRenderTarget, WgpuTexture};
 
 use super::backend::*;
 use std::sync::Arc;
@@ -217,9 +217,7 @@ fn binding_type_to_layout_entry(
             view_dimension: wgpu::TextureViewDimension::D2,
             multisampled: false,
         },
-        BindingType::Sampler => {
-            wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)
-        }
+        BindingType::Sampler => wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
         BindingType::SamplerComparison => {
             wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison)
         }
@@ -283,25 +281,20 @@ impl WgpuBackend {
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
             backend_options: wgpu::BackendOptions::default(),
             display: None,
-            
         });
 
-        let surface = instance
-            .create_surface(window.clone())
-            .map_err(|e| {
-                GpuError::new(
-                    format!("Surface creation failed: {}", e),
-                    GpuErrorKind::DeviceCreation,
-                )
-            })?;
+        let surface = instance.create_surface(window.clone()).map_err(|e| {
+            GpuError::new(
+                format!("Surface creation failed: {}", e),
+                GpuErrorKind::DeviceCreation,
+            )
+        })?;
 
-        let adapter = pollster::block_on(instance.request_adapter(
-            &wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-            },
-        ))
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: Some(&surface),
+            force_fallback_adapter: false,
+        }))
         .map_err(|e| {
             GpuError::new(
                 format!("No suitable GPU adapter found: {e}"),
@@ -311,12 +304,10 @@ impl WgpuBackend {
 
         println!("wgpu adapter: {:?}", adapter.get_info().name);
 
-        let (device, queue) = pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
-                label: Some("sparkle-rs"),
-                ..Default::default()
-            },
-        ))
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("sparkle-rs"),
+            ..Default::default()
+        }))
         .map_err(|e| {
             GpuError::new(
                 format!("Device creation failed: {}", e),
@@ -346,8 +337,7 @@ impl WgpuBackend {
         surface.configure(&device, &surface_config);
 
         // Create depth texture
-        let (depth_target, _) =
-            Self::create_depth_texture_inner(&device, width, height);
+        let (depth_target, _) = Self::create_depth_texture_inner(&device, width, height);
 
         // Create a dummy backbuffer proxy (view is replaced each frame in begin_frame)
         let dummy_tex = device.create_texture(&wgpu::TextureDescriptor {
@@ -364,8 +354,7 @@ impl WgpuBackend {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
-        let dummy_view =
-            dummy_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let dummy_view = dummy_tex.create_view(&wgpu::TextureViewDescriptor::default());
         let backbuffer_target = WgpuRenderTarget::backbuffer_proxy(
             dummy_view,
             width,
@@ -415,12 +404,10 @@ impl WgpuBackend {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: depth_format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
-        let depth_view =
-            depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let target = WgpuRenderTarget::new(
             depth_texture,
             depth_view,
@@ -463,14 +450,32 @@ impl GpuBackend for WgpuBackend {
     type RenderTarget = WgpuRenderTarget;
     type Buffer = WgpuBuffer;
     type Pipeline = WgpuPipeline;
+    type ShaderSource = &'static [u8];
 
-    // --- Resource creation ---
+    fn load_shaders(&self) -> Shaders<Self> {
+        // Load WGSL shaders
+        let deferred_pre_wgsl = include_bytes!("../../shaders/wgsl/deferred_pre.wgsl");
+        let ssao_wgsl = include_bytes!("../../shaders/wgsl/ssao.wgsl");
+        let ssao_blur_wgsl = include_bytes!("../../shaders/wgsl/ssao_blur.wgsl");
+        let shadow_wgsl = include_bytes!("../../shaders/wgsl/shadow.wgsl");
+        let deferred_light_wgsl = include_bytes!("../../shaders/wgsl/deferred_light.wgsl");
+        let forward_wgsl = include_bytes!("../../shaders/wgsl/forward.wgsl");
+        let output_wgsl = include_bytes!("../../shaders/wgsl/output.wgsl");
+        let skybox_wgsl = include_bytes!("../../shaders/wgsl/skybox.wgsl");
 
-    fn create_texture(
-        &self,
-        desc: &TextureDesc,
-        data: &[u8],
-    ) -> Result<Self::Texture, GpuError> {
+        Shaders {
+            deferred_pre: deferred_pre_wgsl,
+            ssao: ssao_wgsl,
+            ssao_blur: ssao_blur_wgsl,
+            shadow: shadow_wgsl,
+            deferred_light: deferred_light_wgsl,
+            forward: forward_wgsl,
+            output: output_wgsl,
+            skybox: skybox_wgsl,
+        }
+    }
+
+    fn create_texture(&self, desc: &TextureDesc, data: &[u8]) -> Result<Self::Texture, GpuError> {
         let wgpu_format = to_wgpu_format(desc.format);
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: None,
@@ -483,8 +488,7 @@ impl GpuBackend for WgpuBackend {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu_format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_DST,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
 
@@ -510,8 +514,7 @@ impl GpuBackend for WgpuBackend {
             },
         );
 
-        let view =
-            texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let aniso = match desc.sampler.filter {
             FilterMode::Anisotropic => 16,
@@ -560,8 +563,7 @@ impl GpuBackend for WgpuBackend {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu_format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_DST,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
 
@@ -636,9 +638,7 @@ impl GpuBackend for WgpuBackend {
         let usage = match desc.usage {
             BufferUsage::Vertex => wgpu::BufferUsages::VERTEX,
             BufferUsage::Index => wgpu::BufferUsages::INDEX,
-            BufferUsage::Uniform => {
-                wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST
-            }
+            BufferUsage::Uniform => wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         };
 
         let buffer = if let Some(data) = data {
@@ -678,12 +678,10 @@ impl GpuBackend for WgpuBackend {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu_format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
-        let view =
-            texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
             label: None,
@@ -709,7 +707,7 @@ impl GpuBackend for WgpuBackend {
 
     fn create_pipeline(
         &self,
-        desc: &PipelineDesc,
+        desc: &PipelineDesc<Self::ShaderSource>,
     ) -> Result<Self::Pipeline, GpuError> {
         // Parse WGSL source
         let wgsl_str = std::str::from_utf8(desc.shader_source).map_err(|e| {
@@ -719,14 +717,12 @@ impl GpuBackend for WgpuBackend {
             )
         })?;
 
-        let shader_module =
-            self.device
-                .create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some(desc.label),
-                    source: wgpu::ShaderSource::Wgsl(
-                        std::borrow::Cow::Borrowed(wgsl_str),
-                    ),
-                });
+        let shader_module = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(desc.label),
+                source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(wgsl_str)),
+            });
 
         // Build bind group layouts (one per group, up to 4)
         let mut bind_group_layouts: Vec<Option<wgpu::BindGroupLayout>> = Vec::new();
@@ -743,25 +739,20 @@ impl GpuBackend for WgpuBackend {
             let entries: Vec<wgpu::BindGroupLayoutEntry> = bindings
                 .iter()
                 .enumerate()
-                .map(|(i, bt)| {
-                    binding_type_to_layout_entry(i as u32, bt, group_idx)
-                })
+                .map(|(i, bt)| binding_type_to_layout_entry(i as u32, bt, group_idx))
                 .collect();
 
-            let layout = self.device.create_bind_group_layout(
-                &wgpu::BindGroupLayoutDescriptor {
+            let layout = self
+                .device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                     label: Some(&format!("{}_group{}", desc.label, group_idx)),
                     entries: &entries,
-                },
-            );
+                });
 
             // Pre-create empty bind group for groups with no entries
             let empty_bg = if bindings.is_empty() {
                 Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some(&format!(
-                        "{}_group{}_empty",
-                        desc.label, group_idx
-                    )),
+                    label: Some(&format!("{}_group{}_empty", desc.label, group_idx)),
                     layout: &layout,
                     entries: &[],
                 }))
@@ -776,16 +767,14 @@ impl GpuBackend for WgpuBackend {
 
         // Create pipeline layout
         let layout_refs: Vec<Option<&wgpu::BindGroupLayout>> =
-            bind_group_layouts.iter().map(
-                |x| x.as_ref()
-            ).collect();
-        let pipeline_layout =
-            self.device
-                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: Some(desc.label),
-                    bind_group_layouts: &layout_refs,
-                    immediate_size: 0,
-                });
+            bind_group_layouts.iter().map(|x| x.as_ref()).collect();
+        let pipeline_layout = self
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some(desc.label),
+                bind_group_layouts: &layout_refs,
+                immediate_size: 0,
+            });
 
         // Build vertex buffer layout
         let wgpu_attributes: Vec<wgpu::VertexAttribute>;
@@ -873,32 +862,32 @@ impl GpuBackend for WgpuBackend {
         };
 
         // Create render pipeline
-        let pipeline =
-            self.device
-                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some(desc.label),
-                    layout: Some(&pipeline_layout),
-                    vertex: wgpu::VertexState {
-                        module: &shader_module,
-                        entry_point: Some("vs_main"),
-                        buffers: &vertex_buffers,
-                        compilation_options: Default::default(),
-                    },
-                    fragment: fragment_state,
-                    primitive: wgpu::PrimitiveState {
-                        topology: wgpu::PrimitiveTopology::TriangleList,
-                        strip_index_format: None,
-                        front_face: wgpu::FrontFace::Ccw,
-                        cull_mode,
-                        unclipped_depth: false,
-                        polygon_mode: wgpu::PolygonMode::Fill,
-                        conservative: false,
-                    },
-                    depth_stencil,
-                    multisample: wgpu::MultisampleState::default(),
-                    cache: None,
-                    multiview_mask: None,
-                });
+        let pipeline = self
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(desc.label),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader_module,
+                    entry_point: Some("vs_main"),
+                    buffers: &vertex_buffers,
+                    compilation_options: Default::default(),
+                },
+                fragment: fragment_state,
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode,
+                    unclipped_depth: false,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil,
+                multisample: wgpu::MultisampleState::default(),
+                cache: None,
+                multiview_mask: None,
+            });
 
         Ok(WgpuPipeline {
             pipeline,
@@ -917,20 +906,19 @@ impl GpuBackend for WgpuBackend {
     // --- Frame lifecycle ---
 
     fn begin_frame(&mut self) -> Result<(), GpuError> {
-        let surface_texture =
-            match self.surface.get_current_texture() {
-                wgpu::CurrentSurfaceTexture::Success(surface_texture) => surface_texture,
-                wgpu::CurrentSurfaceTexture::Suboptimal(surface_texture) => {
-                    println!("Surface texture is suboptimal, but will try to use it anyway");
-                    surface_texture
-                },
-                reason => {
-                    return Err(GpuError::new(
-                        format!("Failed to acquire surface texture: {reason:?}"),
-                        GpuErrorKind::Present,
-                    ));
-                }
-            };
+        let surface_texture = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(surface_texture) => surface_texture,
+            wgpu::CurrentSurfaceTexture::Suboptimal(surface_texture) => {
+                println!("Surface texture is suboptimal, but will try to use it anyway");
+                surface_texture
+            }
+            reason => {
+                return Err(GpuError::new(
+                    format!("Failed to acquire surface texture: {reason:?}"),
+                    GpuErrorKind::Present,
+                ));
+            }
+        };
         let surface_view = surface_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -984,22 +972,21 @@ impl GpuBackend for WgpuBackend {
             })
             .collect();
 
-        let depth_attachment =
-            desc.depth_target.as_ref().map(|d| {
-                let load = match d.load_op {
-                    LoadOp::Clear => wgpu::LoadOp::Clear(d.clear_depth),
-                    LoadOp::Load => wgpu::LoadOp::Load,
-                };
-                let store = if d.write_enabled {
-                    wgpu::StoreOp::Store
-                } else {
-                    wgpu::StoreOp::Discard
-                };
-                PendingDepthAttachment {
-                    view: d.target.view.clone(),
-                    depth_ops: wgpu::Operations { load, store },
-                }
-            });
+        let depth_attachment = desc.depth_target.as_ref().map(|d| {
+            let load = match d.load_op {
+                LoadOp::Clear => wgpu::LoadOp::Clear(d.clear_depth),
+                LoadOp::Load => wgpu::LoadOp::Load,
+            };
+            let store = if d.write_enabled {
+                wgpu::StoreOp::Store
+            } else {
+                wgpu::StoreOp::Discard
+            };
+            PendingDepthAttachment {
+                view: d.target.view.clone(),
+                depth_ops: wgpu::Operations { load, store },
+            }
+        });
 
         self.pending_pass = Some(PendingPass {
             label: desc.label.to_string(),
@@ -1011,44 +998,42 @@ impl GpuBackend for WgpuBackend {
 
     fn end_render_pass(&mut self) {
         if let Some(pass) = self.pending_pass.take() {
-            let mut encoder =
-                self.device
-                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                        label: Some(&pass.label),
-                    });
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some(&pass.label),
+                });
 
             {
-                let color_attachments: Vec<Option<wgpu::RenderPassColorAttachment>> =
-                    pass.color_attachments
-                        .iter()
-                        .map(|att| {
-                            Some(wgpu::RenderPassColorAttachment {
-                                view: &att.view,
-                                resolve_target: None,
-                                ops: att.ops,
-                                depth_slice: None,
-                            })
+                let color_attachments: Vec<Option<wgpu::RenderPassColorAttachment>> = pass
+                    .color_attachments
+                    .iter()
+                    .map(|att| {
+                        Some(wgpu::RenderPassColorAttachment {
+                            view: &att.view,
+                            resolve_target: None,
+                            ops: att.ops,
+                            depth_slice: None,
                         })
-                        .collect();
+                    })
+                    .collect();
 
-                let depth_attachment =
-                    pass.depth_attachment.as_ref().map(|d| {
-                        wgpu::RenderPassDepthStencilAttachment {
-                            view: &d.view,
-                            depth_ops: Some(d.depth_ops),
-                            stencil_ops: None,
-                        }
-                    });
+                let depth_attachment = pass.depth_attachment.as_ref().map(|d| {
+                    wgpu::RenderPassDepthStencilAttachment {
+                        view: &d.view,
+                        depth_ops: Some(d.depth_ops),
+                        stencil_ops: None,
+                    }
+                });
 
-                let mut render_pass =
-                    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some(&pass.label),
-                        color_attachments: &color_attachments,
-                        depth_stencil_attachment: depth_attachment,
-                        timestamp_writes: None,
-                        occlusion_query_set: None,
-                        multiview_mask: None,
-                    });
+                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some(&pass.label),
+                    color_attachments: &color_attachments,
+                    depth_stencil_attachment: depth_attachment,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
 
                 // Replay deferred commands
                 for cmd in &pass.commands {
@@ -1064,18 +1049,13 @@ impl GpuBackend for WgpuBackend {
                             min_depth,
                             max_depth,
                         } => {
-                            render_pass.set_viewport(
-                                *x, *y, *w, *h, *min_depth, *max_depth,
-                            );
+                            render_pass.set_viewport(*x, *y, *w, *h, *min_depth, *max_depth);
                         }
                         RenderCommand::SetVertexBuffer(buf) => {
                             render_pass.set_vertex_buffer(0, buf.slice(..));
                         }
                         RenderCommand::SetIndexBuffer(buf) => {
-                            render_pass.set_index_buffer(
-                                buf.slice(..),
-                                wgpu::IndexFormat::Uint32,
-                            );
+                            render_pass.set_index_buffer(buf.slice(..), wgpu::IndexFormat::Uint32);
                         }
                         RenderCommand::BindGroup(index, bg) => {
                             render_pass.set_bind_group(*index, bg, &[]);
@@ -1123,15 +1103,13 @@ impl GpuBackend for WgpuBackend {
 
         // Reset pending bindings to match the new pipeline's layout
         for group_idx in 0..4 {
-            let num_bindings = if group_idx < self.current_pipeline_descriptors.len()
-            {
+            let num_bindings = if group_idx < self.current_pipeline_descriptors.len() {
                 self.current_pipeline_descriptors[group_idx].len()
             } else {
                 0
             };
             self.pending_bindings[group_idx].clear();
-            self.pending_bindings[group_idx]
-                .resize_with(num_bindings, || None);
+            self.pending_bindings[group_idx].resize_with(num_bindings, || None);
         }
     }
 
@@ -1167,9 +1145,8 @@ impl GpuBackend for WgpuBackend {
                 match descriptors[next] {
                     BindingType::Sampler | BindingType::SamplerComparison => {
                         if next < self.pending_bindings[2].len() {
-                            self.pending_bindings[2][next] = Some(
-                                PendingResource::Sampler(texture.sampler.clone()),
-                            );
+                            self.pending_bindings[2][next] =
+                                Some(PendingResource::Sampler(texture.sampler.clone()));
                         }
                     }
                     _ => {}
@@ -1178,11 +1155,7 @@ impl GpuBackend for WgpuBackend {
         }
     }
 
-    fn bind_render_target_as_texture(
-        &mut self,
-        slot: u32,
-        target: &Self::RenderTarget,
-    ) {
+    fn bind_render_target_as_texture(&mut self, slot: u32, target: &Self::RenderTarget) {
         // Render targets bound as textures go into group 3.
         // slot N maps to the Nth texture entry in group 3's descriptor.
         if self.current_pipeline_descriptors.len() <= 3 {
@@ -1202,9 +1175,8 @@ impl GpuBackend for WgpuBackend {
                     BindingType::Sampler | BindingType::SamplerComparison => {
                         if next < self.pending_bindings[3].len() {
                             if let Some(ref sampler) = target.sampler {
-                                self.pending_bindings[3][next] = Some(
-                                    PendingResource::Sampler(sampler.clone()),
-                                );
+                                self.pending_bindings[3][next] =
+                                    Some(PendingResource::Sampler(sampler.clone()));
                             }
                         }
                     }
@@ -1214,12 +1186,7 @@ impl GpuBackend for WgpuBackend {
         }
     }
 
-    fn bind_uniform(
-        &mut self,
-        stage: ShaderStage,
-        slot: u32,
-        buffer: &Self::Buffer,
-    ) {
+    fn bind_uniform(&mut self, stage: ShaderStage, slot: u32, buffer: &Self::Buffer) {
         // Mapping convention:
         //   Vertex, slot 0 → Group 0, binding 0 (per-frame)
         //   Vertex, slot 1 → Group 1, binding 0 (per-object)
@@ -1227,9 +1194,7 @@ impl GpuBackend for WgpuBackend {
         match stage {
             ShaderStage::Vertex => {
                 let group_idx = slot as usize; // slot 0 → group 0, slot 1 → group 1
-                if group_idx < 2
-                    && !self.pending_bindings[group_idx].is_empty()
-                {
+                if group_idx < 2 && !self.pending_bindings[group_idx].is_empty() {
                     // Vertex uniforms always go to binding 0 within their group
                     self.pending_bindings[group_idx][0] =
                         Some(PendingResource::Buffer(buffer.buffer.clone()));
@@ -1239,14 +1204,11 @@ impl GpuBackend for WgpuBackend {
                 // Fragment uniforms go into group 3
                 if self.current_pipeline_descriptors.len() > 3 {
                     let descriptors = &self.current_pipeline_descriptors[3];
-                    if let Some(binding_idx) =
-                        nth_uniform_binding_index(descriptors, slot)
-                    {
+                    if let Some(binding_idx) = nth_uniform_binding_index(descriptors, slot) {
                         let idx = binding_idx as usize;
                         if idx < self.pending_bindings[3].len() {
-                            self.pending_bindings[3][idx] = Some(
-                                PendingResource::Buffer(buffer.buffer.clone()),
-                            );
+                            self.pending_bindings[3][idx] =
+                                Some(PendingResource::Buffer(buffer.buffer.clone()));
                         }
                     }
                 }
@@ -1268,12 +1230,7 @@ impl GpuBackend for WgpuBackend {
         }
     }
 
-    fn draw_indexed(
-        &mut self,
-        index_count: u32,
-        first_index: u32,
-        base_vertex: i32,
-    ) {
+    fn draw_indexed(&mut self, index_count: u32, first_index: u32, base_vertex: i32) {
         if let Some(ref mut pass) = self.pending_pass {
             // Create and bind groups from accumulated state
             for group_idx in 0..self.current_pipeline_layouts.len() {
@@ -1281,12 +1238,9 @@ impl GpuBackend for WgpuBackend {
 
                 // For empty groups, use the pre-created empty bind group
                 if descriptors.is_empty() {
-                    if let Some(ref bg) = self.current_empty_bind_groups[group_idx]
-                    {
-                        pass.commands.push(RenderCommand::BindGroup(
-                            group_idx as u32,
-                            bg.clone(),
-                        ));
+                    if let Some(ref bg) = self.current_empty_bind_groups[group_idx] {
+                        pass.commands
+                            .push(RenderCommand::BindGroup(group_idx as u32, bg.clone()));
                     }
                     continue;
                 }
@@ -1301,29 +1255,23 @@ impl GpuBackend for WgpuBackend {
                         Some(PendingResource::Buffer(buf)) => {
                             entries.push(wgpu::BindGroupEntry {
                                 binding: binding_idx as u32,
-                                resource: wgpu::BindingResource::Buffer(
-                                    wgpu::BufferBinding {
-                                        buffer: buf,
-                                        offset: 0,
-                                        size: None,
-                                    },
-                                ),
+                                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                    buffer: buf,
+                                    offset: 0,
+                                    size: None,
+                                }),
                             });
                         }
                         Some(PendingResource::TextureView(view)) => {
                             entries.push(wgpu::BindGroupEntry {
                                 binding: binding_idx as u32,
-                                resource: wgpu::BindingResource::TextureView(
-                                    view,
-                                ),
+                                resource: wgpu::BindingResource::TextureView(view),
                             });
                         }
                         Some(PendingResource::Sampler(sampler)) => {
                             entries.push(wgpu::BindGroupEntry {
                                 binding: binding_idx as u32,
-                                resource: wgpu::BindingResource::Sampler(
-                                    sampler,
-                                ),
+                                resource: wgpu::BindingResource::Sampler(sampler),
                             });
                         }
                         None => {
@@ -1345,17 +1293,14 @@ impl GpuBackend for WgpuBackend {
                 }
 
                 if let Some(ref layout) = self.current_pipeline_layouts[group_idx] {
-                    let bind_group =
-                        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                            label: None,
-                            layout,
-                            entries: &entries,
+                    let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: None,
+                        layout,
+                        entries: &entries,
                     });
 
-                    pass.commands.push(RenderCommand::BindGroup(
-                        group_idx as u32,
-                        bind_group,
-                    ));
+                    pass.commands
+                        .push(RenderCommand::BindGroup(group_idx as u32, bind_group));
                 }
             }
 
@@ -1402,8 +1347,7 @@ impl GpuBackend for WgpuBackend {
         self.surface_config.height = height;
         self.surface.configure(&self.device, &self.surface_config);
 
-        let (depth_target, _) =
-            Self::create_depth_texture_inner(&self.device, width, height);
+        let (depth_target, _) = Self::create_depth_texture_inner(&self.device, width, height);
         self.depth_target = depth_target;
 
         self.backbuffer_target.width = width;

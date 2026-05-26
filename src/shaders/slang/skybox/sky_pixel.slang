@@ -3,7 +3,7 @@ struct PS_IN {
     float3 texCoord: TEXCOORD;
 };
 
-[[vk::binding(0, 7)]]
+[[vk::binding(7, 0)]]
 SamplerCube<float4> skybox : register(t0);
 
 [shader("pixel")]

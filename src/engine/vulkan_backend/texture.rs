@@ -42,20 +42,63 @@ impl GpuTexture for VulkanTexture {
     }
 }
 
+impl VulkanTexture {
+    pub fn destroy(device: &ash::Device, texture: VulkanTexture) {
+        let VulkanTexture {
+            image,
+            mem,
+            image_view,
+            sampler,
+            ..
+        } = texture;
+
+        unsafe {
+            if sampler != ash::vk::Sampler::null() {
+                device.destroy_sampler(sampler, None);
+            }
+            if image_view != ash::vk::ImageView::null() {
+                device.destroy_image_view(image_view, None);
+            }
+            if image != ash::vk::Image::null() {
+                device.destroy_image(image, None);
+            }
+            if mem != ash::vk::DeviceMemory::null() {
+                device.free_memory(mem, None);
+            }
+        }
+    }
+}
+
 impl VulkanBackend {
     pub fn create_vk_render_target(
-        &self,
+        instance: &ash::Instance,
+        device: &ash::Device,
+        phys_device: ash::vk::PhysicalDevice,
         info: &RenderTargetDesc,
     ) -> Result<VulkanTexture, GpuError> {
         let format: ash::vk::Format = info.format.into();
 
-        let (rt, rt_mem) = self.create_image(
+        let (base_usage, aspect_mask) = match info.format {
+            TextureFormat::Depth32Float | TextureFormat::Depth24Stencil8 => (
+                ash::vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+                ash::vk::ImageAspectFlags::DEPTH,
+            ),
+            _ => (
+                ash::vk::ImageUsageFlags::COLOR_ATTACHMENT,
+                ash::vk::ImageAspectFlags::COLOR,
+            ),
+        };
+
+        let (rt, rt_mem) = Self::create_image(
+            instance,
+            device,
+            phys_device,
             info.width,
             info.height,
             format,
             1,
             ash::vk::ImageTiling::OPTIMAL,
-            ash::vk::ImageUsageFlags::COLOR_ATTACHMENT | ash::vk::ImageUsageFlags::SAMPLED,
+            base_usage | ash::vk::ImageUsageFlags::SAMPLED,
             ash::vk::MemoryPropertyFlags::DEVICE_LOCAL,
         )?;
 
@@ -64,7 +107,7 @@ impl VulkanBackend {
             view_type: ash::vk::ImageViewType::TYPE_2D,
             format,
             subresource_range: ash::vk::ImageSubresourceRange {
-                aspect_mask: ash::vk::ImageAspectFlags::COLOR,
+                aspect_mask,
                 base_mip_level: 0,
                 level_count: 1,
                 base_array_layer: 0,
@@ -73,17 +116,17 @@ impl VulkanBackend {
             ..Default::default()
         };
 
-        let image_view = unsafe { self.device.create_image_view(&view_create_info, None) }
-            .map_err(|e| {
+        let image_view =
+            unsafe { device.create_image_view(&view_create_info, None) }.map_err(|e| {
                 GpuError::new(
                     format!("Failed to create ImageView for texture: {e:?}"),
                     GpuErrorKind::ResourceCreation,
                 )
             })?;
 
-        let sampler_info = info.sampler.into_vk(&self.instance, self.phys_device);
+        let sampler_info = info.sampler.into_vk(&instance, phys_device);
 
-        let sampler = unsafe { self.device.create_sampler(&sampler_info, None) }.map_err(|e| {
+        let sampler = unsafe { device.create_sampler(&sampler_info, None) }.map_err(|e| {
             GpuError::new(
                 format!("Failed to create Sampler for texture: {e:?}"),
                 GpuErrorKind::ResourceCreation,
@@ -110,7 +153,10 @@ impl VulkanBackend {
         image_data: &[u8],
     ) -> Result<VulkanTexture, GpuError> {
         let image_size = image_data.len() as ash::vk::DeviceSize;
-        let (staging_buff, staging_mem) = self.create_buffer(
+        let (staging_buff, staging_mem) = Self::create_buffer(
+            &self.instance,
+            &self.device,
+            self.phys_device,
             image_size,
             ash::vk::BufferUsageFlags::TRANSFER_SRC,
             ash::vk::MemoryPropertyFlags::HOST_VISIBLE
@@ -122,7 +168,10 @@ impl VulkanBackend {
 
         let format: ash::vk::Format = info.format.into();
         let mip_levels = 1; // todo: info.generate_mipmaps -> mip_levels
-        let (tex_image, tex_mem) = self.create_image(
+        let (tex_image, tex_mem) = Self::create_image(
+            &self.instance,
+            &self.device,
+            self.phys_device,
             info.width,
             info.height,
             format,
@@ -214,7 +263,10 @@ impl VulkanBackend {
     ) -> Result<VulkanTexture, GpuError> {
         let vk_format: ash::vk::Format = format.into();
         let total_size = faces.iter().map(|f| f.len() as u64).sum();
-        let (staging, staging_mem) = self.create_buffer(
+        let (staging, staging_mem) = Self::create_buffer(
+            &self.instance,
+            &self.device,
+            self.phys_device,
             total_size,
             ash::vk::BufferUsageFlags::TRANSFER_SRC,
             ash::vk::MemoryPropertyFlags::HOST_VISIBLE
@@ -271,7 +323,9 @@ impl VulkanBackend {
         let mem_reqs = unsafe { self.device.get_image_memory_requirements(cubemap) };
         let alloc_info = ash::vk::MemoryAllocateInfo {
             allocation_size: mem_reqs.size,
-            memory_type_index: self.find_memory_type(
+            memory_type_index: Self::find_memory_type(
+                &self.instance,
+                self.phys_device,
                 mem_reqs.memory_type_bits,
                 ash::vk::MemoryPropertyFlags::DEVICE_LOCAL,
             )?,
@@ -377,7 +431,10 @@ impl VulkanBackend {
 
         let vk_format: ash::vk::Format = format.into();
 
-        let (depth_img, _mem) = self.create_image(
+        let (depth_img, _mem) = Self::create_image(
+            &self.instance,
+            &self.device,
+            self.phys_device,
             width,
             height,
             vk_format,
@@ -455,6 +512,11 @@ impl Into<ash::vk::Format> for TextureFormat {
             TextureFormat::Depth32Float => ash::vk::Format::D32_SFLOAT,
             TextureFormat::Depth24Stencil8 => ash::vk::Format::D24_UNORM_S8_UINT,
         }
+    }
+}
+impl Into<ash::vk::Format> for &TextureFormat {
+    fn into(self) -> ash::vk::Format {
+        (*self).into()
     }
 }
 

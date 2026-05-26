@@ -14,14 +14,14 @@ struct PS_OUT {
 	float4 color : SV_Target;
 };
 
-[[vk::binding(0, 4)]]
+[[vk::binding(4, 0)]]
 Sampler2D<float4> textures[] : register(t0);
 
 static const uint POS_ALBEDO = 0;
 static const uint POS_METALLIC_ROUGHNESS = 1;
 static const uint POS_NORMALS = 2;
 
-[[vk::binding(0, 2)]] cbuffer ubo : register(b2) {
+[[vk::binding(2, 0)]] cbuffer ubo : register(b2) {
 	float3 cameraPos;
 	uint ssao;
 }

@@ -1,0 +1,7 @@
+[package]
+name = "compile-shaders"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+shader-slang = "0.1.0"

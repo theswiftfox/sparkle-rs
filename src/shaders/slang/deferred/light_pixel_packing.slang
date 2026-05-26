@@ -6,10 +6,10 @@ struct PS_OUT {
 	float4 color : SV_Target;
 };
 
-[[vk::binding(0, 4)]]
+[[vk::binding(4, 0)]]
 Sampler2D<uint4> gbuffer[] : register(t0);
 
-[[vk::binding(0, 2)]] cbuffer ubo : register(b2) {
+[[vk::binding(2, 0)]] cbuffer ubo : register(b2) {
 	float3 cameraPos;
 	uint ssao;
 }

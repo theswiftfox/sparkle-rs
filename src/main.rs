@@ -17,7 +17,8 @@ use crate::{
     input::{
         first_person::FPSController,
         input_handler::{
-            Action, ApplicationRequest, Button, InputHandler as _, ScrollAxis, translate_key,
+            Action, ApplicationRequest, Button, InputHandler as _, Key::F, ScrollAxis,
+            translate_key,
         },
     },
 };
@@ -43,19 +44,69 @@ fn run_vulkan() -> Result<(), Box<dyn std::error::Error>> {
     let (window, event_loop) = window::Window::new(width, height, "Sparkle-rs")?;
     let w = window.winit_window_arc();
 
-    let mut vk_backend = engine::vulkan_backend::initialize(w, &settings)?;
+    let aspect = width as f32 / height as f32;
+    let fov = settings.camera_fov;
+    let view_distance = settings.view_distance;
 
-    window.run(event_loop, move |_window, events| {
+    let vk_backend = engine::vulkan_backend::initialize(w, &settings)?;
+    let mut renderer = engine::renderer::Renderer::create(vk_backend, settings)?;
+
+    let mut fps = FPSController::create(aspect, fov, 0.1, view_distance);
+
+    match renderer.init_draw_programs() {
+        Ok(()) => {}
+        Err(e) => {
+            eprintln!(
+                "Warning: draw program init failed: {} (falling back to clear-only)",
+                e
+            );
+        }
+    }
+
+    // let mut editor = editor::Editor::new(&w, renderer.backend(), aspect, fov, 0.1, view_distance);
+    // renderer.set_camera_projection(editor.orbit_camera());
+
+    let scene_path = "assets/glTF/Sponza.gltf";
+    match renderer.load_scene(scene_path) {
+        Ok(()) => println!("Scene loaded: {}", scene_path),
+        Err(e) => {
+            eprintln!("Warning: scene loading failed: {}", e);
+        }
+    }
+
+    let mut last_cursor_pos: Option<(f64, f64)> = None;
+
+    renderer.set_camera_projection(&fps);
+
+    window.run(event_loop, move |window, events| {
         if events.contains(&WindowEvent::CloseRequested) {
-            if let Err(e) = vk_backend.wait_idle() {
+            if let Err(e) = renderer.backend().wait_idle() {
                 println!("Error while waiting for GPU to idle: {e:?}");
             }
+        }
+        handle_events_without_editor(events, &mut last_cursor_pos, &mut fps, window);
+
+        let (ww, wh) = window.get_resolution();
+        let (bw, bh) = renderer.backend().resolution();
+        if ww != bw || wh != bh {
+            renderer.resize(ww, wh);
+        }
+
+        fps.update(0.016, &mut renderer.settings_mut());
+        renderer.update_state(0.016, &mut fps);
+
+        if let Err(e) = renderer.render_scene(&fps) {
+            eprintln!("Render error: {}", e);
             return;
         }
-        // handle_events(events, &mut editor, &mut last_cursor_pos, &mut fps, window);
-        if let Err(e) = vk_backend.draw() {
-            println!("Draw failed: {e:?}");
+
+        if let Err(e) = renderer.finish_frame() {
+            eprintln!("Frame finish error: {}", e);
         }
+
+        // if let Err(e) = vk_backend.draw() {
+        //     println!("Draw failed: {e:?}");
+        // }
     })?;
 
     Ok(())
@@ -166,6 +217,91 @@ fn run_wgpu() -> Result<(), Box<dyn std::error::Error>> {
     })?;
 
     Ok(())
+}
+
+fn handle_events_without_editor(
+    events: &[WindowEvent],
+    last_cursor_pos: &mut Option<(f64, f64)>,
+    fps: &mut FPSController,
+    window: &mut window::Window,
+) {
+    for event in events {
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            if let Some((lx, ly)) = last_cursor_pos {
+                let dx = position.x - *lx;
+                let dy = position.y - *ly;
+
+                fps.handle_mouse_move(dx as i32, dy as i32);
+            }
+            *last_cursor_pos = Some((position.x, position.y));
+        }
+
+        match event {
+            WindowEvent::KeyboardInput {
+                event: key_event, ..
+            } => {
+                let action = match key_event.state {
+                    ElementState::Pressed => Action::Down,
+                    ElementState::Released => Action::Up,
+                };
+                let key = match key_event.physical_key {
+                    winit::keyboard::PhysicalKey::Code(code) => translate_key(code),
+                    _ => input::input_handler::Key::None,
+                };
+                match fps.handle_key(key, action) {
+                    ApplicationRequest::Quit => window.request_quit(),
+                    _ => {}
+                }
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                let action = match state {
+                    ElementState::Pressed => Action::Down,
+                    ElementState::Released => Action::Up,
+                };
+                let btn = match button {
+                    MouseButton::Left => Button::Left,
+                    MouseButton::Right => Button::Right,
+                    MouseButton::Middle => Button::Middle,
+                    _ => continue,
+                };
+                match fps.handle_mouse(btn, action) {
+                    ApplicationRequest::SnapMouse => {
+                        window.winit_window().set_cursor_visible(false);
+                        let size = window.winit_window().inner_size();
+                        let cx = size.width as f64 / 2.0;
+                        let cy = size.height as f64 / 2.0;
+                        let _ = window
+                            .winit_window()
+                            .set_cursor_position(winit::dpi::PhysicalPosition::new(cx, cy));
+                        *last_cursor_pos = Some((cx, cy));
+                    }
+                    ApplicationRequest::UnsnapMouse => {
+                        window.winit_window().set_cursor_visible(true);
+                    }
+                    _ => {}
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => match delta {
+                MouseScrollDelta::LineDelta(x, y) => {
+                    if y.abs() > 0.0 {
+                        fps.handle_wheel(ScrollAxis::Vertical, y * 24.0);
+                    }
+                    if x.abs() > 0.0 {
+                        fps.handle_wheel(ScrollAxis::Horizontal, x * 24.0);
+                    }
+                }
+                MouseScrollDelta::PixelDelta(pos) => {
+                    if pos.y.abs() > 0.0 {
+                        fps.handle_wheel(ScrollAxis::Vertical, pos.y as f32);
+                    }
+                    if pos.x.abs() > 0.0 {
+                        fps.handle_wheel(ScrollAxis::Horizontal, pos.x as f32);
+                    }
+                }
+            },
+            _ => {}
+        }
+    }
 }
 
 fn handle_events(

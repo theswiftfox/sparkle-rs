@@ -4,7 +4,7 @@
 //! Backend implementations (wgpu, Vulkan, etc.) implement the [`GpuBackend`] trait
 //! and its associated resource types.
 
-use super::geometry::{Vertex, AABB};
+use super::geometry::{AABB, Vertex};
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -308,9 +308,9 @@ pub enum BindingType {
 /// `shader_source` is WGSL text (UTF-8 bytes) for the wgpu backend.
 /// Entry points must be named `vs_main` (vertex) and `fs_main` (fragment).
 /// If `color_target_formats` is empty, no fragment stage is created (depth-only pass).
-pub struct PipelineDesc<'a> {
+pub struct PipelineDesc<'a, ShaderSource> {
     pub label: &'a str,
-    pub shader_source: &'a [u8],
+    pub shader_source: &'a ShaderSource,
     /// `None` for fullscreen / procedurally-generated-vertex shaders.
     pub vertex_layout: Option<VertexLayout>,
     pub blend_mode: BlendMode,
@@ -402,15 +402,13 @@ pub trait GpuBackend: Sized {
     type RenderTarget: GpuRenderTarget;
     type Buffer: GpuBuffer;
     type Pipeline;
+    type ShaderSource;
 
-    // --- Resource creation ---
+    /// load shaders
+    fn load_shaders(&self) -> Shaders<Self>;
 
     /// Create a 2D texture from raw pixel data.
-    fn create_texture(
-        &self,
-        desc: &TextureDesc,
-        data: &[u8],
-    ) -> Result<Self::Texture, GpuError>;
+    fn create_texture(&self, desc: &TextureDesc, data: &[u8]) -> Result<Self::Texture, GpuError>;
 
     /// Create a cubemap texture from 6 face images (in +X, -X, +Y, -Y, +Z, -Z order).
     fn create_cubemap(
@@ -430,15 +428,13 @@ pub trait GpuBackend: Sized {
     ) -> Result<Self::Buffer, GpuError>;
 
     /// Create a render target that can be rendered to and later sampled.
-    fn create_render_target(
-        &self,
-        desc: &RenderTargetDesc,
-    ) -> Result<Self::RenderTarget, GpuError>;
+    fn create_render_target(&self, desc: &RenderTargetDesc)
+    -> Result<Self::RenderTarget, GpuError>;
 
     /// Create a render pipeline from compiled shader bytecode and fixed-function state.
     fn create_pipeline(
         &self,
-        desc: &PipelineDesc,
+        desc: &PipelineDesc<Self::ShaderSource>,
     ) -> Result<Self::Pipeline, GpuError>;
 
     // --- Buffer operations ---
@@ -516,6 +512,17 @@ pub trait GpuBackend: Sized {
 
     /// End the current debug event region.
     fn end_event(&self) {}
+}
+
+pub struct Shaders<B: GpuBackend> {
+    pub deferred_pre: B::ShaderSource,
+    pub ssao: B::ShaderSource,
+    pub ssao_blur: B::ShaderSource,
+    pub shadow: B::ShaderSource,
+    pub deferred_light: B::ShaderSource,
+    pub forward: B::ShaderSource,
+    pub output: B::ShaderSource,
+    pub skybox: B::ShaderSource,
 }
 
 // Material

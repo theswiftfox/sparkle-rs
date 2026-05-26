@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::engine::{
-    backend::{GpuError, GpuErrorKind, TextureFormat},
+    backend::{GpuError, GpuErrorKind, RenderTargetDesc, SamplerDesc, TextureFormat},
     settings::{Settings, SyncMode},
     vulkan_backend::texture::VulkanTexture,
 };
@@ -85,6 +85,15 @@ struct Descriptors {
     sets: [ash::vk::DescriptorSet; FRAMES_IN_FLIGHT as usize],
 }
 
+struct CurrentFrame {
+    idx: usize,
+    render_idx: u32,
+    command_buffer: ash::vk::CommandBuffer,
+    fence: ash::vk::Fence,
+    present_sem: ash::vk::Semaphore,
+    render_sem: ash::vk::Semaphore,
+}
+
 pub struct VulkanBackend {
     window: Arc<winit::window::Window>,
     context: ash::Entry,
@@ -92,6 +101,7 @@ pub struct VulkanBackend {
     phys_device: ash::vk::PhysicalDevice,
     device: LogicalDevice,
     swapchain: Swapchain,
+    depth_targets: [VulkanTexture; FRAMES_IN_FLIGHT as usize],
     queue: ash::vk::Queue,
     graphics_pipeline: ash::vk::Pipeline,
     pipeline_layout: ash::vk::PipelineLayout,
@@ -101,7 +111,7 @@ pub struct VulkanBackend {
     sync_objects: SyncObjects,
     khr_sync: ash::khr::synchronization2::Device,
     frame_idx: usize,
-    render_idx: usize,
+    current_frame: Option<CurrentFrame>,
 }
 
 pub fn initialize(
@@ -128,7 +138,7 @@ pub fn initialize(
 
     let queue = logical_device.get_graphics_queue();
 
-    let swapchain = create_swapchain(
+    let (swapchain, depth_targets) = create_swapchain_and_depth_buffer(
         &context,
         &instance,
         &window,
@@ -177,6 +187,7 @@ pub fn initialize(
         phys_device: physical_device,
         device: logical_device,
         swapchain,
+        depth_targets,
         queue,
         graphics_pipeline: pipeline,
         pipeline_layout,
@@ -190,7 +201,7 @@ pub fn initialize(
         sync_objects,
         khr_sync,
         frame_idx: 0,
-        render_idx: 0,
+        current_frame: None,
     })
 }
 
@@ -280,23 +291,23 @@ fn create_descriptor_set_layout(
         stage_flags: ash::vk::ShaderStageFlags::VERTEX | ash::vk::ShaderStageFlags::FRAGMENT,
         ..Default::default()
     };
-    let comparison_img_binding = ash::vk::DescriptorSetLayoutBinding {
+    let cubemap_binding = ash::vk::DescriptorSetLayoutBinding {
         binding: 5,
+        descriptor_type: ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+        descriptor_count: 4,
+        stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
+        ..Default::default()
+    };
+    let comparison_img_binding = ash::vk::DescriptorSetLayoutBinding {
+        binding: 6,
         descriptor_type: ash::vk::DescriptorType::SAMPLED_IMAGE,
         descriptor_count: 4,
         stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
         ..Default::default()
     };
     let comparison_sampler_binding = ash::vk::DescriptorSetLayoutBinding {
-        binding: 6,
-        descriptor_type: ash::vk::DescriptorType::SAMPLER,
-        descriptor_count: 1,
-        stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
-        ..Default::default()
-    };
-    let cubemap_binding = ash::vk::DescriptorSetLayoutBinding {
         binding: 7,
-        descriptor_type: ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+        descriptor_type: ash::vk::DescriptorType::SAMPLER,
         descriptor_count: 4,
         stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
         ..Default::default()
@@ -307,9 +318,9 @@ fn create_descriptor_set_layout(
         pixel_data_binding,
         light_data_binding,
         texture_binding,
+        cubemap_binding,
         comparison_img_binding,
         comparison_sampler_binding,
-        cubemap_binding,
     ];
 
     let binding_flags = ash::vk::DescriptorBindingFlags::PARTIALLY_BOUND
@@ -355,7 +366,7 @@ fn create_descriptor_pool(device: &LogicalDevice) -> Result<ash::vk::DescriptorP
     };
     let sampler_pool_info = ash::vk::DescriptorPoolSize {
         ty: ash::vk::DescriptorType::SAMPLER,
-        descriptor_count: 2,
+        descriptor_count: 8,
     };
     let pool_sizes = [
         uniform_pool_info,
@@ -474,8 +485,8 @@ fn create_graphics_pipeline(
     device: &ash::Device,
     swapchain: &Swapchain,
 ) -> Result<ash::vk::Pipeline, GpuError> {
-    let shader_vert = util::load_shader_blob("target/debug/assets/shaders/spv/example.vert.spv")?;
-    let shader_pxl = util::load_shader_blob("target/debug/assets/shaders/spv/example.pxl.spv")?;
+    let shader_vert = util::load_shader_blob("src/shaders/spv/example.vert.spv")?;
+    let shader_pxl = util::load_shader_blob("src/shaders/spv/example.pxl.spv")?;
 
     let shader_module_vert = create_shader_module(&shader_vert, device, "Vertex Shader")?;
     let shader_module_pxl = create_shader_module(&shader_pxl, device, "Pixel Shader")?;
@@ -658,7 +669,7 @@ fn create_image_views(
     Ok(image_views)
 }
 
-fn create_swapchain(
+fn create_swapchain_and_depth_buffer(
     context: &ash::Entry,
     instance: &ash::Instance,
     window: &winit::window::Window,
@@ -666,7 +677,7 @@ fn create_swapchain(
     logical_device: &LogicalDevice,
     surface: ash::vk::SurfaceKHR,
     sync_mode: SyncMode,
-) -> Result<Swapchain, GpuError> {
+) -> Result<(Swapchain, [VulkanTexture; FRAMES_IN_FLIGHT as usize]), GpuError> {
     let surface_khr = ash::khr::surface::Instance::new(context, instance);
 
     let surface_capababilities = unsafe {
@@ -776,15 +787,43 @@ fn create_swapchain(
         })
         .collect::<Vec<_>>();
 
-    Ok(Swapchain {
-        fn_ptr: swapchain_khr,
-        swapchain,
-        swapchain_images,
-        swapchain_extent: swap_extent,
-        surface_format: swap_format,
-        surface,
-        sync_mode,
-    })
+    // depth targets
+    let depth_target_desc = RenderTargetDesc {
+        width: swap_extent.width,
+        height: swap_extent.height,
+        format: TextureFormat::Depth32Float,
+        sampler: SamplerDesc::default(),
+    };
+    let depth_targets = (0..FRAMES_IN_FLIGHT)
+        .map(|_| {
+            VulkanBackend::create_vk_render_target(
+                instance,
+                logical_device,
+                physical_device,
+                &depth_target_desc,
+            )
+        })
+        .collect::<Result<Vec<_>, GpuError>>()?;
+    let depth_targets: [VulkanTexture; FRAMES_IN_FLIGHT as usize] =
+        depth_targets.try_into().map_err(|_| {
+            GpuError::new(
+                "Unable to create expected amount of depth targets",
+                GpuErrorKind::ResourceCreation,
+            )
+        })?;
+
+    Ok((
+        Swapchain {
+            fn_ptr: swapchain_khr,
+            swapchain,
+            swapchain_images,
+            swapchain_extent: swap_extent,
+            surface_format: swap_format,
+            surface,
+            sync_mode,
+        },
+        depth_targets,
+    ))
 }
 
 fn create_logical_device(
@@ -838,12 +877,26 @@ fn create_logical_device(
         p_next: &mut ext_state_struct as *mut _ as *mut std::ffi::c_void,
         ..Default::default()
     };
+    let mut indexing_feats = ash::vk::PhysicalDeviceDescriptorIndexingFeatures {
+        descriptor_binding_uniform_buffer_update_after_bind: ash::vk::TRUE,
+        descriptor_binding_partially_bound: ash::vk::TRUE,
+        descriptor_binding_sampled_image_update_after_bind: ash::vk::TRUE,
+        runtime_descriptor_array: ash::vk::TRUE,
+        p_next: &mut vk_13_feats as *mut _ as *mut std::ffi::c_void,
+        ..Default::default()
+    };
+    let mut shader_float16_feats = ash::vk::PhysicalDeviceShaderFloat16Int8Features {
+        shader_float16: ash::vk::TRUE,
+        p_next: &mut indexing_feats as *mut _ as *mut std::ffi::c_void,
+        ..Default::default()
+    };
     let mut base_struct = ash::vk::PhysicalDeviceFeatures2 {
         features: ash::vk::PhysicalDeviceFeatures {
             sampler_anisotropy: ash::vk::TRUE,
+            shader_int16: ash::vk::TRUE,
             ..Default::default()
         },
-        p_next: &mut vk_13_feats as *mut _ as *mut std::ffi::c_void,
+        p_next: &mut shader_float16_feats as *mut _ as *mut std::ffi::c_void,
         ..Default::default()
     };
     let device_exts = REQUIRED_EXTS;

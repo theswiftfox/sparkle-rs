@@ -13,14 +13,36 @@ pub struct VulkanBuffer {
     pub size: ash::vk::DeviceSize,
 }
 
+impl VulkanBuffer {
+    pub fn destroy(device: &ash::Device, buffer: VulkanBuffer) {
+        let VulkanBuffer { buffer, memory, .. } = buffer;
+
+        unsafe {
+            if buffer != ash::vk::Buffer::null() {
+                device.destroy_buffer(buffer, None);
+            }
+            if memory != ash::vk::DeviceMemory::null() {
+                device.free_memory(memory, None);
+            }
+        }
+    }
+}
+
 impl VulkanBackend {
     pub fn create_vulkan_buffer(
         &self,
         size: ash::vk::DeviceSize,
-        usage: BufferUsage,
+        usage: ash::vk::BufferUsageFlags,
         properties: ash::vk::MemoryPropertyFlags,
     ) -> Result<VulkanBuffer, GpuError> {
-        let (buffer, memory) = self.create_buffer(size, usage.into(), properties)?;
+        let (buffer, memory) = Self::create_buffer(
+            &self.instance,
+            &self.device,
+            self.phys_device,
+            size,
+            usage.into(),
+            properties,
+        )?;
         let mapped = if properties.contains(ash::vk::MemoryPropertyFlags::HOST_VISIBLE)
             && properties.contains(ash::vk::MemoryPropertyFlags::HOST_COHERENT)
         {

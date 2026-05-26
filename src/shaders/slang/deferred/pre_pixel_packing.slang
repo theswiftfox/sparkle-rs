@@ -11,7 +11,7 @@ struct PS_OUT {
 	uint4 albedo : SV_Target1;
 };
 
-[[vk::binding(0, 2)]] cbuffer ubo : register(b2) {
+[[vk::binding(2, 0)]] cbuffer ubo : register(b2) {
 	float near_plane;
     float far_plane;
 };
@@ -22,7 +22,7 @@ float calcLinearDepth(float zval)
 	return (2.0 * near_plane * far_plane) / (far_plane + near_plane - z * (far_plane - near_plane));
 }
 
-[[vk::binding(0, 4)]]
+[[vk::binding(4, 0)]]
 Sampler2D<float4> textures[] : register(t0);
 
 static const uint POS_ALBEDO = 0;

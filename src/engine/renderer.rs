@@ -91,7 +91,10 @@ impl<B: GpuBackend> Renderer<B> {
     ///
     /// Returns `None` if no scene is loaded (no root node).
     pub fn scene_tree(&self) -> Option<NodeInfo> {
-        self.scene.root().as_ref().map(|root| NodeInfo::from_node(root))
+        self.scene
+            .root()
+            .as_ref()
+            .map(|root| NodeInfo::from_node(root))
     }
 
     /// Get a reference to the scene's lights.
@@ -152,7 +155,9 @@ impl<B: GpuBackend> Renderer<B> {
         }
 
         // Collect lights
-        let lights: Vec<LightData> = self.scene.get_lights()
+        let lights: Vec<LightData> = self
+            .scene
+            .get_lights()
             .iter()
             .map(LightData::from)
             .collect();
@@ -245,15 +250,16 @@ impl<B: GpuBackend> Renderer<B> {
         let resolution = self.backend.resolution();
         let backbuffer_format = self.backend.backbuffer().format();
 
-        // Load WGSL shaders
-        let deferred_pre_wgsl = include_bytes!("../shaders/wgsl/deferred_pre.wgsl");
-        let ssao_wgsl = include_bytes!("../shaders/wgsl/ssao.wgsl");
-        let ssao_blur_wgsl = include_bytes!("../shaders/wgsl/ssao_blur.wgsl");
-        let shadow_wgsl = include_bytes!("../shaders/wgsl/shadow.wgsl");
-        let deferred_light_wgsl = include_bytes!("../shaders/wgsl/deferred_light.wgsl");
-        let forward_wgsl = include_bytes!("../shaders/wgsl/forward.wgsl");
-        let output_wgsl = include_bytes!("../shaders/wgsl/output.wgsl");
-        let skybox_wgsl = include_bytes!("../shaders/wgsl/skybox.wgsl");
+        let Shaders {
+            deferred_pre: deferred_pre_wgsl,
+            ssao: ssao_wgsl,
+            ssao_blur: ssao_blur_wgsl,
+            shadow: shadow_wgsl,
+            deferred_light: deferred_light_wgsl,
+            forward: forward_wgsl,
+            output: output_wgsl,
+            skybox: skybox_wgsl,
+        } = self.backend.load_shaders();
 
         println!("Initializing draw programs...");
 
@@ -261,7 +267,7 @@ impl<B: GpuBackend> Renderer<B> {
         self.deferred_program_pre = Some(DeferredPassPre::create(
             &self.backend,
             resolution,
-            deferred_pre_wgsl,
+            &deferred_pre_wgsl,
         )?);
         println!("  deferred_pre: OK");
 
@@ -269,20 +275,20 @@ impl<B: GpuBackend> Renderer<B> {
         self.ssao_program = Some(SsaoPass::create(
             &self.backend,
             resolution,
-            ssao_wgsl,
-            ssao_blur_wgsl,
+            &ssao_wgsl,
+            &ssao_blur_wgsl,
         )?);
         println!("  ssao: OK");
 
         // Shadow mapping pass
-        self.shadow_program = Some(ShadowPass::create(&self.backend, shadow_wgsl)?);
+        self.shadow_program = Some(ShadowPass::create(&self.backend, &shadow_wgsl)?);
         println!("  shadow: OK");
 
         // Deferred lighting pass
         self.deferred_program_light = Some(DeferredPassLight::create(
             &self.backend,
             resolution,
-            deferred_light_wgsl,
+            &deferred_light_wgsl,
         )?);
         println!("  deferred_light: OK");
 
@@ -290,14 +296,14 @@ impl<B: GpuBackend> Renderer<B> {
         self.forward_program = Some(ForwardPass::create(
             &self.backend,
             resolution,
-            forward_wgsl,
+            &forward_wgsl,
         )?);
         println!("  forward: OK");
 
         // Output composite pass
         self.output_program = Some(OutputPass::create(
             &self.backend,
-            output_wgsl,
+            &output_wgsl,
             backbuffer_format,
         )?);
         println!("  output: OK");
@@ -305,7 +311,7 @@ impl<B: GpuBackend> Renderer<B> {
         // Skybox pass
         self.skybox_program = Some(SkyBoxPass::create(
             &self.backend,
-            skybox_wgsl,
+            &skybox_wgsl,
             backbuffer_format,
         )?);
         println!("  skybox: OK");

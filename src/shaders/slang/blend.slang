@@ -1,5 +1,5 @@
 
-[[vk::binding(0, 4)]]
+[[vk::binding(4, 0)]]
 Sampler2D<float4> blendTex[] : register(t0);
 
 [shader("pixel")]

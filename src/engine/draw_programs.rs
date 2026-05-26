@@ -229,8 +229,8 @@ impl<B: GpuBackend> SsaoPass<B> {
     pub fn create(
         backend: &B,
         resolution: (u32, u32),
-        ssao_shader: &[u8],
-        blur_shader: &[u8],
+        ssao_shader: &B::ShaderSource,
+        blur_shader: &B::ShaderSource,
     ) -> Result<Self, GpuError> {
         // SSAO pipeline
         let ssao_pipeline = backend.create_pipeline(&PipelineDesc {
@@ -251,7 +251,11 @@ impl<B: GpuBackend> SsaoPass<B> {
                 // Group 2: noise texture
                 &[BindingType::Texture2D, BindingType::Sampler],
                 // Group 3: SSAO uniforms + positions G-buffer + normal G-buffer
-                &[BindingType::UniformBuffer, BindingType::Texture2DUnfilterable, BindingType::Texture2D],
+                &[
+                    BindingType::UniformBuffer,
+                    BindingType::Texture2DUnfilterable,
+                    BindingType::Texture2D,
+                ],
             ],
         })?;
 
@@ -449,7 +453,7 @@ impl<B: GpuBackend> ForwardPass<B> {
     pub fn create(
         backend: &B,
         resolution: (u32, u32),
-        shader_source: &[u8],
+        shader_source: &B::ShaderSource,
     ) -> Result<Self, GpuError> {
         let pipeline = backend.create_pipeline(&PipelineDesc {
             label: "forward_pass",
@@ -468,16 +472,19 @@ impl<B: GpuBackend> ForwardPass<B> {
                 &[BindingType::UniformBuffer],
                 // Group 2: material textures (diffuse, MR, normal)
                 &[
-                    BindingType::Texture2D, BindingType::Sampler,
-                    BindingType::Texture2D, BindingType::Sampler,
-                    BindingType::Texture2D, BindingType::Sampler,
+                    BindingType::Texture2D,
+                    BindingType::Sampler,
+                    BindingType::Texture2D,
+                    BindingType::Sampler,
+                    BindingType::Texture2D,
+                    BindingType::Sampler,
                 ],
                 // Group 3: fragment uniforms + shadow map
                 &[
-                    BindingType::UniformBuffer,       // camera
-                    BindingType::UniformBuffer,       // light
-                    BindingType::TextureDepth2D,      // shadow map
-                    BindingType::SamplerComparison,   // shadow sampler
+                    BindingType::UniformBuffer,     // camera
+                    BindingType::UniformBuffer,     // light
+                    BindingType::TextureDepth2D,    // shadow map
+                    BindingType::SamplerComparison, // shadow sampler
                 ],
             ],
         })?;
@@ -496,9 +503,12 @@ impl<B: GpuBackend> ForwardPass<B> {
                 &[BindingType::UniformBuffer],
                 &[BindingType::UniformBuffer],
                 &[
-                    BindingType::Texture2D, BindingType::Sampler,
-                    BindingType::Texture2D, BindingType::Sampler,
-                    BindingType::Texture2D, BindingType::Sampler,
+                    BindingType::Texture2D,
+                    BindingType::Sampler,
+                    BindingType::Texture2D,
+                    BindingType::Sampler,
+                    BindingType::Texture2D,
+                    BindingType::Sampler,
                 ],
                 &[
                     BindingType::UniformBuffer,
@@ -664,7 +674,7 @@ impl<B: GpuBackend> DeferredPassPre<B> {
     pub fn create(
         backend: &B,
         resolution: (u32, u32),
-        shader_source: &[u8],
+        shader_source: &B::ShaderSource,
     ) -> Result<Self, GpuError> {
         let pipeline = backend.create_pipeline(&PipelineDesc {
             label: "deferred_pre",
@@ -687,9 +697,12 @@ impl<B: GpuBackend> DeferredPassPre<B> {
                 &[BindingType::UniformBuffer],
                 // Group 2: material textures (diffuse, MR, normal)
                 &[
-                    BindingType::Texture2D, BindingType::Sampler,
-                    BindingType::Texture2D, BindingType::Sampler,
-                    BindingType::Texture2D, BindingType::Sampler,
+                    BindingType::Texture2D,
+                    BindingType::Sampler,
+                    BindingType::Texture2D,
+                    BindingType::Sampler,
+                    BindingType::Texture2D,
+                    BindingType::Sampler,
                 ],
                 // Group 3: fragment uniforms (near/far planes)
                 &[BindingType::UniformBuffer],
@@ -714,9 +727,12 @@ impl<B: GpuBackend> DeferredPassPre<B> {
                 &[BindingType::UniformBuffer],
                 &[BindingType::UniformBuffer],
                 &[
-                    BindingType::Texture2D, BindingType::Sampler,
-                    BindingType::Texture2D, BindingType::Sampler,
-                    BindingType::Texture2D, BindingType::Sampler,
+                    BindingType::Texture2D,
+                    BindingType::Sampler,
+                    BindingType::Texture2D,
+                    BindingType::Sampler,
+                    BindingType::Texture2D,
+                    BindingType::Sampler,
                 ],
                 &[BindingType::UniformBuffer],
             ],
@@ -861,7 +877,7 @@ impl<B: GpuBackend> DeferredPassLight<B> {
     pub fn create(
         backend: &B,
         resolution: (u32, u32),
-        shader_source: &[u8],
+        shader_source: &B::ShaderSource,
     ) -> Result<Self, GpuError> {
         let pipeline = backend.create_pipeline(&PipelineDesc {
             label: "deferred_light",
@@ -882,15 +898,15 @@ impl<B: GpuBackend> DeferredPassLight<B> {
                 &[],
                 // Group 3: fragment uniforms + G-buffer + shadow map + SSAO
                 &[
-                    BindingType::UniformBuffer,       // camera
-                    BindingType::UniformBuffer,       // light
+                    BindingType::UniformBuffer,         // camera
+                    BindingType::UniformBuffer,         // light
                     BindingType::Texture2DUnfilterable, // positions G-buffer (Rgba32Float, unfilterable)
-                    BindingType::Texture2D,           // normal+roughness G-buffer (Rgba16Float)
-                    BindingType::Texture2D,           // albedo+metallic G-buffer (Rgba16Float)
-                    BindingType::TextureDepth2D,      // shadow map
-                    BindingType::SamplerComparison,   // shadow sampler
-                    BindingType::Texture2D,           // SSAO blurred
-                    BindingType::Sampler,             // SSAO sampler
+                    BindingType::Texture2D,             // normal+roughness G-buffer (Rgba16Float)
+                    BindingType::Texture2D,             // albedo+metallic G-buffer (Rgba16Float)
+                    BindingType::TextureDepth2D,        // shadow map
+                    BindingType::SamplerComparison,     // shadow sampler
+                    BindingType::Texture2D,             // SSAO blurred
+                    BindingType::Sampler,               // SSAO sampler
                 ],
             ],
         })?;
@@ -1007,10 +1023,7 @@ impl<B: GpuBackend> ShadowPass<B> {
         self.vertex_uniforms.light_space_matrix = light_space_matrix;
     }
 
-    pub fn create(
-        backend: &B,
-        shader_source: &[u8],
-    ) -> Result<Self, GpuError> {
+    pub fn create(backend: &B, shader_source: &B::ShaderSource) -> Result<Self, GpuError> {
         let pipeline = backend.create_pipeline(&PipelineDesc {
             label: "shadow_pass",
             shader_source,
@@ -1114,7 +1127,7 @@ impl<B: GpuBackend> OutputPass<B> {
 
     pub fn create(
         backend: &B,
-        shader_source: &[u8],
+        shader_source: &B::ShaderSource,
         backbuffer_format: TextureFormat,
     ) -> Result<Self, GpuError> {
         let pipeline = backend.create_pipeline(&PipelineDesc {
@@ -1136,8 +1149,10 @@ impl<B: GpuBackend> OutputPass<B> {
                 &[],
                 // Group 3: deferred + forward render target textures
                 &[
-                    BindingType::Texture2D, BindingType::Sampler,   // deferred result
-                    BindingType::Texture2D, BindingType::Sampler,   // forward result
+                    BindingType::Texture2D,
+                    BindingType::Sampler, // deferred result
+                    BindingType::Texture2D,
+                    BindingType::Sampler, // forward result
                 ],
             ],
         })?;
@@ -1189,7 +1204,7 @@ impl<B: GpuBackend> SkyBoxPass<B> {
 
     pub fn create(
         backend: &B,
-        shader_source: &[u8],
+        shader_source: &B::ShaderSource,
         backbuffer_format: TextureFormat,
     ) -> Result<Self, GpuError> {
         let pipeline = backend.create_pipeline(&PipelineDesc {

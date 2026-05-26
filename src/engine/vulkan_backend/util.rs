@@ -3,9 +3,11 @@ use std::ffi::{CStr, c_void};
 use wgpu::rwh::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 
 use crate::engine::{
-    backend::{GpuError, GpuErrorKind},
+    backend::{CompareFunc, CullMode, GpuError, GpuErrorKind, LoadOp, VertexFormat, ViewportDesc},
     settings::SyncMode,
-    vulkan_backend::VulkanBackend,
+    vulkan_backend::{
+        Swapchain, VulkanBackend, create_swapchain_and_depth_buffer, texture::VulkanTexture,
+    },
 };
 
 pub fn get_instance_extensions(
@@ -321,7 +323,9 @@ pub fn load_shader_blob(path: impl AsRef<std::path::Path>) -> Result<Vec<u8>, Gp
 
 impl VulkanBackend {
     pub fn create_image(
-        &self,
+        instance: &ash::Instance,
+        device: &ash::Device,
+        phys_device: ash::vk::PhysicalDevice,
         width: u32,
         height: u32,
         format: ash::vk::Format,
@@ -347,27 +351,31 @@ impl VulkanBackend {
             ..Default::default()
         };
 
-        let image = unsafe { self.device.create_image(&create_info, None) }.map_err(|e| {
+        let image = unsafe { device.create_image(&create_info, None) }.map_err(|e| {
             GpuError::new(
                 format!("Failed to create image resource: {e:?}"),
                 GpuErrorKind::ResourceCreation,
             )
         })?;
 
-        let mem_reqs = unsafe { self.device.get_image_memory_requirements(image) };
+        let mem_reqs = unsafe { device.get_image_memory_requirements(image) };
         let alloc_info = ash::vk::MemoryAllocateInfo {
             allocation_size: mem_reqs.size,
-            memory_type_index: self.find_memory_type(mem_reqs.memory_type_bits, properties)?,
+            memory_type_index: Self::find_memory_type(
+                instance,
+                phys_device,
+                mem_reqs.memory_type_bits,
+                properties,
+            )?,
             ..Default::default()
         };
-        let device_mem =
-            unsafe { self.device.allocate_memory(&alloc_info, None) }.map_err(|e| {
-                GpuError::new(
-                    format!("Failed to allocate Image Memory: {e:?}"),
-                    GpuErrorKind::ResourceCreation,
-                )
-            })?;
-        unsafe { self.device.bind_image_memory(image, device_mem, 0) }.map_err(|e| {
+        let device_mem = unsafe { device.allocate_memory(&alloc_info, None) }.map_err(|e| {
+            GpuError::new(
+                format!("Failed to allocate Image Memory: {e:?}"),
+                GpuErrorKind::ResourceCreation,
+            )
+        })?;
+        unsafe { device.bind_image_memory(image, device_mem, 0) }.map_err(|e| {
             GpuError::new(
                 format!("Failed to bind memory to image: {e:?}"),
                 GpuErrorKind::ResourceUpdate,
@@ -377,7 +385,9 @@ impl VulkanBackend {
         Ok((image, device_mem))
     }
     pub fn create_buffer(
-        &self,
+        instance: &ash::Instance,
+        device: &ash::Device,
+        phys_device: ash::vk::PhysicalDevice,
         device_size: ash::vk::DeviceSize,
         usage: ash::vk::BufferUsageFlags,
         properties: ash::vk::MemoryPropertyFlags,
@@ -388,28 +398,32 @@ impl VulkanBackend {
             sharing_mode: ash::vk::SharingMode::EXCLUSIVE,
             ..Default::default()
         };
-        let buffer = unsafe { self.device.create_buffer(&create_info, None) }.map_err(|e| {
+        let buffer = unsafe { device.create_buffer(&create_info, None) }.map_err(|e| {
             GpuError::new(
                 format!("Failed to create buffer with size {device_size}, usage {usage:?}: {e:?}"),
                 GpuErrorKind::ResourceCreation,
             )
         })?;
 
-        let mem_reqs = unsafe { self.device.get_buffer_memory_requirements(buffer) };
+        let mem_reqs = unsafe { device.get_buffer_memory_requirements(buffer) };
         let alloc_info = ash::vk::MemoryAllocateInfo {
             allocation_size: mem_reqs.size,
-            memory_type_index: self.find_memory_type(mem_reqs.memory_type_bits, properties)?,
+            memory_type_index: Self::find_memory_type(
+                instance,
+                phys_device,
+                mem_reqs.memory_type_bits,
+                properties,
+            )?,
             ..Default::default()
         };
-        let device_mem =
-            unsafe { self.device.allocate_memory(&alloc_info, None) }.map_err(|e| {
-                GpuError::new(
-                    format!("Failed to allocate buffer: {e:?}"),
-                    GpuErrorKind::ResourceCreation,
-                )
-            })?;
+        let device_mem = unsafe { device.allocate_memory(&alloc_info, None) }.map_err(|e| {
+            GpuError::new(
+                format!("Failed to allocate buffer: {e:?}"),
+                GpuErrorKind::ResourceCreation,
+            )
+        })?;
 
-        unsafe { self.device.bind_buffer_memory(buffer, device_mem, 0) }.map_err(|e| {
+        unsafe { device.bind_buffer_memory(buffer, device_mem, 0) }.map_err(|e| {
             GpuError::new(
                 format!("Failed to bind buffer to memory: {e:?}"),
                 GpuErrorKind::ResourceUpdate,
@@ -420,7 +434,8 @@ impl VulkanBackend {
     }
 
     pub fn find_memory_type(
-        &self,
+        instance: &ash::Instance,
+        phys_device: ash::vk::PhysicalDevice,
         type_filter: u32,
         properties: ash::vk::MemoryPropertyFlags,
     ) -> Result<u32, GpuError> {
@@ -428,8 +443,7 @@ impl VulkanBackend {
             ..Default::default()
         };
         unsafe {
-            self.instance
-                .get_physical_device_memory_properties2(self.phys_device, &mut mem_props);
+            instance.get_physical_device_memory_properties2(phys_device, &mut mem_props);
         }
         // find memory type where the type_filter bit is set to 1
         for i in 0..mem_props.memory_properties.memory_type_count {
@@ -629,5 +643,125 @@ impl VulkanBackend {
         }
 
         Ok(())
+    }
+
+    pub fn recreate_swapchain(&mut self) -> Result<(), GpuError> {
+        unsafe { self.device.device_wait_idle() }.map_err(|e| {
+            GpuError::new(
+                format!("Failed to wait for device idle during swapchain recreation: {e:?}"),
+                GpuErrorKind::Other,
+            )
+        })?;
+
+        let mut old = Swapchain {
+            swapchain: ash::vk::SwapchainKHR::null(),
+            swapchain_images: Vec::new(),
+            swapchain_extent: ash::vk::Extent2D::default(),
+            fn_ptr: self.swapchain.fn_ptr.clone(),
+            surface_format: ash::vk::SurfaceFormatKHR::default(),
+            surface: ash::vk::SurfaceKHR::null(),
+            sync_mode: self.swapchain.sync_mode,
+        };
+        std::mem::swap(&mut old, &mut self.swapchain);
+
+        let (mut new_swapchain, mut new_depth) = create_swapchain_and_depth_buffer(
+            &self.context,
+            &self.instance,
+            &self.window,
+            self.phys_device,
+            &self.device,
+            old.surface,
+            old.sync_mode,
+        )?;
+
+        std::mem::swap(&mut self.swapchain, &mut new_swapchain);
+        std::mem::swap(&mut self.depth_targets, &mut new_depth);
+
+        let Swapchain {
+            fn_ptr,
+            swapchain,
+            swapchain_images,
+            ..
+        } = new_swapchain;
+
+        // cleanup the old data
+        unsafe {
+            fn_ptr.destroy_swapchain(swapchain, None);
+        }
+        for image in swapchain_images {
+            VulkanTexture::destroy(&self.device, image);
+        }
+        for depth in new_depth {
+            VulkanTexture::destroy(&self.device, depth);
+        }
+
+        Ok(())
+    }
+}
+
+pub fn gpu_error_out_of_range(resource_name: &str, idx: usize, len: usize) -> GpuError {
+    GpuError::new(
+        format!("Index {idx} outside of range for {resource_name} with length {len}"),
+        GpuErrorKind::ResourceUpdate,
+    )
+}
+
+impl Into<ash::vk::AttachmentLoadOp> for LoadOp {
+    fn into(self) -> ash::vk::AttachmentLoadOp {
+        match self {
+            LoadOp::Clear => ash::vk::AttachmentLoadOp::CLEAR,
+            LoadOp::Load => ash::vk::AttachmentLoadOp::LOAD,
+        }
+    }
+}
+
+impl Into<ash::vk::Viewport> for ViewportDesc {
+    fn into(self) -> ash::vk::Viewport {
+        ash::vk::Viewport {
+            x: self.x,
+            y: self.y,
+            width: self.width,
+            height: self.height,
+            min_depth: self.min_depth,
+            max_depth: self.max_depth,
+        }
+    }
+}
+impl Into<ash::vk::Viewport> for &ViewportDesc {
+    fn into(self) -> ash::vk::Viewport {
+        (*self).into()
+    }
+}
+
+impl Into<ash::vk::Format> for VertexFormat {
+    fn into(self) -> ash::vk::Format {
+        match self {
+            VertexFormat::Float32x2 => ash::vk::Format::R32G32_SFLOAT,
+            VertexFormat::Float32x3 => ash::vk::Format::R32G32B32_SFLOAT,
+            VertexFormat::Float32x4 => ash::vk::Format::R32G32B32A32_SFLOAT,
+        }
+    }
+}
+impl Into<ash::vk::CompareOp> for CompareFunc {
+    fn into(self) -> ash::vk::CompareOp {
+        match self {
+            CompareFunc::Never => ash::vk::CompareOp::NEVER,
+            CompareFunc::Less => ash::vk::CompareOp::LESS,
+            CompareFunc::LessEqual => ash::vk::CompareOp::LESS_OR_EQUAL,
+            CompareFunc::Equal => ash::vk::CompareOp::EQUAL,
+            CompareFunc::GreaterEqual => ash::vk::CompareOp::GREATER_OR_EQUAL,
+            CompareFunc::Greater => ash::vk::CompareOp::GREATER,
+            CompareFunc::Always => ash::vk::CompareOp::ALWAYS,
+        }
+    }
+}
+
+impl Into<ash::vk::CullModeFlags> for CullMode {
+    fn into(self) -> ash::vk::CullModeFlags {
+        match self {
+            CullMode::None => ash::vk::CullModeFlags::NONE,
+            CullMode::Front => ash::vk::CullModeFlags::FRONT,
+            CullMode::Back => ash::vk::CullModeFlags::BACK,
+        }
     }
 }

@@ -1,6 +1,6 @@
 use crate::engine::{
     backend::{GpuError, GpuErrorKind},
-    vulkan_backend::{FRAMES_IN_FLIGHT, Swapchain, VulkanBackend, create_swapchain},
+    vulkan_backend::{FRAMES_IN_FLIGHT, VulkanBackend, util::gpu_error_out_of_range},
 };
 
 impl VulkanBackend {
@@ -365,49 +365,4 @@ impl VulkanBackend {
 
         Ok(())
     }
-
-    fn recreate_swapchain(&mut self) -> Result<(), GpuError> {
-        unsafe { self.device.device_wait_idle() }.map_err(|e| {
-            GpuError::new(
-                format!("Failed to wait for device idle during swapchain recreation: {e:?}"),
-                GpuErrorKind::Other,
-            )
-        })?;
-
-        let mut old = Swapchain {
-            swapchain: ash::vk::SwapchainKHR::null(),
-            swapchain_images: Vec::new(),
-            swapchain_extent: ash::vk::Extent2D::default(),
-            fn_ptr: self.swapchain.fn_ptr.clone(),
-            surface_format: ash::vk::SurfaceFormatKHR::default(),
-            surface: ash::vk::SurfaceKHR::null(),
-            sync_mode: self.swapchain.sync_mode,
-        };
-        std::mem::swap(&mut old, &mut self.swapchain);
-
-        unsafe {
-            self.swapchain.fn_ptr.destroy_swapchain(old.swapchain, None);
-        }
-
-        let mut new_swapchain = create_swapchain(
-            &self.context,
-            &self.instance,
-            &self.window,
-            self.phys_device,
-            &self.device,
-            old.surface,
-            old.sync_mode,
-        )?;
-
-        std::mem::swap(&mut self.swapchain, &mut new_swapchain);
-
-        Ok(())
-    }
-}
-
-fn gpu_error_out_of_range(resource_name: &str, idx: usize, len: usize) -> GpuError {
-    GpuError::new(
-        format!("Index {idx} outside of range for {resource_name} with length {len}"),
-        GpuErrorKind::ResourceUpdate,
-    )
 }
