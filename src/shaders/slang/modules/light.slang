@@ -14,7 +14,7 @@ public struct Light {
 	public float4x4 lightSpace;
 };
 
-[[vk::binding(3, 0)]] public cbuffer lightBuffer : register(b3) {
+[[vk::binding(2, 0)]] public cbuffer lightBuffer : register(b3) {
 	public Light light0;
 }
 

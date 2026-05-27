@@ -3307,7 +3307,6 @@ dependencies = [
  "ron",
  "rust-ini",
  "serde",
- "shader-slang",
  "wgpu",
  "winit",
 ]

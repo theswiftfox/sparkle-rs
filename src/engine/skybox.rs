@@ -139,14 +139,14 @@ impl<B: GpuBackend> Skybox<B> {
         // Apply initial rotation to match skybox face orientation
         let rot = glm::rotate(&glm::identity(), 4.78, &glm::vec3(0.0, 1.0, 0.0));
         let rot = glm::rotate(&rot, 1.571, &glm::vec3(0.0, 0.0, -1.0));
-        drawable.borrow().update_model(backend, &rot);
+        drawable.borrow_mut().update_model(backend, &rot);
 
         Ok(Skybox { drawable })
     }
 
     /// Update the skybox model matrix.
     pub fn update_model(&self, backend: &B, model: &glm::Mat4) {
-        self.drawable.borrow().update_model(backend, model);
+        self.drawable.borrow_mut().update_model(backend, model);
     }
 
     /// Draw the skybox cube. Binds the cubemap texture via the drawable's material.

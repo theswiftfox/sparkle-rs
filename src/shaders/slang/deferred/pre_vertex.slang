@@ -20,22 +20,25 @@ struct VS_OUT {
 	float4x4 proj;
 };
 
-[[vk::binding(1, 0)]] cbuffer PerInstance : register(b1) {
+[[vk::push_constant]] cbuffer PushConstants {
 	float4x4 model;
+	uint tex0;
+	uint tex1;
+	uint tex2;
+	uint tex3;
 };
 
 [shader("vertex")]
 VS_OUT main(VS_IN input) {
 	VS_OUT output;
 	float4 worldPos = mul(model, float4(input.pos, 1.0));
-	output.worldPos = worldPos;//.xyz;
+	output.worldPos = worldPos;
 	output.pos = mul(proj, mul(view, worldPos));
 	output.txCoord = input.txCoord;
 
 	float3x3 normalMat = transpose((float3x3)model);
 	output.normal = normalize(mul(normalMat, input.normal));
 
-	//Make sure tangent is completely orthogonal to normal
 	float3 tangent = normalize(input.tangent - dot(input.tangent, input.normal)*input.normal);
 	float3 T = normalize(mul(normalMat, tangent));
 	float3 B = normalize(mul(normalMat, input.bitangent));

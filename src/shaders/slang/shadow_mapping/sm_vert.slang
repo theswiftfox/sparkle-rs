@@ -1,22 +1,21 @@
 struct VS_IN {
 	float3 pos			: POSITION;
-	// float3 normal		: NORMAL;
-	// float3 tangent		: TANGENT0;
-	// float3 bitangent	: BITANGENT0;
-	// float2 txCoord 		: TEXCOORD0;
-	// float2 txCoordNM	: TEXCOORD1;
 };
 
 struct VS_OUT {
 	float4 pos			: SV_Position;
 };
 
-[[vk::binding(4, 0)]] cbuffer FrameConsts : register(b0) {
+[[vk::binding(3, 0)]] cbuffer FrameConsts : register(b0) {
 	float4x4 lightSpaceMatrix;
 };
 
-[[vk::binding(1, 0)]] cbuffer PerInstance : register(b1) {
+[[vk::push_constant]] cbuffer PushConstants {
 	float4x4 model;
+	uint tex0;
+	uint tex1;
+	uint tex2;
+	uint tex3;
 };
 
 [shader("vertex")]

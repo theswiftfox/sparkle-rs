@@ -7,8 +7,9 @@ use crate::engine::{
         TextureDesc, TextureFormat, ViewportDesc,
     },
     vulkan_backend::{
-        CurrentFrame, FRAMES_IN_FLIGHT, SHADER_ENTRY_POINT, VulkanBackend, buffer::VulkanBuffer,
-        create_shader_module, texture::VulkanTexture, util::gpu_error_out_of_range,
+        CurrentFrame, FRAMES_IN_FLIGHT, PushConstants, SHADER_ENTRY_POINT, VulkanBackend,
+        buffer::VulkanBuffer, create_shader_module, texture::VulkanTexture,
+        util::gpu_error_out_of_range,
     },
 };
 
@@ -104,14 +105,16 @@ impl GpuBackend for VulkanBackend {
     }
 
     fn create_texture(&self, desc: &TextureDesc, data: &[u8]) -> Result<Self::Texture, GpuError> {
-        if matches!(
+        let mut tex = if matches!(
             desc.format,
             TextureFormat::Depth24Stencil8 | TextureFormat::Depth32Float
         ) {
-            self.create_depth_texture(desc.width, desc.height, desc.format, &Some(desc.sampler))
+            self.create_depth_texture(desc.width, desc.height, desc.format, &Some(desc.sampler))?
         } else {
-            self.create_vk_texture(desc, data)
-        }
+            self.create_vk_texture(desc, data)?
+        };
+        self.register_texture(&mut tex);
+        Ok(tex)
     }
 
     fn create_cubemap(
@@ -122,7 +125,9 @@ impl GpuBackend for VulkanBackend {
         format: TextureFormat,
         sampler: &SamplerDesc,
     ) -> Result<Self::Texture, GpuError> {
-        self.create_vk_cubemap(faces, width, height, format, sampler)
+        let mut tex = self.create_vk_cubemap(faces, width, height, format, sampler)?;
+        self.register_texture(&mut tex);
+        Ok(tex)
     }
 
     fn create_buffer(
@@ -152,7 +157,9 @@ impl GpuBackend for VulkanBackend {
         &self,
         desc: &RenderTargetDesc,
     ) -> Result<Self::RenderTarget, GpuError> {
-        Self::create_vk_render_target(&self.instance, &self.device, self.phys_device, desc)
+        let mut rt = Self::create_vk_render_target(&self.instance, &self.device, self.phys_device, desc)?;
+        self.register_texture(&mut rt);
+        Ok(rt)
     }
 
     fn create_pipeline(
@@ -865,47 +872,53 @@ impl GpuBackend for VulkanBackend {
     }
 
     fn bind_texture(&mut self, slot: u32, texture: &Self::Texture) {
-        let Some(CurrentFrame { idx, .. }) = self.current_frame else {
+        if texture.descriptor_index == u32::MAX {
             return;
-        };
-        let dst_set = self.descriptors.sets[idx];
-        let writes = map_slot_to_descriptor_writes(slot, BindingType::Texture(texture), dst_set);
-        unsafe {
-            self.device.update_descriptor_sets(writes.as_slice(), &[]);
+        }
+        match slot {
+            0 => self.pending_push.tex0 = texture.descriptor_index,
+            1 => self.pending_push.tex1 = texture.descriptor_index,
+            2 => self.pending_push.tex2 = texture.descriptor_index,
+            3 => self.pending_push.tex3 = texture.descriptor_index,
+            _ => {}
         }
     }
 
     fn bind_render_target_as_texture(&mut self, slot: u32, target: &Self::RenderTarget) {
-        let Some(CurrentFrame { idx, .. }) = self.current_frame else {
+        if target.descriptor_index == u32::MAX {
             return;
-        };
-
-        let dst_set = self.descriptors.sets[idx];
-        let writes = map_slot_to_descriptor_writes(slot, BindingType::Texture(target), dst_set);
-        unsafe {
-            self.device.update_descriptor_sets(writes.as_slice(), &[]);
+        }
+        match slot {
+            0 => self.pending_push.tex0 = target.descriptor_index,
+            1 => self.pending_push.tex1 = target.descriptor_index,
+            2 => self.pending_push.tex2 = target.descriptor_index,
+            3 => self.pending_push.tex3 = target.descriptor_index,
+            _ => {}
         }
     }
 
-    fn bind_uniform(&mut self, stage: ShaderStage, slot: u32, buffer: &Self::Buffer) {
-        let Some(CurrentFrame { idx, .. }) = self.current_frame else {
-            return;
+    fn bind_uniform(&mut self, _stage: ShaderStage, _slot: u32, _buffer: &Self::Buffer) {
+        // No-op: UBOs are permanently bound at bindings 0-5.
+        // Model matrix goes through push constants via set_model_matrix().
+    }
+
+    fn bind_ubo_to_descriptor(&self, binding: u32, buffer: &Self::Buffer) {
+        let info = ash::vk::DescriptorBufferInfo {
+            buffer: buffer.buffer,
+            offset: 0,
+            range: ash::vk::WHOLE_SIZE,
         };
-        if stage == ShaderStage::Vertex && slot == 0 && buffer.size == 64 {
-            panic!("binding 64 byte buffer to slot 0!");
-        }
-        // eprintln!(
-        //     "bind_uniform(stage={:?}, slot={}, buffer_size={})",
-        //     stage, slot, buffer.size
-        // );
-        let slot = match stage {
-            ShaderStage::Vertex => slot,
-            ShaderStage::Fragment => slot + 2,
-        };
-        let dst_set = self.descriptors.sets[idx];
-        let writes = map_slot_to_descriptor_writes(slot, BindingType::Buffer(buffer), dst_set);
-        unsafe {
-            self.device.update_descriptor_sets(writes.as_slice(), &[]);
+        for set in &self.descriptors.sets {
+            let write = ash::vk::WriteDescriptorSet {
+                dst_set: *set,
+                dst_binding: binding,
+                dst_array_element: 0,
+                descriptor_type: ash::vk::DescriptorType::UNIFORM_BUFFER,
+                descriptor_count: 1,
+                p_buffer_info: &info,
+                ..Default::default()
+            };
+            unsafe { self.device.update_descriptor_sets(&[write], &[]) };
         }
     }
 
@@ -940,6 +953,16 @@ impl GpuBackend for VulkanBackend {
         };
 
         unsafe {
+            self.device.cmd_push_constants(
+                command_buffer,
+                self.pipeline_layout,
+                ash::vk::ShaderStageFlags::VERTEX | ash::vk::ShaderStageFlags::FRAGMENT,
+                0,
+                std::slice::from_raw_parts(
+                    &self.pending_push as *const PushConstants as *const u8,
+                    std::mem::size_of::<PushConstants>(),
+                ),
+            );
             self.device.cmd_draw_indexed(
                 command_buffer,
                 index_count,
@@ -949,6 +972,14 @@ impl GpuBackend for VulkanBackend {
                 0,
             );
         }
+        self.pending_push = PushConstants::default();
+    }
+
+    fn set_model_matrix(&mut self, model: &glm::Mat4) {
+        let data = crate::engine::backend::as_bytes(std::slice::from_ref(model));
+        self.pending_push.model.copy_from_slice(unsafe {
+            std::slice::from_raw_parts(data.as_ptr() as *const f32, 16)
+        });
     }
 
     fn backbuffer(&self) -> &Self::RenderTarget {
@@ -994,134 +1025,6 @@ pub struct VulkanPipeline {
     label: String,
     handle: ash::vk::Pipeline,
     bind_point: ash::vk::PipelineBindPoint,
-}
-
-enum BindingType<'a> {
-    Texture(&'a VulkanTexture),
-    Buffer(&'a VulkanBuffer),
-}
-
-struct DescriptorWrites<'a> {
-    inner: Vec<ash::vk::WriteDescriptorSet<'a>>,
-    image_infos: Vec<ash::vk::DescriptorImageInfo>,
-    buffer_infos: Vec<ash::vk::DescriptorBufferInfo>,
-}
-
-impl<'a> DescriptorWrites<'a> {
-    pub fn as_slice(&self) -> &[ash::vk::WriteDescriptorSet<'a>] {
-        &self.inner
-    }
-}
-
-fn map_slot_to_descriptor_writes(
-    slot: u32,
-    binding_type: BindingType<'_>,
-    dst_set: ash::vk::DescriptorSet,
-) -> DescriptorWrites<'_> {
-    let mut writes = DescriptorWrites {
-        inner: Vec::new(),
-        image_infos: Vec::new(),
-        buffer_infos: Vec::new(),
-    };
-    match binding_type {
-        BindingType::Texture(VulkanTexture {
-            view_type,
-            image_view,
-            sampler,
-            compare_enabled,
-            ..
-        }) => {
-            if *compare_enabled {
-                // slots 25-28 → comparison texture: 2 writes (image + sampler)
-                let offset = 0; // ignore slot for shadow maps for now!
-
-                let sampled_image_info = ash::vk::DescriptorImageInfo {
-                    image_view: *image_view,
-                    image_layout: ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                    ..Default::default()
-                };
-                let sampler_info = ash::vk::DescriptorImageInfo {
-                    sampler: *sampler,
-                    ..Default::default()
-                };
-                writes.image_infos.push(sampled_image_info);
-                writes.image_infos.push(sampler_info);
-
-                writes.inner.push(ash::vk::WriteDescriptorSet {
-                    dst_set,
-                    dst_binding: 7,
-                    dst_array_element: offset,
-                    descriptor_type: ash::vk::DescriptorType::SAMPLED_IMAGE,
-                    descriptor_count: 1,
-                    p_image_info: &writes.image_infos[0],
-                    ..Default::default()
-                });
-                writes.inner.push(ash::vk::WriteDescriptorSet {
-                    dst_set,
-                    dst_binding: 8,
-                    dst_array_element: offset,
-                    descriptor_type: ash::vk::DescriptorType::SAMPLER,
-                    descriptor_count: 1,
-                    p_image_info: &writes.image_infos[1],
-                    ..Default::default()
-                });
-            } else if *view_type == ash::vk::ImageViewType::CUBE {
-                // slots 21-23 → cubemap: binding 6
-                let offset = slot;
-                let info = ash::vk::DescriptorImageInfo {
-                    image_view: *image_view,
-                    image_layout: ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                    sampler: *sampler,
-                };
-                writes.image_infos.push(info);
-                writes.inner.push(ash::vk::WriteDescriptorSet {
-                    dst_set,
-                    dst_binding: 6,
-                    dst_array_element: offset,
-                    descriptor_type: ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                    descriptor_count: 1,
-                    p_image_info: &writes.image_infos[0],
-                    ..Default::default()
-                });
-            } else {
-                // slots 5-20 → regular textures: binding 5
-                let offset = slot;
-                let info = ash::vk::DescriptorImageInfo {
-                    image_view: *image_view,
-                    image_layout: ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                    sampler: *sampler,
-                };
-                writes.image_infos.push(info);
-                writes.inner.push(ash::vk::WriteDescriptorSet {
-                    dst_set,
-                    dst_binding: 5,
-                    dst_array_element: offset,
-                    descriptor_type: ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                    descriptor_count: 1,
-                    p_image_info: &writes.image_infos[0],
-                    ..Default::default()
-                });
-            }
-        }
-        BindingType::Buffer(buffer) => {
-            let info = ash::vk::DescriptorBufferInfo {
-                buffer: buffer.buffer,
-                offset: 0,
-                range: ash::vk::WHOLE_SIZE,
-            };
-            writes.buffer_infos.push(info);
-            writes.inner.push(ash::vk::WriteDescriptorSet {
-                dst_set,
-                dst_binding: slot,
-                dst_array_element: 0,
-                descriptor_type: ash::vk::DescriptorType::UNIFORM_BUFFER,
-                descriptor_count: 1,
-                p_buffer_info: &writes.buffer_infos[0],
-                ..Default::default()
-            });
-        }
-    }
-    writes
 }
 
 impl<B: GpuBackend> Drop for Drawable<B> {

@@ -27,34 +27,34 @@ use super::geometry::{Light, LightType};
 /// View and projection matrices — used by vertex shaders of most passes.
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct ViewProjUniforms {
-    view: glm::Mat4,
-    proj: glm::Mat4,
+pub(crate) struct ViewProjUniforms {
+    pub view: glm::Mat4,
+    pub proj: glm::Mat4,
 }
 
 /// Camera position and SSAO toggle — used by lighting pixel shaders.
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct CameraUniforms {
-    camera_pos: glm::Vec3,
-    ssao: u32,
+pub(crate) struct CameraUniforms {
+    pub camera_pos: glm::Vec3,
+    pub ssao: u32,
 }
 
 /// Near/far plane distances — used by deferred pre-pass pixel shader.
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct NearFarUniforms {
-    near_plane: f32,
-    far_plane: f32,
-    _pad: f32,
-    _pad2: f32,
+pub(crate) struct NearFarUniforms {
+    pub near_plane: f32,
+    pub far_plane: f32,
+    pub _pad: f32,
+    pub _pad2: f32,
 }
 
 /// Light-space matrix — used by shadow pass vertex shader.
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct LightSpaceUniforms {
-    light_space_matrix: glm::Mat4,
+pub(crate) struct LightSpaceUniforms {
+    pub light_space_matrix: glm::Mat4,
 }
 
 /// GPU-side light data, matching the shader cbuffer layout.
@@ -65,7 +65,7 @@ struct LightSpaceUniforms {
 /// - `light_space: Mat4` (64 bytes)
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct GpuLight {
+pub(crate) struct GpuLight {
     position: glm::Vec3,
     t: u32,
     color: glm::Vec3,
@@ -74,7 +74,7 @@ struct GpuLight {
 }
 
 impl GpuLight {
-    fn from_light(light: &Light) -> GpuLight {
+    pub(crate) fn from_light(light: &Light) -> GpuLight {
         let t = match &light.t {
             LightType::Ambient => 0u32,
             LightType::Directional => 1u32,

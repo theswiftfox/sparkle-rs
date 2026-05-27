@@ -6,17 +6,21 @@ struct PS_OUT {
 	float4 color : SV_Target;
 };
 
-[[vk::binding(5, 0)]]
+[[vk::binding(6, 0)]]
 Sampler2D<float4> gbuffer[] : register(t0);
 
-[[vk::binding(2, 0)]] cbuffer ubo : register(b2) {
+[[vk::binding(1, 0)]] cbuffer ubo : register(b2) {
 	float3 cameraPos;
 	uint ssao;
 }
 
-static const uint POS_WORLD = 0;
-static const uint POS_NORMALS_ROUGHNESS = 1;
-static const uint POS_ALBEDO_METALLIC = 2;
+[[vk::push_constant]] cbuffer PushConstants {
+	float4x4 model;
+	uint tex0;
+	uint tex1;
+	uint tex2;
+	uint tex3;
+};
 
 [shader("pixel")]
 PS_OUT main(float4 screenPos : SV_Position) {
@@ -24,9 +28,9 @@ PS_OUT main(float4 screenPos : SV_Position) {
 
 	int3 texPos = int3((int2)screenPos.xy, 0);
 
-	float4 pos = gbuffer[POS_WORLD].Load(texPos);
-	float4 normal_roughness = gbuffer[POS_NORMALS_ROUGHNESS].Load(texPos);
-	float4 albedo_metallic = gbuffer[POS_ALBEDO_METALLIC].Load(texPos);
+	float4 pos = gbuffer[tex0].Load(texPos);
+	float4 normal_roughness = gbuffer[tex1].Load(texPos);
+	float4 albedo_metallic = gbuffer[tex2].Load(texPos);
 
 	float3 normal = normal_roughness.xyz;
 	float3 albedo = albedo_metallic.rgb;
@@ -51,8 +55,7 @@ PS_OUT main(float4 screenPos : SV_Position) {
 			mr.g
 		) * shadowed;
 	} else {
-		bool ssao_enabled = ssao != 0;
-		float ambientOcclusion = ssao_enabled ? gbuffer[6].Load(texPos).r : 1.0;
+		float ambientOcclusion = 1.0;
 		float3 ambient = 0.15 * albedo.rgb * ambientOcclusion;
 		color = ambient;
 	}

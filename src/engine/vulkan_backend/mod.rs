@@ -1,5 +1,5 @@
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     ffi::{CStr, c_void},
     ops::Deref,
     rc::Rc,
@@ -101,6 +101,111 @@ struct CommandPool {
     short_lived: ash::vk::CommandPool,
 }
 
+const MAX_BINDLESS_TEXTURES: u32 = 1024;
+const MAX_BINDLESS_CUBEMAPS: u32 = 4;
+const MAX_BINDLESS_SHADOW_IMAGES: u32 = 4;
+const MAX_BINDLESS_COMPARISON_SAMPLERS: u32 = 4;
+
+struct TextureRegistry {
+    next_2d: u32,
+    free_2d: Vec<u32>,
+    next_cube: u32,
+    free_cube: Vec<u32>,
+    next_shadow: u32,
+    free_shadow: Vec<u32>,
+}
+
+impl TextureRegistry {
+    fn new() -> Self {
+        TextureRegistry {
+            next_2d: 0,
+            free_2d: Vec::new(),
+            next_cube: 0,
+            free_cube: Vec::new(),
+            next_shadow: 0,
+            free_shadow: Vec::new(),
+        }
+    }
+
+    fn allocate_2d(&mut self) -> u32 {
+        if let Some(slot) = self.free_2d.pop() {
+            slot
+        } else {
+            let slot = self.next_2d;
+            assert!(slot < MAX_BINDLESS_TEXTURES, "Exceeded max bindless 2D texture slots");
+            self.next_2d += 1;
+            slot
+        }
+    }
+
+    fn allocate_cube(&mut self) -> u32 {
+        if let Some(slot) = self.free_cube.pop() {
+            slot
+        } else {
+            let slot = self.next_cube;
+            assert!(slot < MAX_BINDLESS_CUBEMAPS, "Exceeded max bindless cubemap slots");
+            self.next_cube += 1;
+            slot
+        }
+    }
+
+    fn allocate_shadow(&mut self) -> u32 {
+        if let Some(slot) = self.free_shadow.pop() {
+            slot
+        } else {
+            let slot = self.next_shadow;
+            assert!(
+                slot < MAX_BINDLESS_SHADOW_IMAGES,
+                "Exceeded max bindless shadow image slots"
+            );
+            self.next_shadow += 1;
+            slot
+        }
+    }
+
+    #[allow(dead_code)]
+    fn release_2d(&mut self, slot: u32) {
+        self.free_2d.push(slot);
+    }
+
+    #[allow(dead_code)]
+    fn release_cube(&mut self, slot: u32) {
+        self.free_cube.push(slot);
+    }
+
+    #[allow(dead_code)]
+    fn release_shadow(&mut self, slot: u32) {
+        self.free_shadow.push(slot);
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct PushConstants {
+    model: [f32; 16],
+    tex0: u32,
+    tex1: u32,
+    tex2: u32,
+    tex3: u32,
+}
+
+impl Default for PushConstants {
+    fn default() -> Self {
+        PushConstants {
+            model: [
+                1.0, 0.0, 0.0, 0.0,
+                0.0, 1.0, 0.0, 0.0,
+                0.0, 0.0, 1.0, 0.0,
+                0.0, 0.0, 0.0, 1.0,
+            ],
+            tex0: 0,
+            tex1: 0,
+            tex2: 0,
+            tex3: 0,
+        }
+    }
+}
+
 pub struct VulkanBackend {
     window: Arc<winit::window::Window>,
     context: ash::Entry,
@@ -124,6 +229,8 @@ pub struct VulkanBackend {
         ash::vk::ImageAspectFlags,
         Rc<Cell<ash::vk::ImageLayout>>,
     )>,
+    texture_registry: RefCell<TextureRegistry>,
+    pending_push: PushConstants,
 }
 
 pub fn initialize(
@@ -215,6 +322,8 @@ pub fn initialize(
         frame_idx: 0,
         current_frame: None,
         current_pass_targets: Vec::new(),
+        texture_registry: RefCell::new(TextureRegistry::new()),
+        pending_push: PushConstants::default(),
     })
 }
 
@@ -222,9 +331,16 @@ fn create_pipeline_layout(
     device: &LogicalDevice,
     descriptor_layout: ash::vk::DescriptorSetLayout,
 ) -> Result<ash::vk::PipelineLayout, GpuError> {
+    let push_range = ash::vk::PushConstantRange {
+        stage_flags: ash::vk::ShaderStageFlags::VERTEX | ash::vk::ShaderStageFlags::FRAGMENT,
+        offset: 0,
+        size: std::mem::size_of::<PushConstants>() as u32,
+    };
     let create_info = ash::vk::PipelineLayoutCreateInfo {
         set_layout_count: 1,
         p_set_layouts: &descriptor_layout,
+        push_constant_range_count: 1,
+        p_push_constant_ranges: &push_range,
         ..Default::default()
     };
 
@@ -269,79 +385,87 @@ fn create_descriptor_sets(
 fn create_descriptor_set_layout(
     device: &LogicalDevice,
 ) -> Result<ash::vk::DescriptorSetLayout, GpuError> {
-    let frame_consts_binding = ash::vk::DescriptorSetLayoutBinding {
-        binding: 0,
-        descriptor_type: ash::vk::DescriptorType::UNIFORM_BUFFER,
-        descriptor_count: 1,
-        stage_flags: ash::vk::ShaderStageFlags::VERTEX | ash::vk::ShaderStageFlags::FRAGMENT,
-        ..Default::default()
-    };
-    let per_instance_binding = ash::vk::DescriptorSetLayoutBinding {
-        binding: 1,
-        descriptor_type: ash::vk::DescriptorType::UNIFORM_BUFFER,
-        descriptor_count: 1,
-        stage_flags: ash::vk::ShaderStageFlags::VERTEX | ash::vk::ShaderStageFlags::FRAGMENT,
-        ..Default::default()
-    };
-    let pixel_data_binding = ash::vk::DescriptorSetLayoutBinding {
-        binding: 2,
-        descriptor_type: ash::vk::DescriptorType::UNIFORM_BUFFER,
-        descriptor_count: 1,
-        stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
-        ..Default::default()
-    };
-    let light_data_binding = ash::vk::DescriptorSetLayoutBinding {
-        binding: 3,
-        descriptor_type: ash::vk::DescriptorType::UNIFORM_BUFFER,
-        descriptor_count: 1,
-        stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
-        ..Default::default()
-    };
-    let shadow_map_binding = ash::vk::DescriptorSetLayoutBinding {
-        binding: 4,
-        descriptor_type: ash::vk::DescriptorType::UNIFORM_BUFFER,
-        descriptor_count: 1,
-        stage_flags: ash::vk::ShaderStageFlags::VERTEX,
-        ..Default::default()
-    };
-    let texture_binding = ash::vk::DescriptorSetLayoutBinding {
-        binding: 5,
-        descriptor_type: ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-        descriptor_count: 16,
-        stage_flags: ash::vk::ShaderStageFlags::VERTEX | ash::vk::ShaderStageFlags::FRAGMENT,
-        ..Default::default()
-    };
-    let cubemap_binding = ash::vk::DescriptorSetLayoutBinding {
-        binding: 6,
-        descriptor_type: ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-        descriptor_count: 4,
-        stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
-        ..Default::default()
-    };
-    let comparison_img_binding = ash::vk::DescriptorSetLayoutBinding {
-        binding: 7,
-        descriptor_type: ash::vk::DescriptorType::SAMPLED_IMAGE,
-        descriptor_count: 4,
-        stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
-        ..Default::default()
-    };
-    let comparison_sampler_binding = ash::vk::DescriptorSetLayoutBinding {
-        binding: 8,
-        descriptor_type: ash::vk::DescriptorType::SAMPLER,
-        descriptor_count: 4,
-        stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
-        ..Default::default()
-    };
+    // Binding 0: Main ViewProj UBO (view+proj, 128B) — deferred_pre vtx, forward vtx
+    // Binding 1: Camera pixel UBO (cameraPos+ssao, 16B) — deferred_light pxl, forward pxl
+    // Binding 2: Light data UBO (Light struct, 96B) — deferred_light pxl, forward pxl
+    // Binding 3: Shadow LightSpace UBO (lightSpaceMatrix, 64B) — shadow vtx
+    // Binding 4: Skybox ViewProj UBO (view+proj, 128B) — skybox vtx
+    // Binding 5: DeferredPre NearFar UBO (near/far, 16B) — deferred_pre pxl
+    // Binding 6: Global 2D texture array (CIS[1024]) — all pixel shaders
+    // Binding 7: Cubemap array (CIS[4]) — skybox pxl
+    // Binding 8: Shadow depth images (SAMPLED_IMAGE[4]) — shadow module
+    // Binding 9: Comparison samplers (SAMPLER[4]) — shadow module
     let bindings = [
-        frame_consts_binding,
-        per_instance_binding,
-        pixel_data_binding,
-        light_data_binding,
-        shadow_map_binding,
-        texture_binding,
-        cubemap_binding,
-        comparison_img_binding,
-        comparison_sampler_binding,
+        ash::vk::DescriptorSetLayoutBinding {
+            binding: 0,
+            descriptor_type: ash::vk::DescriptorType::UNIFORM_BUFFER,
+            descriptor_count: 1,
+            stage_flags: ash::vk::ShaderStageFlags::VERTEX | ash::vk::ShaderStageFlags::FRAGMENT,
+            ..Default::default()
+        },
+        ash::vk::DescriptorSetLayoutBinding {
+            binding: 1,
+            descriptor_type: ash::vk::DescriptorType::UNIFORM_BUFFER,
+            descriptor_count: 1,
+            stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
+            ..Default::default()
+        },
+        ash::vk::DescriptorSetLayoutBinding {
+            binding: 2,
+            descriptor_type: ash::vk::DescriptorType::UNIFORM_BUFFER,
+            descriptor_count: 1,
+            stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
+            ..Default::default()
+        },
+        ash::vk::DescriptorSetLayoutBinding {
+            binding: 3,
+            descriptor_type: ash::vk::DescriptorType::UNIFORM_BUFFER,
+            descriptor_count: 1,
+            stage_flags: ash::vk::ShaderStageFlags::VERTEX,
+            ..Default::default()
+        },
+        ash::vk::DescriptorSetLayoutBinding {
+            binding: 4,
+            descriptor_type: ash::vk::DescriptorType::UNIFORM_BUFFER,
+            descriptor_count: 1,
+            stage_flags: ash::vk::ShaderStageFlags::VERTEX | ash::vk::ShaderStageFlags::FRAGMENT,
+            ..Default::default()
+        },
+        ash::vk::DescriptorSetLayoutBinding {
+            binding: 5,
+            descriptor_type: ash::vk::DescriptorType::UNIFORM_BUFFER,
+            descriptor_count: 1,
+            stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
+            ..Default::default()
+        },
+        ash::vk::DescriptorSetLayoutBinding {
+            binding: 6,
+            descriptor_type: ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            descriptor_count: MAX_BINDLESS_TEXTURES,
+            stage_flags: ash::vk::ShaderStageFlags::VERTEX | ash::vk::ShaderStageFlags::FRAGMENT,
+            ..Default::default()
+        },
+        ash::vk::DescriptorSetLayoutBinding {
+            binding: 7,
+            descriptor_type: ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            descriptor_count: MAX_BINDLESS_CUBEMAPS,
+            stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
+            ..Default::default()
+        },
+        ash::vk::DescriptorSetLayoutBinding {
+            binding: 8,
+            descriptor_type: ash::vk::DescriptorType::SAMPLED_IMAGE,
+            descriptor_count: MAX_BINDLESS_SHADOW_IMAGES,
+            stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
+            ..Default::default()
+        },
+        ash::vk::DescriptorSetLayoutBinding {
+            binding: 9,
+            descriptor_type: ash::vk::DescriptorType::SAMPLER,
+            descriptor_count: MAX_BINDLESS_COMPARISON_SAMPLERS,
+            stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
+            ..Default::default()
+        },
     ];
 
     let binding_flags = ash::vk::DescriptorBindingFlags::PARTIALLY_BOUND
@@ -373,21 +497,23 @@ fn create_descriptor_set_layout(
 }
 
 fn create_descriptor_pool(device: &LogicalDevice) -> Result<ash::vk::DescriptorPool, GpuError> {
+    // 6 UBOs per set * FRAMES_IN_FLIGHT
     let uniform_pool_info = ash::vk::DescriptorPoolSize {
         ty: ash::vk::DescriptorType::UNIFORM_BUFFER,
-        descriptor_count: 10,
+        descriptor_count: 6 * FRAMES_IN_FLIGHT,
     };
+    // 1024 + 4 CIS per set * FRAMES_IN_FLIGHT
     let cis_pool_info = ash::vk::DescriptorPoolSize {
         ty: ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-        descriptor_count: 40,
+        descriptor_count: (MAX_BINDLESS_TEXTURES + MAX_BINDLESS_CUBEMAPS) * FRAMES_IN_FLIGHT,
     };
     let sampled_image_pool_info = ash::vk::DescriptorPoolSize {
         ty: ash::vk::DescriptorType::SAMPLED_IMAGE,
-        descriptor_count: 8,
+        descriptor_count: MAX_BINDLESS_SHADOW_IMAGES * FRAMES_IN_FLIGHT,
     };
     let sampler_pool_info = ash::vk::DescriptorPoolSize {
         ty: ash::vk::DescriptorType::SAMPLER,
-        descriptor_count: 8,
+        descriptor_count: MAX_BINDLESS_COMPARISON_SAMPLERS * FRAMES_IN_FLIGHT,
     };
     let pool_sizes = [
         uniform_pool_info,
@@ -398,7 +524,7 @@ fn create_descriptor_pool(device: &LogicalDevice) -> Result<ash::vk::DescriptorP
     let create_info = ash::vk::DescriptorPoolCreateInfo {
         flags: ash::vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND,
         max_sets: FRAMES_IN_FLIGHT,
-        pool_size_count: 4,
+        pool_size_count: pool_sizes.len() as u32,
         p_pool_sizes: pool_sizes.as_ptr(),
         ..Default::default()
     };
@@ -823,6 +949,7 @@ fn create_swapchain_and_depth_buffer(
             view_type: ash::vk::ImageViewType::TYPE_2D,
             compare_enabled: false,
             id: 0,
+            descriptor_index: u32::MAX,
             device_handle: logical_device.device.clone(),
             current_layout: Rc::new(Cell::new(ash::vk::ImageLayout::UNDEFINED)),
         })

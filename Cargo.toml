@@ -26,7 +26,6 @@ serde = { version = "1", features = ["derive"] }
 ron = "0.12.1"
 
 [build-dependencies]
-shader-slang = "0.1.0"
 
 # From doc.rust-lang.org:
 # The development profile, used for `cargo build`.

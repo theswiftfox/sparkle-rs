@@ -5,7 +5,6 @@ struct VS_IN {
 	float3 tangent		: TANGENT0;
 	float3 bitangent	: BITANGENT0;
 	float2 txCoord 		: TEXCOORD0;
-	// float2 txCoordNM	: TEXCOORD1;
 };
 
 struct VS_OUT {
@@ -21,8 +20,12 @@ struct VS_OUT {
 	float4x4 proj;
 };
 
-[[vk::binding(1, 0)]] cbuffer PerInstance : register(b1) {
+[[vk::push_constant]] cbuffer PushConstants {
 	float4x4 model;
+	uint tex0;
+	uint tex1;
+	uint tex2;
+	uint tex3;
 };
 
 [shader("vertex")]
@@ -35,7 +38,6 @@ VS_OUT main(VS_IN input) {
 
 	float3x3 normalMat = transpose((float3x3)model);
 
-	//Make sure tangent is completely orthogonal to normal
 	float3 tangent = normalize(input.tangent - dot(input.tangent, input.normal)*input.normal);
 	float3 T = normalize(mul(normalMat, tangent));
 	float3 B = normalize(mul(normalMat, input.bitangent));

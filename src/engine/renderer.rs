@@ -39,6 +39,18 @@ pub struct Renderer<B: GpuBackend> {
     scene_file: Option<String>,
     backend: B,
     clock: Instant,
+    // Shared UBO buffers bound permanently to descriptor set bindings 0-5
+    ubo_view_proj: B::Buffer,          // binding 0, ViewProjUniforms (128B)
+    ubo_camera_pixel: B::Buffer,       // binding 1, CameraUniforms (16B)
+    ubo_light_data: B::Buffer,         // binding 2, GpuLight (96B)
+    ubo_shadow_light_space: B::Buffer, // binding 3, LightSpaceUniforms (64B)
+    ubo_skybox_view_proj: B::Buffer,   // binding 4, ViewProjUniforms (128B)
+    ubo_near_far: B::Buffer,           // binding 5, NearFarUniforms (16B)
+    // CPU-side copies for partial updates
+    view_proj_cpu: ViewProjUniforms,
+    camera_pixel_cpu: CameraUniforms,
+    skybox_view_proj_cpu: ViewProjUniforms,
+    near_far_cpu: NearFarUniforms,
 }
 
 impl<B: GpuBackend> Renderer<B> {
@@ -49,6 +61,50 @@ impl<B: GpuBackend> Renderer<B> {
     /// Without draw programs, the renderer falls back to clearing the screen.
     pub fn create(backend: B, settings: Settings) -> Result<Self, GpuError> {
         let screen_quad = ScreenQuad::create(&backend)?;
+
+        let ubo_desc = |label: &str, size| BufferDesc {
+            label: label.to_string(),
+            usage: BufferUsage::Uniform,
+            size,
+        };
+
+        let ubo_view_proj = backend.create_buffer(
+            &ubo_desc("shared_view_proj", std::mem::size_of::<ViewProjUniforms>()),
+            None,
+        )?;
+        let ubo_camera_pixel = backend.create_buffer(
+            &ubo_desc("shared_camera_pixel", std::mem::size_of::<CameraUniforms>()),
+            None,
+        )?;
+        let ubo_light_data = backend.create_buffer(
+            &ubo_desc("shared_light_data", std::mem::size_of::<GpuLight>()),
+            None,
+        )?;
+        let ubo_shadow_light_space = backend.create_buffer(
+            &ubo_desc("shared_shadow_light_space", std::mem::size_of::<LightSpaceUniforms>()),
+            None,
+        )?;
+        let ubo_skybox_view_proj = backend.create_buffer(
+            &ubo_desc("shared_skybox_view_proj", std::mem::size_of::<ViewProjUniforms>()),
+            None,
+        )?;
+        let ubo_near_far = backend.create_buffer(
+            &ubo_desc("shared_near_far", std::mem::size_of::<NearFarUniforms>()),
+            None,
+        )?;
+
+        backend.bind_ubo_to_descriptor(0, &ubo_view_proj);
+        backend.bind_ubo_to_descriptor(1, &ubo_camera_pixel);
+        backend.bind_ubo_to_descriptor(2, &ubo_light_data);
+        backend.bind_ubo_to_descriptor(3, &ubo_shadow_light_space);
+        backend.bind_ubo_to_descriptor(4, &ubo_skybox_view_proj);
+        backend.bind_ubo_to_descriptor(5, &ubo_near_far);
+
+        let identity = glm::Mat4::identity();
+        let view_proj_cpu = ViewProjUniforms { view: identity, proj: identity };
+        let camera_pixel_cpu = CameraUniforms { camera_pos: glm::Vec3::zeros(), ssao: 0 };
+        let skybox_view_proj_cpu = ViewProjUniforms { view: identity, proj: identity };
+        let near_far_cpu = NearFarUniforms { near_plane: 0.1, far_plane: 100.0, _pad: 0.0, _pad2: 0.0 };
 
         Ok(Renderer {
             settings,
@@ -66,6 +122,16 @@ impl<B: GpuBackend> Renderer<B> {
             scene_file: None,
             backend,
             clock: Instant::now(),
+            ubo_view_proj,
+            ubo_camera_pixel,
+            ubo_light_data,
+            ubo_shadow_light_space,
+            ubo_skybox_view_proj,
+            ubo_near_far,
+            view_proj_cpu,
+            camera_pixel_cpu,
+            skybox_view_proj_cpu,
+            near_far_cpu,
         })
     }
 
@@ -198,6 +264,25 @@ impl<B: GpuBackend> Renderer<B> {
         let proj = camera.projection_mat();
         let (near, far) = camera.near_far();
 
+        // Update shared UBOs
+        self.view_proj_cpu.proj = proj;
+        self.backend.update_buffer(
+            &self.ubo_view_proj,
+            as_bytes(std::slice::from_ref(&self.view_proj_cpu)),
+        );
+        self.skybox_view_proj_cpu.proj = proj;
+        self.backend.update_buffer(
+            &self.ubo_skybox_view_proj,
+            as_bytes(std::slice::from_ref(&self.skybox_view_proj_cpu)),
+        );
+        self.near_far_cpu.near_plane = near;
+        self.near_far_cpu.far_plane = far;
+        self.backend.update_buffer(
+            &self.ubo_near_far,
+            as_bytes(std::slice::from_ref(&self.near_far_cpu)),
+        );
+
+        // Legacy draw program updates (wgpu path)
         if let Some(ref mut fwd) = self.forward_program {
             fwd.set_proj(proj);
         }
@@ -640,6 +725,27 @@ impl<B: GpuBackend> Renderer<B> {
         let pos = camera.position();
         let ssao_enabled = self.settings.ssao;
 
+        // Update shared UBOs (bindings 0, 1, 4)
+        self.view_proj_cpu.view = view;
+        self.backend.update_buffer(
+            &self.ubo_view_proj,
+            as_bytes(std::slice::from_ref(&self.view_proj_cpu)),
+        );
+
+        self.camera_pixel_cpu.camera_pos = pos;
+        self.camera_pixel_cpu.ssao = ssao_enabled as u32;
+        self.backend.update_buffer(
+            &self.ubo_camera_pixel,
+            as_bytes(std::slice::from_ref(&self.camera_pixel_cpu)),
+        );
+
+        self.skybox_view_proj_cpu.view = glm::mat3_to_mat4(&glm::mat4_to_mat3(&view));
+        self.backend.update_buffer(
+            &self.ubo_skybox_view_proj,
+            as_bytes(std::slice::from_ref(&self.skybox_view_proj_cpu)),
+        );
+
+        // Keep legacy draw program updates (still needed by wgpu path)
         if let Some(ref mut fwd) = self.forward_program {
             fwd.set_view(view);
             fwd.set_camera_pos(pos);
@@ -660,7 +766,6 @@ impl<B: GpuBackend> Renderer<B> {
             ssao.update(&self.backend);
         }
         if let Some(ref mut sky) = self.skybox_program {
-            // Remove translation from view matrix for skybox
             sky.set_view(glm::mat3_to_mat4(&glm::mat4_to_mat3(&view)));
             sky.update(&self.backend);
         }
@@ -805,6 +910,13 @@ impl<B: GpuBackend> Renderer<B> {
                     shadow.set_light_space(light.light_proj);
                     shadow.update(&self.backend);
 
+                    // Update shared shadow UBO (binding 3)
+                    let ls = LightSpaceUniforms { light_space_matrix: light.light_proj };
+                    self.backend.update_buffer(
+                        &self.ubo_shadow_light_space,
+                        as_bytes(std::slice::from_ref(&ls)),
+                    );
+
                     self.backend.begin_event("Shadow Mapping");
                     self.backend.begin_render_pass(&RenderPassDesc {
                         label: "shadow",
@@ -846,6 +958,13 @@ impl<B: GpuBackend> Renderer<B> {
 
                 def_light.set_light(&light);
                 def_light.update(&self.backend);
+
+                // Update shared light UBO (binding 2)
+                let gpu_light = GpuLight::from_light(&light);
+                self.backend.update_buffer(
+                    &self.ubo_light_data,
+                    as_bytes(std::slice::from_ref(&gpu_light)),
+                );
 
                 let load = if first_light {
                     LoadOp::Clear
@@ -896,6 +1015,13 @@ impl<B: GpuBackend> Renderer<B> {
 
                 fwd.set_light(&light);
                 fwd.update(&self.backend);
+
+                // Update shared light UBO (binding 2) for forward pass too
+                let gpu_light = GpuLight::from_light(&light);
+                self.backend.update_buffer(
+                    &self.ubo_light_data,
+                    as_bytes(std::slice::from_ref(&gpu_light)),
+                );
 
                 let load = if first_light {
                     LoadOp::Clear
@@ -973,11 +1099,11 @@ impl<B: GpuBackend> Renderer<B> {
             output.prepare_draw(&mut self.backend);
             if let Some(ref dl) = self.deferred_program_light {
                 self.backend
-                    .bind_render_target_as_texture(7, dl.render_target());
+                    .bind_render_target_as_texture(0, dl.render_target());
             }
             if let Some(ref fwd) = self.forward_program {
                 self.backend
-                    .bind_render_target_as_texture(8, fwd.render_target());
+                    .bind_render_target_as_texture(1, fwd.render_target());
             }
             self.screen_quad.draw(&mut self.backend);
             self.backend.end_render_pass();

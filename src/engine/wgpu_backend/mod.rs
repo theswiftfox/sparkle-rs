@@ -1216,6 +1216,10 @@ impl GpuBackend for WgpuBackend {
         }
     }
 
+    fn bind_ubo_to_descriptor(&self, _binding: u32, _buffer: &Self::Buffer) {
+        // No-op: wgpu uses bind groups, not bindless descriptors.
+    }
+
     fn set_vertex_buffer(&mut self, buffer: &Self::Buffer) {
         if let Some(ref mut pass) = self.pending_pass {
             pass.commands
@@ -1310,6 +1314,10 @@ impl GpuBackend for WgpuBackend {
                 base_vertex,
             });
         }
+    }
+
+    fn set_model_matrix(&mut self, _model: &glm::Mat4) {
+        // wgpu backend still uses bind_uniform for model matrix
     }
 
     // --- Accessors ---

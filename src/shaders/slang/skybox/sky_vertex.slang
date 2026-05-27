@@ -11,13 +11,17 @@ struct VS_OUT {
     float3 texCoord: TEXCOORD;
 };
 
-[[vk::binding(0, 0)]] cbuffer FrameConsts : register(b0) {
+[[vk::binding(4, 0)]] cbuffer FrameConsts : register(b0) {
 	float4x4 view;
 	float4x4 proj;
 };
 
-[[vk::binding(1, 0)]] cbuffer PerInstance : register(b1) {
+[[vk::push_constant]] cbuffer PushConstants {
 	float4x4 model;
+	uint tex0;
+	uint tex1;
+	uint tex2;
+	uint tex3;
 };
 
 [shader("vertex")]

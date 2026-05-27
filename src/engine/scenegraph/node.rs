@@ -216,7 +216,7 @@ impl<B: GpuBackend> Node<B> {
     pub fn build_model(&mut self, backend: &B, model: &glm::Mat4) {
         self.model = model * self.model_orig;
         for drawable in &self.drawables {
-            drawable.borrow().update_model(backend, &self.model);
+            drawable.borrow_mut().update_model(backend, &self.model);
         }
         for (_, c) in &self.children {
             c.borrow_mut().build_model(backend, &self.model);

@@ -11,7 +11,7 @@ struct PS_OUT {
 	uint4 albedo : SV_Target1;
 };
 
-[[vk::binding(2, 0)]] cbuffer ubo : register(b2) {
+[[vk::binding(5, 0)]] cbuffer ubo : register(b2) {
 	float near_plane;
     float far_plane;
 };
@@ -22,26 +22,27 @@ float calcLinearDepth(float zval)
 	return (2.0 * near_plane * far_plane) / (far_plane + near_plane - z * (far_plane - near_plane));
 }
 
-[[vk::binding(5, 0)]]
+[[vk::binding(6, 0)]]
 Sampler2D<float4> textures[] : register(t0);
 
-static const uint POS_ALBEDO = 0;
-static const uint POS_METALLIC_ROUGHNESS = 1;
-static const uint POS_NORMALS = 2;
+[[vk::push_constant]] cbuffer PushConstants {
+	float4x4 model;
+	uint tex0;
+	uint tex1;
+	uint tex2;
+	uint tex3;
+};
 
 [shader("pixel")]
 PS_OUT main(PS_IN input) {
     PS_OUT output = (PS_OUT)0;
 
-	float4 albedo = textures[POS_ALBEDO].Sample(input.txCoord);
+	float4 albedo = textures[tex0].Sample(input.txCoord);
     float4 pos = input.worldPos;
 
-	// float3 normal_out = input.normal;
-	float3 normal = textures[POS_NORMALS].Sample(input.txCoord).xyz;
-	// transform to range [-1,1]
+	float3 normal = textures[tex2].Sample(input.txCoord).xyz;
 	normal = normalize((normal * 2.0) - 1.0);
 
-    // move into world space
 	float3 normal_out = normalize(mul(normal, input.TBN));
 
     normal_out = normal_out * 0.5 + 0.5;
@@ -52,14 +53,13 @@ PS_OUT main(PS_IN input) {
 	uint3 nhalf = f32tof16(normal_out);
 
     output.position.b = (nhalf.r << 16) | nhalf.g;
-	output.position.a = (nhalf.b << 16) | 0; //nhalf_surf.r;
+	output.position.a = (nhalf.b << 16) | 0;
 
 	uint4 chalf = f32tof16(albedo);
 	output.albedo.r = (chalf.r << 16) | chalf.g;
 	output.albedo.g = (chalf.b << 16) | chalf.a;
 
-
-	float2 mr = textures[POS_METALLIC_ROUGHNESS].Sample(input.txCoord).gb;
+	float2 mr = textures[tex1].Sample(input.txCoord).gb;
 
 	float roughness = mr.g;
 	float metallic = mr.r;

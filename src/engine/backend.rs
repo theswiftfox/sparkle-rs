@@ -479,6 +479,11 @@ pub trait GpuBackend: Sized + 'static {
     /// Bind a uniform buffer to a shader stage and slot.
     fn bind_uniform(&mut self, stage: ShaderStage, slot: u32, buffer: &Self::Buffer);
 
+    /// Permanently bind a UBO to a descriptor set binding slot.
+    /// On Vulkan this writes the descriptor to all per-frame sets.
+    /// On wgpu this is a no-op.
+    fn bind_ubo_to_descriptor(&self, binding: u32, buffer: &Self::Buffer);
+
     /// Set the vertex buffer for subsequent draw calls.
     fn set_vertex_buffer(&mut self, buffer: &Self::Buffer);
 
@@ -487,6 +492,10 @@ pub trait GpuBackend: Sized + 'static {
 
     /// Issue an indexed draw call.
     fn draw_indexed(&mut self, index_count: u32, first_index: u32, base_vertex: i32);
+
+    /// Set the per-draw model matrix. On Vulkan this stages push constant data;
+    /// on wgpu this updates the model UBO bind group.
+    fn set_model_matrix(&mut self, model: &glm::Mat4);
 
     // --- Accessors ---
 
@@ -586,6 +595,7 @@ pub struct Drawable<B: GpuBackend> {
     pub(crate) index_buffer: B::Buffer,
     index_count: u32,
     pub(crate) model_buffer: B::Buffer,
+    model_matrix: glm::Mat4,
     material: Material<B>,
     object_type: ObjType,
     double_sided: bool,
@@ -639,6 +649,7 @@ impl<B: GpuBackend> Drawable<B> {
             index_buffer,
             index_count: indices.len() as u32,
             model_buffer,
+            model_matrix: identity,
             material: Material::new(),
             object_type,
             double_sided: false,
@@ -647,7 +658,8 @@ impl<B: GpuBackend> Drawable<B> {
     }
 
     /// Upload a new model matrix to the GPU.
-    pub fn update_model(&self, backend: &B, model: &glm::Mat4) {
+    pub fn update_model(&mut self, backend: &B, model: &glm::Mat4) {
+        self.model_matrix = *model;
         let data = as_bytes(std::slice::from_ref(model));
         backend.update_buffer(&self.model_buffer, data);
     }
@@ -656,6 +668,7 @@ impl<B: GpuBackend> Drawable<B> {
     pub fn draw(&self, backend: &mut B, bind_material: bool) {
         backend.set_vertex_buffer(&self.vertex_buffer);
         backend.set_index_buffer(&self.index_buffer);
+        backend.set_model_matrix(&self.model_matrix);
         backend.bind_uniform(ShaderStage::Vertex, 1, &self.model_buffer);
 
         if bind_material {

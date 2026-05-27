@@ -23,6 +23,9 @@ pub struct VulkanTexture {
     pub view_type: ash::vk::ImageViewType,
     pub compare_enabled: bool,
     pub id: usize,
+    /// Permanent slot in the global bindless descriptor array.
+    /// `u32::MAX` means not yet registered (e.g. swapchain images, depth-only textures).
+    pub descriptor_index: u32,
     pub device_handle: ash::Device,
     pub current_layout: Rc<Cell<ash::vk::ImageLayout>>,
 }
@@ -74,6 +77,94 @@ impl VulkanTexture {
 }
 
 impl VulkanBackend {
+    /// Assign a permanent bindless descriptor slot to a texture and write it
+    /// into every per-frame descriptor set. Skips textures without a sampler
+    /// (depth-only attachments).
+    pub fn register_texture(&self, tex: &mut VulkanTexture) {
+        if tex.sampler == ash::vk::Sampler::null() {
+            return;
+        }
+
+        let mut reg = self.texture_registry.borrow_mut();
+
+        if tex.compare_enabled {
+            let slot = reg.allocate_shadow();
+            tex.descriptor_index = slot;
+            for set in &self.descriptors.sets {
+                let image_info = ash::vk::DescriptorImageInfo {
+                    image_view: tex.image_view,
+                    image_layout: ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    ..Default::default()
+                };
+                let sampler_info = ash::vk::DescriptorImageInfo {
+                    sampler: tex.sampler,
+                    ..Default::default()
+                };
+                let writes = [
+                    ash::vk::WriteDescriptorSet {
+                        dst_set: *set,
+                        dst_binding: 8,
+                        dst_array_element: slot,
+                        descriptor_type: ash::vk::DescriptorType::SAMPLED_IMAGE,
+                        descriptor_count: 1,
+                        p_image_info: &image_info,
+                        ..Default::default()
+                    },
+                    ash::vk::WriteDescriptorSet {
+                        dst_set: *set,
+                        dst_binding: 9,
+                        dst_array_element: slot,
+                        descriptor_type: ash::vk::DescriptorType::SAMPLER,
+                        descriptor_count: 1,
+                        p_image_info: &sampler_info,
+                        ..Default::default()
+                    },
+                ];
+                unsafe { self.device.update_descriptor_sets(&writes, &[]) };
+            }
+        } else if tex.view_type == ash::vk::ImageViewType::CUBE {
+            let slot = reg.allocate_cube();
+            tex.descriptor_index = slot;
+            for set in &self.descriptors.sets {
+                let info = ash::vk::DescriptorImageInfo {
+                    image_view: tex.image_view,
+                    image_layout: ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    sampler: tex.sampler,
+                };
+                let write = ash::vk::WriteDescriptorSet {
+                    dst_set: *set,
+                    dst_binding: 7,
+                    dst_array_element: slot,
+                    descriptor_type: ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                    descriptor_count: 1,
+                    p_image_info: &info,
+                    ..Default::default()
+                };
+                unsafe { self.device.update_descriptor_sets(&[write], &[]) };
+            }
+        } else {
+            let slot = reg.allocate_2d();
+            tex.descriptor_index = slot;
+            for set in &self.descriptors.sets {
+                let info = ash::vk::DescriptorImageInfo {
+                    image_view: tex.image_view,
+                    image_layout: ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    sampler: tex.sampler,
+                };
+                let write = ash::vk::WriteDescriptorSet {
+                    dst_set: *set,
+                    dst_binding: 6,
+                    dst_array_element: slot,
+                    descriptor_type: ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                    descriptor_count: 1,
+                    p_image_info: &info,
+                    ..Default::default()
+                };
+                unsafe { self.device.update_descriptor_sets(&[write], &[]) };
+            }
+        }
+    }
+
     pub fn create_vk_render_target(
         instance: &ash::Instance,
         device: &ash::Device,
@@ -148,6 +239,7 @@ impl VulkanBackend {
             id: TEXTURE_ID.fetch_add(1, Ordering::SeqCst),
             compare_enabled: info.sampler.compare.is_some(),
             view_type: view_create_info.view_type,
+            descriptor_index: u32::MAX,
             device_handle: device.clone(),
             current_layout: Rc::new(Cell::new(ash::vk::ImageLayout::UNDEFINED)),
         })
@@ -258,6 +350,7 @@ impl VulkanBackend {
             id: TEXTURE_ID.fetch_add(1, Ordering::SeqCst),
             compare_enabled: info.sampler.compare.is_some(),
             view_type: view_create_info.view_type,
+            descriptor_index: u32::MAX,
             device_handle: self.device.device.clone(),
             current_layout: Rc::new(Cell::new(ash::vk::ImageLayout::UNDEFINED)),
         })
@@ -421,6 +514,7 @@ impl VulkanBackend {
             id: TEXTURE_ID.fetch_add(1, Ordering::SeqCst),
             compare_enabled: sampler_desc.compare.is_some(),
             view_type: ash::vk::ImageViewType::CUBE,
+            descriptor_index: u32::MAX,
             device_handle: self.device.device.clone(),
             current_layout: Rc::new(Cell::new(ash::vk::ImageLayout::UNDEFINED)),
         })
@@ -507,6 +601,7 @@ impl VulkanBackend {
             id: TEXTURE_ID.fetch_add(1, Ordering::SeqCst),
             compare_enabled,
             view_type: view_create_info.view_type,
+            descriptor_index: u32::MAX,
             device_handle: self.device.device.clone(),
             current_layout: Rc::new(Cell::new(ash::vk::ImageLayout::UNDEFINED)),
         })
