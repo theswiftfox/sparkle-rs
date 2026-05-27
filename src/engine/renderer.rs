@@ -81,11 +81,17 @@ impl<B: GpuBackend> Renderer<B> {
             None,
         )?;
         let ubo_shadow_light_space = backend.create_buffer(
-            &ubo_desc("shared_shadow_light_space", std::mem::size_of::<LightSpaceUniforms>()),
+            &ubo_desc(
+                "shared_shadow_light_space",
+                std::mem::size_of::<LightSpaceUniforms>(),
+            ),
             None,
         )?;
         let ubo_skybox_view_proj = backend.create_buffer(
-            &ubo_desc("shared_skybox_view_proj", std::mem::size_of::<ViewProjUniforms>()),
+            &ubo_desc(
+                "shared_skybox_view_proj",
+                std::mem::size_of::<ViewProjUniforms>(),
+            ),
             None,
         )?;
         let ubo_near_far = backend.create_buffer(
@@ -101,10 +107,24 @@ impl<B: GpuBackend> Renderer<B> {
         backend.bind_ubo_to_descriptor(5, &ubo_near_far);
 
         let identity = glm::Mat4::identity();
-        let view_proj_cpu = ViewProjUniforms { view: identity, proj: identity };
-        let camera_pixel_cpu = CameraUniforms { camera_pos: glm::Vec3::zeros(), ssao: 0 };
-        let skybox_view_proj_cpu = ViewProjUniforms { view: identity, proj: identity };
-        let near_far_cpu = NearFarUniforms { near_plane: 0.1, far_plane: 100.0, _pad: 0.0, _pad2: 0.0 };
+        let view_proj_cpu = ViewProjUniforms {
+            view: identity,
+            proj: identity,
+        };
+        let camera_pixel_cpu = CameraUniforms {
+            camera_pos: glm::Vec3::zeros(),
+            ssao: 0,
+        };
+        let skybox_view_proj_cpu = ViewProjUniforms {
+            view: identity,
+            proj: identity,
+        };
+        let near_far_cpu = NearFarUniforms {
+            near_plane: 0.1,
+            far_plane: 100.0,
+            _pad: 0.0,
+            _pad2: 0.0,
+        };
 
         Ok(Renderer {
             settings,
@@ -829,10 +849,10 @@ impl<B: GpuBackend> Renderer<B> {
                         last_ds = Some(ds);
                     }
                     // Always rebind material after pipeline switch (clears group 2)
-                    let rebind_material = pipeline_switched
-                        || i == 0
-                        || !drawables[i - 1].borrow().material().eq(drawable.material());
-                    drawable.draw(&mut self.backend, rebind_material);
+                    // let rebind_material = pipeline_switched
+                    //     || i == 0
+                    //     || !drawables[i - 1].borrow().material().eq(drawable.material());
+                    drawable.draw(&mut self.backend, true);
                 }
             }
             self.backend.end_render_pass();
@@ -855,6 +875,7 @@ impl<B: GpuBackend> Renderer<B> {
                     }],
                     depth_target: None,
                 });
+                self.backend.set_viewport(&viewport);
                 ssao.prepare_draw_ssao(&mut self.backend);
                 // Bind G-buffer inputs (slot 0 = position, slot 1 = normal+roughness)
                 if let Some(ref dp) = self.deferred_program_pre {
@@ -911,7 +932,9 @@ impl<B: GpuBackend> Renderer<B> {
                     shadow.update(&self.backend);
 
                     // Update shared shadow UBO (binding 3)
-                    let ls = LightSpaceUniforms { light_space_matrix: light.light_proj };
+                    let ls = LightSpaceUniforms {
+                        light_space_matrix: light.light_proj,
+                    };
                     self.backend.update_buffer(
                         &self.ubo_shadow_light_space,
                         as_bytes(std::slice::from_ref(&ls)),
@@ -941,10 +964,10 @@ impl<B: GpuBackend> Renderer<B> {
                                 shadow.set_pipeline_for(&mut self.backend, ds);
                                 last_ds = Some(ds);
                             }
-                            let rebind_material = pipeline_switched
-                                || i == 0
-                                || !drawables[i - 1].borrow().material().eq(drawable.material());
-                            drawable.draw(&mut self.backend, rebind_material);
+                            // let rebind_material = pipeline_switched
+                            //     || i == 0
+                            //     || !drawables[i - 1].borrow().material().eq(drawable.material());
+                            drawable.draw(&mut self.backend, false);
                         }
                     }
                     self.backend.end_render_pass();
@@ -982,6 +1005,7 @@ impl<B: GpuBackend> Renderer<B> {
                     }],
                     depth_target: None,
                 });
+                self.backend.set_viewport(&viewport);
                 def_light.prepare_draw(&mut self.backend);
 
                 // Bind G-buffer inputs
@@ -1071,10 +1095,10 @@ impl<B: GpuBackend> Renderer<B> {
                             last_ds = Some(ds);
                         }
                         // Always rebind material after pipeline switch (clears group 2)
-                        let rebind_material = pipeline_switched
-                            || i == 0
-                            || !drawables[i - 1].borrow().material().eq(drawable.material());
-                        drawable.draw(&mut self.backend, rebind_material);
+                        // let rebind_material = pipeline_switched
+                        //     || i == 0
+                        //     || !drawables[i - 1].borrow().material().eq(drawable.material());
+                        drawable.draw(&mut self.backend, true);
                     }
                 }
                 self.backend.end_render_pass();
@@ -1096,6 +1120,7 @@ impl<B: GpuBackend> Renderer<B> {
                 }],
                 depth_target: None,
             });
+            self.backend.set_viewport(&viewport);
             output.prepare_draw(&mut self.backend);
             if let Some(ref dl) = self.deferred_program_light {
                 self.backend

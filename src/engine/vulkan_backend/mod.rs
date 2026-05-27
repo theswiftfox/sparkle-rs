@@ -49,6 +49,7 @@ impl Deref for Instance {
 struct LogicalDevice {
     device: ash::Device,
     graphics_queue_index: u32,
+    debug_utils_ext: Option<ash::ext::debug_utils::Device>,
 }
 
 impl LogicalDevice {
@@ -996,7 +997,7 @@ fn create_swapchain_and_depth_buffer(
 
 fn create_logical_device(
     context: &ash::Entry,
-    instance: &ash::Instance,
+    instance: &Instance,
     physical_device: ash::vk::PhysicalDevice,
     surface: ash::vk::SurfaceKHR,
 ) -> Result<LogicalDevice, GpuError> {
@@ -1089,9 +1090,17 @@ fn create_logical_device(
                 GpuErrorKind::DeviceCreation,
             )
         })?;
+
+    let debug_utils_ext = if instance.validation_enabled {
+        Some(ash::ext::debug_utils::Device::new(&instance, &device))
+    } else {
+        None
+    };
+
     Ok(LogicalDevice {
         device,
         graphics_queue_index: idx as u32,
+        debug_utils_ext,
     })
 }
 

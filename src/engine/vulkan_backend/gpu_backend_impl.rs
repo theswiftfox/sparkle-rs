@@ -1,5 +1,7 @@
 // use std::any::TypeId;
 
+use std::ffi::CString;
+
 use crate::engine::{
     backend::{
         BlendMode, BufferDesc, BufferUsage, Drawable, GpuBackend, GpuError, GpuErrorKind,
@@ -157,7 +159,8 @@ impl GpuBackend for VulkanBackend {
         &self,
         desc: &RenderTargetDesc,
     ) -> Result<Self::RenderTarget, GpuError> {
-        let mut rt = Self::create_vk_render_target(&self.instance, &self.device, self.phys_device, desc)?;
+        let mut rt =
+            Self::create_vk_render_target(&self.instance, &self.device, self.phys_device, desc)?;
         self.register_texture(&mut rt);
         Ok(rt)
     }
@@ -267,13 +270,39 @@ impl GpuBackend for VulkanBackend {
         let blend_attachments = desc
             .color_target_formats
             .iter()
-            .map(|_| ash::vk::PipelineColorBlendAttachmentState {
-                blend_enable: match desc.blend_mode {
-                    BlendMode::None => ash::vk::FALSE,
-                    _ => ash::vk::TRUE,
-                },
-                color_write_mask: ash::vk::ColorComponentFlags::RGBA,
-                ..Default::default()
+            .map(|_| {
+                let (enable, src_color, dst_color, src_alpha, dst_alpha) = match desc.blend_mode {
+                    BlendMode::None => (
+                        ash::vk::FALSE,
+                        ash::vk::BlendFactor::ZERO,
+                        ash::vk::BlendFactor::ZERO,
+                        ash::vk::BlendFactor::ZERO,
+                        ash::vk::BlendFactor::ZERO,
+                    ),
+                    BlendMode::Additive => (
+                        ash::vk::TRUE,
+                        ash::vk::BlendFactor::ONE,
+                        ash::vk::BlendFactor::ONE,
+                        ash::vk::BlendFactor::ONE,
+                        ash::vk::BlendFactor::ONE,
+                    ),
+                    BlendMode::Alpha => (
+                        ash::vk::TRUE,
+                        ash::vk::BlendFactor::SRC_ALPHA,
+                        ash::vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+                        ash::vk::BlendFactor::ONE,
+                        ash::vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+                    ),
+                };
+                ash::vk::PipelineColorBlendAttachmentState {
+                    blend_enable: enable,
+                    src_color_blend_factor: src_color,
+                    dst_color_blend_factor: dst_color,
+                    src_alpha_blend_factor: src_alpha,
+                    dst_alpha_blend_factor: dst_alpha,
+                    color_write_mask: ash::vk::ColorComponentFlags::RGBA,
+                    ..Default::default()
+                }
             })
             .collect::<Vec<_>>();
 
@@ -782,12 +811,34 @@ impl GpuBackend for VulkanBackend {
             ));
         }
 
-        let rendering_info = ash::vk::RenderingInfo {
-            render_area: ash::vk::Rect2D {
+        let area = if let Some(att) = desc.color_targets.first() {
+            ash::vk::Rect2D {
+                offset: ash::vk::Offset2D { x: 0i32, y: 0i32 },
+                extent: ash::vk::Extent2D {
+                    width: att.target.width,
+                    height: att.target.height,
+                },
+                ..Default::default()
+            }
+        } else if let Some(att) = &desc.depth_target {
+            ash::vk::Rect2D {
+                offset: ash::vk::Offset2D { x: 0i32, y: 0i32 },
+                extent: ash::vk::Extent2D {
+                    width: att.target.width,
+                    height: att.target.height,
+                },
+                ..Default::default()
+            }
+        } else {
+            ash::vk::Rect2D {
                 offset: ash::vk::Offset2D { x: 0i32, y: 0i32 },
                 extent: self.swapchain.swapchain_extent,
                 ..Default::default()
-            },
+            }
+        };
+
+        let rendering_info = ash::vk::RenderingInfo {
+            render_area: area,
             layer_count: 1,
             color_attachment_count: color_attachments.len() as u32,
             p_color_attachments: color_attachments.as_ptr(),
@@ -862,8 +913,14 @@ impl GpuBackend for VulkanBackend {
         }
 
         let scissor = ash::vk::Rect2D {
-            offset: ash::vk::Offset2D { x: 0i32, y: 0i32 },
-            extent: self.swapchain.swapchain_extent,
+            offset: ash::vk::Offset2D {
+                x: viewport.x as _,
+                y: viewport.y as _,
+            },
+            extent: ash::vk::Extent2D {
+                width: viewport.width as _,
+                height: viewport.height as _,
+            },
         };
 
         unsafe {
@@ -997,12 +1054,11 @@ impl GpuBackend for VulkanBackend {
     }
 
     fn default_viewport(&self) -> ViewportDesc {
-        let (w, h) = self.resolution();
         ViewportDesc {
             x: 0.0,
             y: 0.0,
-            width: w as f32,
-            height: h as f32,
+            width: self.swapchain.swapchain_extent.width as _,
+            height: self.swapchain.swapchain_extent.height as _,
             min_depth: 0.0,
             max_depth: 1.0,
         }
@@ -1018,6 +1074,61 @@ impl GpuBackend for VulkanBackend {
         if let Err(e) = self.recreate_swapchain() {
             println!("Failed to recreate swapchain on resize: {e:?}")
         }
+    }
+
+    fn begin_event(&self, name: &str) {
+        let Some(CurrentFrame { command_buffer, .. }) = self.current_frame else {
+            return;
+        };
+        let (Some(debug_utils_ext), true) = (
+            &self.device.debug_utils_ext,
+            self.instance.validation_enabled,
+        ) else {
+            return;
+        };
+        let name = format!("{name} - BEGIN");
+        let Ok(c_str) = CString::new(name) else {
+            return;
+        };
+        let c_str = c_str.into_raw();
+
+        let marker_info = ash::vk::DebugUtilsLabelEXT {
+            p_label_name: c_str,
+            ..Default::default()
+        };
+
+        unsafe {
+            debug_utils_ext.cmd_insert_debug_utils_label(command_buffer, &marker_info);
+        }
+
+        let _ = unsafe { CString::from_raw(c_str) }; // ensure its cleaned up again
+    }
+
+    fn end_event(&self) {
+        let Some(CurrentFrame { command_buffer, .. }) = self.current_frame else {
+            return;
+        };
+        let (Some(debug_utils_ext), true) = (
+            &self.device.debug_utils_ext,
+            self.instance.validation_enabled,
+        ) else {
+            return;
+        };
+        let name = format!("END EVENT");
+        let Ok(c_str) = CString::new(name) else {
+            return;
+        };
+        let c_str = c_str.into_raw();
+
+        let marker_info = ash::vk::DebugUtilsLabelEXT {
+            p_label_name: c_str,
+            ..Default::default()
+        };
+
+        unsafe {
+            debug_utils_ext.cmd_insert_debug_utils_label(command_buffer, &marker_info);
+        }
+        let _ = unsafe { CString::from_raw(c_str) }; // ensure its cleaned up again
     }
 }
 
