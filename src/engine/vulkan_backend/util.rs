@@ -731,9 +731,9 @@ impl Into<ash::vk::Viewport> for ViewportDesc {
     fn into(self) -> ash::vk::Viewport {
         ash::vk::Viewport {
             x: self.x,
-            y: self.y,
+            y: self.y + self.height,
             width: self.width,
-            height: self.height,
+            height: -self.height,
             min_depth: self.min_depth,
             max_depth: self.max_depth,
         }

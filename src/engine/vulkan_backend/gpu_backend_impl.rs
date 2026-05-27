@@ -767,7 +767,7 @@ impl GpuBackend for VulkanBackend {
             let clear_value = ash::vk::ClearValue {
                 depth_stencil: ash::vk::ClearDepthStencilValue {
                     depth: target.clear_depth,
-                    ..Default::default()
+                    stencil: 1,
                 },
             };
             let load_op: ash::vk::AttachmentLoadOp = target.load_op.into();
