@@ -1,8 +1,10 @@
+// use std::any::TypeId;
+
 use crate::engine::{
     backend::{
-        BlendMode, BufferDesc, BufferUsage, GpuBackend, GpuError, GpuErrorKind, PipelineDesc,
-        RenderPassDesc, RenderTargetDesc, SamplerDesc, ShaderStage, Shaders, TextureDesc,
-        TextureFormat, ViewportDesc,
+        BlendMode, BufferDesc, BufferUsage, Drawable, GpuBackend, GpuError, GpuErrorKind,
+        PipelineDesc, RenderPassDesc, RenderTargetDesc, SamplerDesc, ShaderStage, Shaders,
+        TextureDesc, TextureFormat, ViewportDesc,
     },
     vulkan_backend::{
         CurrentFrame, FRAMES_IN_FLIGHT, SHADER_ENTRY_POINT, VulkanBackend, buffer::VulkanBuffer,
@@ -36,7 +38,7 @@ impl GpuBackend for VulkanBackend {
         let deferred_pre_pxl = Shader {
             label: "Deferred Pre PXL",
             stage: ash::vk::ShaderStageFlags::FRAGMENT,
-            code: include_bytes!("../../shaders/spv/deferred/pre_pixel_packing.spv"),
+            code: include_bytes!("../../shaders/spv/deferred/pre_pixel.spv"),
         };
         let deferred_light_vtx = Shader {
             label: "Deferred Light VTX",
@@ -46,7 +48,7 @@ impl GpuBackend for VulkanBackend {
         let deferred_light_pxl = Shader {
             label: "Deferred Light PXL",
             stage: ash::vk::ShaderStageFlags::FRAGMENT,
-            code: include_bytes!("../../shaders/spv/deferred/light_pixel_packing.spv"),
+            code: include_bytes!("../../shaders/spv/deferred/light_pixel.spv"),
         };
         let forward_vtx = Shader {
             label: "Forward Pass VTX",
@@ -133,8 +135,12 @@ impl GpuBackend for VulkanBackend {
             BufferUsage::Index => ash::vk::BufferUsageFlags::INDEX_BUFFER,
             BufferUsage::Vertex => ash::vk::BufferUsageFlags::VERTEX_BUFFER,
         } | ash::vk::BufferUsageFlags::TRANSFER_DST;
-        let flags = ash::vk::MemoryPropertyFlags::HOST_VISIBLE
-            | ash::vk::MemoryPropertyFlags::HOST_COHERENT;
+        let mut flags = ash::vk::MemoryPropertyFlags::DEVICE_LOCAL;
+        if desc.usage == BufferUsage::Uniform {
+            flags = flags
+                | ash::vk::MemoryPropertyFlags::HOST_VISIBLE
+                | ash::vk::MemoryPropertyFlags::HOST_COHERENT;
+        }
         let buffer = self.create_vulkan_buffer(desc.size as u64, usage, flags)?;
         if let Some(data) = data {
             self.update_buffer(&buffer, data);
@@ -210,22 +216,17 @@ impl GpuBackend for VulkanBackend {
             )
         };
 
-        let pipeline_vtx_input_state = if desc.vertex_layout.is_none() {
-            ash::vk::PipelineVertexInputStateCreateInfo {
-                vertex_binding_description_count: 0,
-                vertex_attribute_description_count: 0,
-                p_vertex_binding_descriptions: std::ptr::null(),
-                p_vertex_attribute_descriptions: std::ptr::null(),
-                ..Default::default()
-            }
+        let pipeline_vtx_input_state = ash::vk::PipelineVertexInputStateCreateInfo {
+            vertex_binding_description_count: 1,
+            p_vertex_binding_descriptions: &vtx_input_state,
+            vertex_attribute_description_count: attributes.len() as _,
+            p_vertex_attribute_descriptions: attributes.as_ptr(),
+            ..Default::default()
+        };
+        let p_vertex_input_state = if desc.vertex_layout.is_none() {
+            std::ptr::null()
         } else {
-            ash::vk::PipelineVertexInputStateCreateInfo {
-                vertex_binding_description_count: 1,
-                p_vertex_binding_descriptions: &vtx_input_state,
-                vertex_attribute_description_count: attributes.len() as _,
-                p_vertex_attribute_descriptions: attributes.as_ptr(),
-                ..Default::default()
-            }
+            &pipeline_vtx_input_state
         };
 
         let input_assembly = ash::vk::PipelineInputAssemblyStateCreateInfo {
@@ -244,7 +245,7 @@ impl GpuBackend for VulkanBackend {
             rasterizer_discard_enable: ash::vk::FALSE,
             polygon_mode: ash::vk::PolygonMode::FILL,
             cull_mode: desc.cull_mode.into(),
-            front_face: ash::vk::FrontFace::CLOCKWISE,
+            front_face: ash::vk::FrontFace::COUNTER_CLOCKWISE,
             depth_bias_enable: ash::vk::FALSE,
             line_width: 1.0f32,
             ..Default::default()
@@ -278,7 +279,10 @@ impl GpuBackend for VulkanBackend {
         let depth_stencil = if let Some(_depth_stencil) = &desc.depth_format {
             ash::vk::PipelineDepthStencilStateCreateInfo {
                 depth_write_enable: desc.depth_write as _,
+                depth_test_enable: ash::vk::TRUE,
                 depth_compare_op: desc.depth_compare.into(),
+                depth_bounds_test_enable: ash::vk::FALSE,
+                stencil_test_enable: ash::vk::FALSE,
                 ..Default::default()
             }
         } else {
@@ -310,7 +314,7 @@ impl GpuBackend for VulkanBackend {
         let pipeline_info = ash::vk::GraphicsPipelineCreateInfo {
             stage_count: shader_modules.len() as _,
             p_stages: shader_modules.as_ptr(),
-            p_vertex_input_state: &pipeline_vtx_input_state,
+            p_vertex_input_state,
             p_input_assembly_state: &input_assembly,
             p_viewport_state: &viewport_state,
             p_rasterization_state: &rasterization_state,
@@ -352,10 +356,7 @@ impl GpuBackend for VulkanBackend {
             data: &[u8],
         ) -> Result<(), GpuError> {
             let size = (data.len() as ash::vk::DeviceSize).min(buffer.size);
-            if buffer.flags
-                == (ash::vk::MemoryPropertyFlags::HOST_VISIBLE
-                    | ash::vk::MemoryPropertyFlags::HOST_COHERENT)
-            {
+            if buffer.is_host_mapable() {
                 if buffer.mapped != std::ptr::null_mut() {
                     unsafe {
                         buffer
@@ -367,7 +368,7 @@ impl GpuBackend for VulkanBackend {
                     backend.copy_to_buffer(buffer.memory, data.as_ptr() as *const _, size)
                 }
             } else {
-                let command_buffer = backend.begin_single_time_commands()?;
+                let command_buffer = backend.begin_single_time_commands().unwrap();
                 let (b_staging, m_staging) = VulkanBackend::create_buffer(
                     &backend.instance,
                     &backend.device,
@@ -376,14 +377,23 @@ impl GpuBackend for VulkanBackend {
                     ash::vk::BufferUsageFlags::TRANSFER_SRC,
                     ash::vk::MemoryPropertyFlags::HOST_VISIBLE
                         | ash::vk::MemoryPropertyFlags::HOST_COHERENT,
-                )?;
-                backend.copy_to_buffer(m_staging, data.as_ptr() as *const _, size)?;
+                )
+                .unwrap();
+                backend
+                    .copy_to_buffer(m_staging, data.as_ptr() as *const _, size)
+                    .unwrap();
                 backend.copy_buffer(command_buffer, b_staging, 0, buffer.buffer, 0, size);
-                backend.end_single_time_commands(command_buffer)
+                backend.end_single_time_commands(command_buffer).unwrap();
+
+                unsafe {
+                    backend.device.destroy_buffer(b_staging, None);
+                    backend.device.free_memory(m_staging, None);
+                }
+                Ok(())
             }
         }
         if let Err(e) = update_buffer_safe(&self, buffer, data) {
-            println!("Failed to update buffer: {e:?}")
+            panic!("Failed to update buffer: {e:?}")
         }
     }
 
@@ -474,7 +484,7 @@ impl GpuBackend for VulkanBackend {
             )
         })?;
 
-        let image = self
+        let swapchain_texture = self
             .swapchain
             .swapchain_images
             .get(swapchain_idx as usize)
@@ -484,16 +494,59 @@ impl GpuBackend for VulkanBackend {
                     swapchain_idx as usize,
                     self.swapchain.swapchain_images.len(),
                 )
-            })
-            .map(|tx| tx.image)?;
+            })?;
+
+        let depth_texture = &self.depth_targets[frame_idx];
+
+        unsafe {
+            self.device.begin_command_buffer(
+                command_buffer,
+                &ash::vk::CommandBufferBeginInfo {
+                    ..Default::default()
+                },
+            )
+        }
+        .map_err(|e| {
+            GpuError::new(
+                format!("CommandBuffer::begin failed {e:?}"),
+                GpuErrorKind::RenderPass,
+            )
+        })?;
 
         self.transition_image_layout(
             command_buffer,
-            image,
-            ash::vk::ImageLayout::UNDEFINED,
+            swapchain_texture.image,
+            swapchain_texture.current_layout.get(),
             ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            ash::vk::ImageAspectFlags::COLOR,
             1,
         )?;
+        swapchain_texture
+            .current_layout
+            .set(ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+
+        self.transition_image_layout(
+            command_buffer,
+            depth_texture.image,
+            depth_texture.current_layout.get(),
+            ash::vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
+            ash::vk::ImageAspectFlags::DEPTH,
+            1,
+        )?;
+        depth_texture
+            .current_layout
+            .set(ash::vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL);
+
+        unsafe {
+            self.device.cmd_bind_descriptor_sets(
+                command_buffer,
+                ash::vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline_layout,
+                0,
+                &[self.descriptors.sets[frame_idx]],
+                &[],
+            );
+        }
 
         self.current_frame = Some(CurrentFrame {
             idx: frame_idx,
@@ -523,13 +576,18 @@ impl GpuBackend for VulkanBackend {
             ));
         };
 
+        let swapchain_tex = &self.swapchain.swapchain_images[render_idx as usize];
         self.transition_image_layout(
             command_buffer,
-            self.swapchain.swapchain_images[render_idx as usize].image,
-            ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            swapchain_tex.image,
+            swapchain_tex.current_layout.get(),
             ash::vk::ImageLayout::PRESENT_SRC_KHR,
+            ash::vk::ImageAspectFlags::COLOR,
             1,
         )?;
+        swapchain_tex
+            .current_layout
+            .set(ash::vk::ImageLayout::PRESENT_SRC_KHR);
 
         unsafe { self.device.end_command_buffer(command_buffer) }.map_err(|e| {
             GpuError::new(
@@ -612,6 +670,39 @@ impl GpuBackend for VulkanBackend {
             return;
         };
 
+        desc.color_targets.iter().for_each(|target| {
+            let old_layout = target.target.current_layout.get();
+            self.transition_image_layout(
+                command_buffer,
+                target.target.image,
+                old_layout,
+                ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                ash::vk::ImageAspectFlags::COLOR,
+                1,
+            )
+            .unwrap();
+            target
+                .target
+                .current_layout
+                .set(ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        });
+        if let Some(depth_target) = &desc.depth_target {
+            let old_layout = depth_target.target.current_layout.get();
+            self.transition_image_layout(
+                command_buffer,
+                depth_target.target.image,
+                old_layout,
+                ash::vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
+                ash::vk::ImageAspectFlags::DEPTH,
+                1,
+            )
+            .unwrap();
+            depth_target
+                .target
+                .current_layout
+                .set(ash::vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL);
+        }
+
         let color_attachments = desc
             .color_targets
             .iter()
@@ -667,6 +758,23 @@ impl GpuBackend for VulkanBackend {
         } else {
             std::ptr::null()
         };
+
+        self.current_pass_targets.clear();
+        for target in &desc.color_targets {
+            self.current_pass_targets.push((
+                target.target.image,
+                ash::vk::ImageAspectFlags::COLOR,
+                target.target.current_layout.clone(),
+            ));
+        }
+        if let Some(depth) = &desc.depth_target {
+            self.current_pass_targets.push((
+                depth.target.image,
+                ash::vk::ImageAspectFlags::DEPTH,
+                depth.target.current_layout.clone(),
+            ));
+        }
+
         let rendering_info = ash::vk::RenderingInfo {
             render_area: ash::vk::Rect2D {
                 offset: ash::vk::Offset2D { x: 0i32, y: 0i32 },
@@ -694,6 +802,34 @@ impl GpuBackend for VulkanBackend {
         unsafe {
             self.device.cmd_end_rendering(command_buffer);
         }
+        for &(image, aspect, ref layout_cell) in &self.current_pass_targets {
+            // Skip swapchain images — they transition to PRESENT_SRC_KHR
+            // in end_frame, not SHADER_READ_ONLY_OPTIMAL
+            // (swapchain images lack SAMPLED_BIT)
+            if self
+                .swapchain
+                .swapchain_images
+                .iter()
+                .any(|tex| tex.image == image)
+            {
+                continue;
+            }
+            let old_layout = layout_cell.get();
+            if self
+                .transition_image_layout(
+                    command_buffer,
+                    image,
+                    old_layout,
+                    ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    aspect,
+                    1,
+                )
+                .is_ok()
+            {
+                layout_cell.set(ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+            }
+        }
+        self.current_pass_targets.clear();
     }
 
     fn set_pipeline(&mut self, pipeline: &Self::Pipeline) {
@@ -717,6 +853,15 @@ impl GpuBackend for VulkanBackend {
             self.device
                 .cmd_set_viewport(command_buffer, 0, &[viewport.into()]);
         }
+
+        let scissor = ash::vk::Rect2D {
+            offset: ash::vk::Offset2D { x: 0i32, y: 0i32 },
+            extent: self.swapchain.swapchain_extent,
+        };
+
+        unsafe {
+            self.device.cmd_set_scissor(command_buffer, 0, &[scissor]);
+        }
     }
 
     fn bind_texture(&mut self, slot: u32, texture: &Self::Texture) {
@@ -734,6 +879,7 @@ impl GpuBackend for VulkanBackend {
         let Some(CurrentFrame { idx, .. }) = self.current_frame else {
             return;
         };
+
         let dst_set = self.descriptors.sets[idx];
         let writes = map_slot_to_descriptor_writes(slot, BindingType::Texture(target), dst_set);
         unsafe {
@@ -741,9 +887,20 @@ impl GpuBackend for VulkanBackend {
         }
     }
 
-    fn bind_uniform(&mut self, _stage: ShaderStage, slot: u32, buffer: &Self::Buffer) {
+    fn bind_uniform(&mut self, stage: ShaderStage, slot: u32, buffer: &Self::Buffer) {
         let Some(CurrentFrame { idx, .. }) = self.current_frame else {
             return;
+        };
+        if stage == ShaderStage::Vertex && slot == 0 && buffer.size == 64 {
+            panic!("binding 64 byte buffer to slot 0!");
+        }
+        // eprintln!(
+        //     "bind_uniform(stage={:?}, slot={}, buffer_size={})",
+        //     stage, slot, buffer.size
+        // );
+        let slot = match stage {
+            ShaderStage::Vertex => slot,
+            ShaderStage::Fragment => slot + 2,
         };
         let dst_set = self.descriptors.sets[idx];
         let writes = map_slot_to_descriptor_writes(slot, BindingType::Buffer(buffer), dst_set);
@@ -781,6 +938,7 @@ impl GpuBackend for VulkanBackend {
         let Some(CurrentFrame { command_buffer, .. }) = self.current_frame else {
             return;
         };
+
         unsafe {
             self.device.cmd_draw_indexed(
                 command_buffer,
@@ -827,7 +985,7 @@ impl GpuBackend for VulkanBackend {
     // recreate swapchain reads new width & height from window
     fn resize(&mut self, _width: u32, _height: u32) {
         if let Err(e) = self.recreate_swapchain() {
-            println!("Failed to recreate swapchain on resize")
+            println!("Failed to recreate swapchain on resize: {e:?}")
         }
     }
 }
@@ -857,7 +1015,7 @@ impl<'a> DescriptorWrites<'a> {
 
 fn map_slot_to_descriptor_writes(
     slot: u32,
-    binding_type: BindingType,
+    binding_type: BindingType<'_>,
     dst_set: ash::vk::DescriptorSet,
 ) -> DescriptorWrites<'_> {
     let mut writes = DescriptorWrites {
@@ -874,9 +1032,8 @@ fn map_slot_to_descriptor_writes(
             ..
         }) => {
             if *compare_enabled {
-                // slots 24-27 → comparison texture: 2 writes (image + sampler)
-                // array offset = slot - 24
-                let offset = slot;
+                // slots 25-28 → comparison texture: 2 writes (image + sampler)
+                let offset = 0; // ignore slot for shadow maps for now!
 
                 let sampled_image_info = ash::vk::DescriptorImageInfo {
                     image_view: *image_view,
@@ -892,7 +1049,7 @@ fn map_slot_to_descriptor_writes(
 
                 writes.inner.push(ash::vk::WriteDescriptorSet {
                     dst_set,
-                    dst_binding: 6u32,
+                    dst_binding: 7,
                     dst_array_element: offset,
                     descriptor_type: ash::vk::DescriptorType::SAMPLED_IMAGE,
                     descriptor_count: 1,
@@ -901,7 +1058,7 @@ fn map_slot_to_descriptor_writes(
                 });
                 writes.inner.push(ash::vk::WriteDescriptorSet {
                     dst_set,
-                    dst_binding: 7u32,
+                    dst_binding: 8,
                     dst_array_element: offset,
                     descriptor_type: ash::vk::DescriptorType::SAMPLER,
                     descriptor_count: 1,
@@ -909,7 +1066,25 @@ fn map_slot_to_descriptor_writes(
                     ..Default::default()
                 });
             } else if *view_type == ash::vk::ImageViewType::CUBE {
-                // slots 20-23 → cubemap: binding 5, array offset = slot - 20
+                // slots 21-23 → cubemap: binding 6
+                let offset = slot;
+                let info = ash::vk::DescriptorImageInfo {
+                    image_view: *image_view,
+                    image_layout: ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    sampler: *sampler,
+                };
+                writes.image_infos.push(info);
+                writes.inner.push(ash::vk::WriteDescriptorSet {
+                    dst_set,
+                    dst_binding: 6,
+                    dst_array_element: offset,
+                    descriptor_type: ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                    descriptor_count: 1,
+                    p_image_info: &writes.image_infos[0],
+                    ..Default::default()
+                });
+            } else {
+                // slots 5-20 → regular textures: binding 5
                 let offset = slot;
                 let info = ash::vk::DescriptorImageInfo {
                     image_view: *image_view,
@@ -920,24 +1095,6 @@ fn map_slot_to_descriptor_writes(
                 writes.inner.push(ash::vk::WriteDescriptorSet {
                     dst_set,
                     dst_binding: 5,
-                    dst_array_element: offset,
-                    descriptor_type: ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                    descriptor_count: 1,
-                    p_image_info: &writes.image_infos[0],
-                    ..Default::default()
-                });
-            } else {
-                // slots 4-19 → regular textures: binding 4, array offset = slot - 4
-                let offset = slot;
-                let info = ash::vk::DescriptorImageInfo {
-                    image_view: *image_view,
-                    image_layout: ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                    sampler: *sampler,
-                };
-                writes.image_infos.push(info);
-                writes.inner.push(ash::vk::WriteDescriptorSet {
-                    dst_set,
-                    dst_binding: 4,
                     dst_array_element: offset,
                     descriptor_type: ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                     descriptor_count: 1,
@@ -965,4 +1122,17 @@ fn map_slot_to_descriptor_writes(
         }
     }
     writes
+}
+
+impl<B: GpuBackend> Drop for Drawable<B> {
+    fn drop(&mut self) {
+        // if TypeId::of::<B>() == TypeId::of::<VulkanBackend>() {
+        //     let vtx_buffer = &mut self.vertex_buffer as *mut _ as *mut VulkanBuffer;
+        //     unsafe { &(*vtx_buffer) }.destroy();
+        //     let idx_buffer = &mut self.index_buffer as *mut _ as *mut VulkanBuffer;
+        //     unsafe { &(*idx_buffer) }.destroy();
+        //     let model_buffer = &mut self.model_buffer as *mut _ as *mut VulkanBuffer;
+        //     unsafe { &(*model_buffer) }.destroy();
+        // }
+    }
 }

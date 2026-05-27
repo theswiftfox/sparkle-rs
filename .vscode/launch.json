@@ -5,26 +5,17 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug",
-            "type": "cppvsdbg",
+            "name": "Debug executable 'sparkle'",
+            "type": "lldb",
             "request": "launch",
-            "program": "${workspaceFolder}/target/debug/sparkle.exe",
-            "args": [],
-            "stopAtEntry": false,
-            "cwd": "${workspaceFolder}",
-            "environment": [],
-            "externalConsole": false
+            "cargo": {
+                "args": [
+                    "run",
+                    "--bin=sparkle",
+                    "--package=sparkle"
+                ]
+            },
+            "args": []
         },
-        {
-            "name": "Rel",
-            "type": "cppvsdbg",
-            "request": "launch",
-            "program": "${workspaceFolder}/target/release/sparkle.exe",
-            "args": [],
-            "stopAtEntry": false,
-            "cwd": "${workspaceFolder}",
-            "environment": [],
-            "externalConsole": true
-        }
     ]
 }

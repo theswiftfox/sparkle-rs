@@ -17,8 +17,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .targets(&[target_desc])
                 .search_paths(&search_paths)
                 .options(
-                    &slang::CompilerOptions::default()
+                    &&slang::CompilerOptions::default()
                         .optimization(slang::OptimizationLevel::High)
+                        .debug_information(slang::DebugInfoLevel::Standard)
                         .vulkan_use_entry_point_name(true),
                 ),
         )

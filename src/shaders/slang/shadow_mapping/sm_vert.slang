@@ -1,9 +1,9 @@
 struct VS_IN {
 	float3 pos			: POSITION;
-	float3 normal		: NORMAL;
-	float3 tangent		: TANGENT0;
-	float3 bitangent	: BITANGENT0;
-	float2 txCoord 		: TEXCOORD0;
+	// float3 normal		: NORMAL;
+	// float3 tangent		: TANGENT0;
+	// float3 bitangent	: BITANGENT0;
+	// float2 txCoord 		: TEXCOORD0;
 	// float2 txCoordNM	: TEXCOORD1;
 };
 
@@ -11,7 +11,7 @@ struct VS_OUT {
 	float4 pos			: SV_Position;
 };
 
-[[vk::binding(0, 0)]] cbuffer FrameConsts : register(b0) {
+[[vk::binding(4, 0)]] cbuffer FrameConsts : register(b0) {
 	float4x4 lightSpaceMatrix;
 };
 

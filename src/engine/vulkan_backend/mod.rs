@@ -1,6 +1,8 @@
 use std::{
+    cell::Cell,
     ffi::{CStr, c_void},
     ops::Deref,
+    rc::Rc,
     sync::Arc,
 };
 
@@ -94,6 +96,11 @@ struct CurrentFrame {
     render_sem: ash::vk::Semaphore,
 }
 
+struct CommandPool {
+    render_pool: ash::vk::CommandPool,
+    short_lived: ash::vk::CommandPool,
+}
+
 pub struct VulkanBackend {
     window: Arc<winit::window::Window>,
     context: ash::Entry,
@@ -105,13 +112,18 @@ pub struct VulkanBackend {
     queue: ash::vk::Queue,
     graphics_pipeline: ash::vk::Pipeline,
     pipeline_layout: ash::vk::PipelineLayout,
-    command_pool: ash::vk::CommandPool,
+    command_pool: CommandPool,
     command_buffers: [ash::vk::CommandBuffer; FRAMES_IN_FLIGHT as usize],
     descriptors: Descriptors,
     sync_objects: SyncObjects,
     khr_sync: ash::khr::synchronization2::Device,
     frame_idx: usize,
     current_frame: Option<CurrentFrame>,
+    current_pass_targets: Vec<(
+        ash::vk::Image,
+        ash::vk::ImageAspectFlags,
+        Rc<Cell<ash::vk::ImageLayout>>,
+    )>,
 }
 
 pub fn initialize(
@@ -152,7 +164,7 @@ pub fn initialize(
 
     let command_pool = create_command_pool(&logical_device)?;
 
-    let command_buffers = create_command_buffers(&logical_device, command_pool)?
+    let command_buffers = create_command_buffers(&logical_device, command_pool.render_pool)?
         .try_into()
         .map_err(|_| {
             GpuError::new(
@@ -202,6 +214,7 @@ pub fn initialize(
         khr_sync,
         frame_idx: 0,
         current_frame: None,
+        current_pass_targets: Vec::new(),
     })
 }
 
@@ -284,29 +297,36 @@ fn create_descriptor_set_layout(
         stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
         ..Default::default()
     };
-    let texture_binding = ash::vk::DescriptorSetLayoutBinding {
+    let shadow_map_binding = ash::vk::DescriptorSetLayoutBinding {
         binding: 4,
+        descriptor_type: ash::vk::DescriptorType::UNIFORM_BUFFER,
+        descriptor_count: 1,
+        stage_flags: ash::vk::ShaderStageFlags::VERTEX,
+        ..Default::default()
+    };
+    let texture_binding = ash::vk::DescriptorSetLayoutBinding {
+        binding: 5,
         descriptor_type: ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
         descriptor_count: 16,
         stage_flags: ash::vk::ShaderStageFlags::VERTEX | ash::vk::ShaderStageFlags::FRAGMENT,
         ..Default::default()
     };
     let cubemap_binding = ash::vk::DescriptorSetLayoutBinding {
-        binding: 5,
+        binding: 6,
         descriptor_type: ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
         descriptor_count: 4,
         stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
         ..Default::default()
     };
     let comparison_img_binding = ash::vk::DescriptorSetLayoutBinding {
-        binding: 6,
+        binding: 7,
         descriptor_type: ash::vk::DescriptorType::SAMPLED_IMAGE,
         descriptor_count: 4,
         stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
         ..Default::default()
     };
     let comparison_sampler_binding = ash::vk::DescriptorSetLayoutBinding {
-        binding: 7,
+        binding: 8,
         descriptor_type: ash::vk::DescriptorType::SAMPLER,
         descriptor_count: 4,
         stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
@@ -317,6 +337,7 @@ fn create_descriptor_set_layout(
         per_instance_binding,
         pixel_data_binding,
         light_data_binding,
+        shadow_map_binding,
         texture_binding,
         cubemap_binding,
         comparison_img_binding,
@@ -354,7 +375,7 @@ fn create_descriptor_set_layout(
 fn create_descriptor_pool(device: &LogicalDevice) -> Result<ash::vk::DescriptorPool, GpuError> {
     let uniform_pool_info = ash::vk::DescriptorPoolSize {
         ty: ash::vk::DescriptorType::UNIFORM_BUFFER,
-        descriptor_count: 8,
+        descriptor_count: 10,
     };
     let cis_pool_info = ash::vk::DescriptorPoolSize {
         ty: ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
@@ -411,18 +432,36 @@ fn create_command_buffers(
     Ok(command_buffers)
 }
 
-fn create_command_pool(device: &LogicalDevice) -> Result<ash::vk::CommandPool, GpuError> {
+fn create_command_pool(device: &LogicalDevice) -> Result<CommandPool, GpuError> {
     let pool_create_info = ash::vk::CommandPoolCreateInfo {
         flags: ash::vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
         queue_family_index: device.graphics_queue_index,
         ..Default::default()
     };
 
-    unsafe { device.create_command_pool(&pool_create_info, None) }.map_err(|e| {
+    let graphics = unsafe { device.create_command_pool(&pool_create_info, None) }.map_err(|e| {
         GpuError::new(
             format!("Failed to create command pool: {e:?}"),
             GpuErrorKind::ResourceCreation,
         )
+    })?;
+
+    let pool_create_info = ash::vk::CommandPoolCreateInfo {
+        flags: ash::vk::CommandPoolCreateFlags::TRANSIENT,
+        queue_family_index: device.graphics_queue_index,
+        ..Default::default()
+    };
+    let short_lived =
+        unsafe { device.create_command_pool(&pool_create_info, None) }.map_err(|e| {
+            GpuError::new(
+                format!("Failed to create command pool: {e:?}"),
+                GpuErrorKind::ResourceCreation,
+            )
+        })?;
+
+    Ok(CommandPool {
+        render_pool: graphics,
+        short_lived,
     })
 }
 
@@ -784,6 +823,8 @@ fn create_swapchain_and_depth_buffer(
             view_type: ash::vk::ImageViewType::TYPE_2D,
             compare_enabled: false,
             id: 0,
+            device_handle: logical_device.device.clone(),
+            current_layout: Rc::new(Cell::new(ash::vk::ImageLayout::UNDEFINED)),
         })
         .collect::<Vec<_>>();
 
@@ -1144,12 +1185,19 @@ fn create_instance(
         .map(|ext| ext.as_ptr())
         .collect::<Vec<_>>();
 
+    let validation_features = ash::vk::ValidationFeaturesEXT {
+        p_enabled_validation_features: &ash::vk::ValidationFeatureEnableEXT::GPU_ASSISTED,
+        enabled_validation_feature_count: 1,
+        ..Default::default()
+    };
+
     let instance_info = ash::vk::InstanceCreateInfo {
         p_application_info: &app_info,
         enabled_extension_count: instance_exts.len() as u32,
         pp_enabled_extension_names: instance_exts_ptr.as_ptr(),
         enabled_layer_count: validation_layers.len() as u32,
         pp_enabled_layer_names: validation_layers_ptr.as_ptr(),
+        p_next: &validation_features as *const _ as *const _,
         ..Default::default()
     };
 

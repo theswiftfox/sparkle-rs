@@ -297,6 +297,7 @@ impl<B: GpuBackend> SsaoPass<B> {
 
         let uniforms_buf = backend.create_buffer(
             &BufferDesc {
+                label: "SSAO Uniforms".into(),
                 usage: BufferUsage::Uniform,
                 size: std::mem::size_of::<SsaoUniforms>(),
             },
@@ -537,6 +538,7 @@ impl<B: GpuBackend> ForwardPass<B> {
 
         let vertex_uniforms_buf = backend.create_buffer(
             &BufferDesc {
+                label: "Forward ViewProj Uniforms".into(),
                 usage: BufferUsage::Uniform,
                 size: std::mem::size_of::<ViewProjUniforms>(),
             },
@@ -544,6 +546,7 @@ impl<B: GpuBackend> ForwardPass<B> {
         )?;
         let pixel_uniforms_buf = backend.create_buffer(
             &BufferDesc {
+                label: "Forward Camera Uniforms".into(),
                 usage: BufferUsage::Uniform,
                 size: std::mem::size_of::<CameraUniforms>(),
             },
@@ -551,6 +554,7 @@ impl<B: GpuBackend> ForwardPass<B> {
         )?;
         let light_buf = backend.create_buffer(
             &BufferDesc {
+                label: "Forward Light Uniforms".into(),
                 usage: BufferUsage::Uniform,
                 size: std::mem::size_of::<GpuLight>(),
             },
@@ -751,6 +755,7 @@ impl<B: GpuBackend> DeferredPassPre<B> {
 
         let vertex_uniforms_buf = backend.create_buffer(
             &BufferDesc {
+                label: "Deferred Pre ViewProj Uniforms".into(),
                 usage: BufferUsage::Uniform,
                 size: std::mem::size_of::<ViewProjUniforms>(),
             },
@@ -758,6 +763,7 @@ impl<B: GpuBackend> DeferredPassPre<B> {
         )?;
         let pixel_uniforms_buf = backend.create_buffer(
             &BufferDesc {
+                label: "Deferred Pre NearFar Uniforms".into(),
                 usage: BufferUsage::Uniform,
                 size: std::mem::size_of::<NearFarUniforms>(),
             },
@@ -925,6 +931,7 @@ impl<B: GpuBackend> DeferredPassLight<B> {
 
         let pixel_uniforms_buf = backend.create_buffer(
             &BufferDesc {
+                label: "Deferred Light Camera Uniforms".into(),
                 usage: BufferUsage::Uniform,
                 size: std::mem::size_of::<CameraUniforms>(),
             },
@@ -932,6 +939,7 @@ impl<B: GpuBackend> DeferredPassLight<B> {
         )?;
         let light_buf = backend.create_buffer(
             &BufferDesc {
+                label: "Deferred Light `Light` Uniforms".into(),
                 usage: BufferUsage::Uniform,
                 size: std::mem::size_of::<GpuLight>(),
             },
@@ -997,7 +1005,7 @@ impl<B: GpuBackend> ShadowPass<B> {
     /// Bind pipeline and vertex uniform buffer for drawing.
     pub fn prepare_draw(&self, backend: &mut B) {
         backend.set_pipeline(&self.pipeline);
-        backend.bind_uniform(ShaderStage::Vertex, 0, &self.vertex_uniforms_buf);
+        backend.bind_uniform(ShaderStage::Vertex, 4, &self.vertex_uniforms_buf);
     }
 
     /// Switch pipeline based on whether the drawable is double-sided.
@@ -1008,7 +1016,7 @@ impl<B: GpuBackend> ShadowPass<B> {
         } else {
             backend.set_pipeline(&self.pipeline);
         }
-        backend.bind_uniform(ShaderStage::Vertex, 0, &self.vertex_uniforms_buf);
+        backend.bind_uniform(ShaderStage::Vertex, 4, &self.vertex_uniforms_buf);
     }
 
     /// Upload light-space matrix to GPU.
@@ -1070,6 +1078,7 @@ impl<B: GpuBackend> ShadowPass<B> {
 
         let vertex_uniforms_buf = backend.create_buffer(
             &BufferDesc {
+                label: "ShadowPass LightSpace Uniforms".into(),
                 usage: BufferUsage::Uniform,
                 size: std::mem::size_of::<LightSpaceUniforms>(),
             },
@@ -1236,6 +1245,7 @@ impl<B: GpuBackend> SkyBoxPass<B> {
 
         let vertex_uniforms_buf = backend.create_buffer(
             &BufferDesc {
+                label: "Skybox ViewProj Uniforms".into(),
                 usage: BufferUsage::Uniform,
                 size: std::mem::size_of::<ViewProjUniforms>(),
             },

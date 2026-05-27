@@ -5,3 +5,7 @@ edition = "2024"
 
 [dependencies]
 shader-slang = "0.1.0"
+
+[features]
+default = []
+debug-info = []

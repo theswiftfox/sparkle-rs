@@ -11,21 +11,38 @@ pub struct VulkanBuffer {
     pub mapped: *mut c_void,
     pub flags: ash::vk::MemoryPropertyFlags,
     pub size: ash::vk::DeviceSize,
+    device_handle: ash::Device,
 }
 
 impl VulkanBuffer {
-    pub fn destroy(device: &ash::Device, buffer: VulkanBuffer) {
-        let VulkanBuffer { buffer, memory, .. } = buffer;
+    pub fn destroy(&self) {
+        let VulkanBuffer {
+            buffer,
+            memory,
+            device_handle,
+            ..
+        } = self;
 
         unsafe {
-            if buffer != ash::vk::Buffer::null() {
-                device.destroy_buffer(buffer, None);
+            if *buffer != ash::vk::Buffer::null() {
+                device_handle.destroy_buffer(*buffer, None);
             }
-            if memory != ash::vk::DeviceMemory::null() {
-                device.free_memory(memory, None);
+            if *memory != ash::vk::DeviceMemory::null() {
+                device_handle.free_memory(*memory, None);
             }
         }
     }
+
+    pub fn is_host_mapable(&self) -> bool {
+        host_mappable(self.flags)
+    }
+}
+
+fn host_mappable(flags: ash::vk::MemoryPropertyFlags) -> bool {
+    flags
+        & (ash::vk::MemoryPropertyFlags::HOST_VISIBLE | ash::vk::MemoryPropertyFlags::HOST_COHERENT)
+        == (ash::vk::MemoryPropertyFlags::HOST_VISIBLE
+            | ash::vk::MemoryPropertyFlags::HOST_COHERENT)
 }
 
 impl VulkanBackend {
@@ -43,9 +60,9 @@ impl VulkanBackend {
             usage.into(),
             properties,
         )?;
-        let mapped = if properties.contains(ash::vk::MemoryPropertyFlags::HOST_VISIBLE)
-            && properties.contains(ash::vk::MemoryPropertyFlags::HOST_COHERENT)
-        {
+        let has_host_flags = host_mappable(properties);
+        // println!("Creating buffer with usage {usage:?}. Host mapped: {has_host_flags}");
+        let mapped = if has_host_flags {
             unsafe {
                 self.device
                     .map_memory(memory, 0, size, ash::vk::MemoryMapFlags::empty())
@@ -66,6 +83,7 @@ impl VulkanBackend {
             mapped,
             flags: properties,
             size,
+            device_handle: self.device.device.clone(),
         })
     }
 }

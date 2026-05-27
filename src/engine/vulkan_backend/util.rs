@@ -5,9 +5,7 @@ use wgpu::rwh::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHa
 use crate::engine::{
     backend::{CompareFunc, CullMode, GpuError, GpuErrorKind, LoadOp, VertexFormat, ViewportDesc},
     settings::SyncMode,
-    vulkan_backend::{
-        Swapchain, VulkanBackend, create_swapchain_and_depth_buffer, texture::VulkanTexture,
-    },
+    vulkan_backend::{Swapchain, VulkanBackend, create_swapchain_and_depth_buffer},
 };
 
 pub fn get_instance_extensions(
@@ -447,16 +445,24 @@ impl VulkanBackend {
         }
         // find memory type where the type_filter bit is set to 1
         for i in 0..mem_props.memory_properties.memory_type_count {
-            if type_filter & (1 << i) != 0u32
-                && mem_props.memory_properties.memory_types[i as usize].property_flags == properties
-            {
+            let props = mem_props.memory_properties.memory_types[i as usize];
+            let flags_match = type_filter & (1 << i) != 0;
+            let props_contained = props.property_flags & properties == properties;
+
+            // println!(
+            //     "Checking memory at [{i}]:
+            //         flags: {:?} [{:?}]
+            //         filter_flags_check: {}",
+            //     props.property_flags, props_contained, flags_match,
+            // );
+            if flags_match && props_contained {
                 return Ok(i);
             }
         }
 
         Err(GpuError {
             message: format!(
-                "No suitable memory type found for filter {type_filter} and flags {properties:?}"
+                "No suitable memory type found for filter {type_filter:#034b} and flags {properties:?}"
             ),
             kind: GpuErrorKind::ResourceCreation,
         })
@@ -464,7 +470,7 @@ impl VulkanBackend {
 
     pub fn begin_single_time_commands(&self) -> Result<ash::vk::CommandBuffer, GpuError> {
         let alloc_info = ash::vk::CommandBufferAllocateInfo {
-            command_pool: self.command_pool,
+            command_pool: self.command_pool.short_lived,
             command_buffer_count: 1,
             level: ash::vk::CommandBufferLevel::PRIMARY,
             ..Default::default()
@@ -538,7 +544,13 @@ impl VulkanBackend {
                 format!("Failed to wait for completeion of one time command buffer: {e:?}"),
                 GpuErrorKind::Other,
             )
-        })
+        })?;
+
+        unsafe {
+            self.device
+                .free_command_buffers(self.command_pool.short_lived, &[command_buffer]);
+        }
+        Ok(())
     }
 
     pub fn copy_buffer_cmd(
@@ -689,10 +701,10 @@ impl VulkanBackend {
             fn_ptr.destroy_swapchain(swapchain, None);
         }
         for image in swapchain_images {
-            VulkanTexture::destroy(&self.device, image);
+            image.destroy();
         }
         for depth in new_depth {
-            VulkanTexture::destroy(&self.device, depth);
+            depth.destroy();
         }
 
         Ok(())

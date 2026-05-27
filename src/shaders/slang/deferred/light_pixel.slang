@@ -7,12 +7,16 @@ struct PS_OUT {
 };
 
 [[vk::binding(5, 0)]]
-Sampler2D<uint4> gbuffer[] : register(t0);
+Sampler2D<float4> gbuffer[] : register(t0);
 
 [[vk::binding(2, 0)]] cbuffer ubo : register(b2) {
 	float3 cameraPos;
 	uint ssao;
 }
+
+static const uint POS_WORLD = 0;
+static const uint POS_NORMALS_ROUGHNESS = 1;
+static const uint POS_ALBEDO_METALLIC = 2;
 
 [shader("pixel")]
 PS_OUT main(float4 screenPos : SV_Position) {
@@ -20,15 +24,13 @@ PS_OUT main(float4 screenPos : SV_Position) {
 
 	int3 texPos = int3((int2)screenPos.xy, 0);
 
-    // unpack
-	uint4 pos_pack = gbuffer[4].Load(texPos);
-    uint4 alb_pack = gbuffer[5].Load(texPos);
+	float4 pos = gbuffer[POS_WORLD].Load(texPos);
+	float4 normal_roughness = gbuffer[POS_NORMALS_ROUGHNESS].Load(texPos);
+	float4 albedo_metallic = gbuffer[POS_ALBEDO_METALLIC].Load(texPos);
 
-	float4 pos = float4(f16tof32(pos_pack.r >> 16), f16tof32(pos_pack.r), f16tof32(pos_pack.g >> 16), f16tof32(pos_pack.g));
-	float3 normal = float3(f16tof32(pos_pack.b >> 16), f16tof32(pos_pack.b), f16tof32(pos_pack.a >> 16)) * 2.0 - 1.0;
-
-    float4 albedo = float4(f16tof32(alb_pack.r >> 16), f16tof32(alb_pack.r), f16tof32(alb_pack.g >> 16), f16tof32(alb_pack.g));
-	float2 mr = float2(f16tof32(alb_pack.b >> 16), f16tof32(alb_pack.b));
+	float3 normal = normal_roughness.xyz;
+	float3 albedo = albedo_metallic.rgb;
+	float2 mr = float2(albedo_metallic.w, normal_roughness.w);
 
 	if (length(pos.rgb) == 0.0) {
 		output.color = 0.0;

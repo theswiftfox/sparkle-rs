@@ -5,7 +5,7 @@
 struct LightSpaceUniforms {
     light_space_matrix: mat4x4<f32>,
 };
-@group(0) @binding(0) var<uniform> frame: LightSpaceUniforms;
+@group(0) @binding(4) var<uniform> frame: LightSpaceUniforms;
 
 // Group 1: per-object uniforms (model matrix)
 struct ModelUniforms {

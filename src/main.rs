@@ -93,15 +93,10 @@ fn run_vulkan() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         fps.update(0.016, &mut renderer.settings_mut());
-        renderer.update_state(0.016, &mut fps);
-
-        if let Err(e) = renderer.render_scene(&fps) {
+        if let Err(e) = renderer.update(0.016, &mut fps) {
             eprintln!("Render error: {}", e);
+            window.request_quit();
             return;
-        }
-
-        if let Err(e) = renderer.finish_frame() {
-            eprintln!("Frame finish error: {}", e);
         }
 
         // if let Err(e) = vk_backend.draw() {

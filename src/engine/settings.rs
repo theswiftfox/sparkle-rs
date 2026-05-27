@@ -102,7 +102,7 @@ impl std::default::Default for Settings {
             camera_fov: 70.0,
             view_distance: 1000.0,
             gpu_validation: false,
-            ssao: true,
+            ssao: false,
             sync_mode: SyncMode::VSync,
         }
     }

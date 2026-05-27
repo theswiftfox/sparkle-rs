@@ -217,6 +217,7 @@ pub struct RenderTargetDesc {
 
 /// Description for creating a GPU buffer.
 pub struct BufferDesc {
+    pub label: String,
     pub usage: BufferUsage,
     pub size: usize,
 }
@@ -397,7 +398,7 @@ pub trait GpuBuffer: Sized {
 /// backend.end_frame()?;
 /// backend.present()?;
 /// ```
-pub trait GpuBackend: Sized {
+pub trait GpuBackend: Sized + 'static {
     type Texture: GpuTexture;
     type RenderTarget: GpuRenderTarget;
     type Buffer: GpuBuffer;
@@ -581,10 +582,10 @@ static DRAWABLE_ID: AtomicUsize = AtomicUsize::new(0);
 /// a material, and a transparency classification.
 pub struct Drawable<B: GpuBackend> {
     id: usize,
-    vertex_buffer: B::Buffer,
-    index_buffer: B::Buffer,
+    pub(crate) vertex_buffer: B::Buffer,
+    pub(crate) index_buffer: B::Buffer,
     index_count: u32,
-    model_buffer: B::Buffer,
+    pub(crate) model_buffer: B::Buffer,
     material: Material<B>,
     object_type: ObjType,
     double_sided: bool,
@@ -605,6 +606,7 @@ impl<B: GpuBackend> Drawable<B> {
 
         let vertex_buffer = backend.create_buffer(
             &BufferDesc {
+                label: "Drawable Vertex Buffer".into(),
                 usage: BufferUsage::Vertex,
                 size: vertex_data.len(),
             },
@@ -613,6 +615,7 @@ impl<B: GpuBackend> Drawable<B> {
 
         let index_buffer = backend.create_buffer(
             &BufferDesc {
+                label: "Drawable Index Buffer".into(),
                 usage: BufferUsage::Index,
                 size: index_data.len(),
             },
@@ -623,6 +626,7 @@ impl<B: GpuBackend> Drawable<B> {
         let model_data = as_bytes(std::slice::from_ref(&identity));
         let model_buffer = backend.create_buffer(
             &BufferDesc {
+                label: "Drawable Model Uniform".into(),
                 usage: BufferUsage::Uniform,
                 size: model_data.len(),
             },
@@ -733,6 +737,7 @@ impl<B: GpuBackend> ScreenQuad<B> {
 
         let vertex_buffer = backend.create_buffer(
             &BufferDesc {
+                label: "Screen Quad Vertex Buffer".into(),
                 usage: BufferUsage::Vertex,
                 size: vertex_data.len(),
             },
@@ -741,6 +746,7 @@ impl<B: GpuBackend> ScreenQuad<B> {
 
         let index_buffer = backend.create_buffer(
             &BufferDesc {
+                label: "Screen Quad Index Buffer".into(),
                 usage: BufferUsage::Index,
                 size: index_data.len(),
             },

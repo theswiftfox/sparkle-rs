@@ -7,8 +7,9 @@ struct PS_IN {
 };
 
 struct PS_OUT {
-	uint4 position : SV_Target0;
-	uint4 albedo : SV_Target1;
+	float4 position 		: SV_Target0;
+	float4 normal_roughness	: SV_Target1;
+	float4 albedo_metallic	: SV_Target2;
 };
 
 [[vk::binding(2, 0)]] cbuffer ubo : register(b2) {
@@ -43,31 +44,16 @@ PS_OUT main(PS_IN input) {
 
     // move into world space
 	float3 normal_out = normalize(mul(normal, input.TBN));
-
-    normal_out = normal_out * 0.5 + 0.5;
-
-	uint4 phalf = f32tof16(pos);
-	output.position.r = (phalf.r << 16) | phalf.g;
-	output.position.g = (phalf.b << 16) | phalf.a;
-	uint3 nhalf = f32tof16(normal_out);
-
-    output.position.b = (nhalf.r << 16) | nhalf.g;
-	output.position.a = (nhalf.b << 16) | 0; //nhalf_surf.r;
-
-	uint4 chalf = f32tof16(albedo);
-	output.albedo.r = (chalf.r << 16) | chalf.g;
-	output.albedo.g = (chalf.b << 16) | chalf.a;
-
+    // normal_out = normal_out * 0.5 + 0.5;
 
 	float2 mr = textures[POS_METALLIC_ROUGHNESS].Sample(input.txCoord).gb;
 
 	float roughness = mr.g;
 	float metallic = mr.r;
-	uint rhalf = f32tof16(roughness);
-	uint mhalf = f32tof16(metallic);
 
-	output.albedo.b = (mhalf << 16) | rhalf;
-	output.albedo.a = 0;
+	output.position = input.worldPos;
+	output.normal_roughness = float4(normal_out, roughness);
+	output.albedo_metallic = float4(albedo.rgb, metallic);
 
 	return output;
 }

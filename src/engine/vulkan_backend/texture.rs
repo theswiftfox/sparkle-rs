@@ -1,3 +1,4 @@
+use std::{cell::Cell, rc::Rc};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::engine::{
@@ -22,6 +23,8 @@ pub struct VulkanTexture {
     pub view_type: ash::vk::ImageViewType,
     pub compare_enabled: bool,
     pub id: usize,
+    pub device_handle: ash::Device,
+    pub current_layout: Rc<Cell<ash::vk::ImageLayout>>,
 }
 
 impl GpuTexture for VulkanTexture {
@@ -43,27 +46,28 @@ impl GpuTexture for VulkanTexture {
 }
 
 impl VulkanTexture {
-    pub fn destroy(device: &ash::Device, texture: VulkanTexture) {
+    pub fn destroy(self) {
         let VulkanTexture {
             image,
             mem,
             image_view,
             sampler,
+            device_handle,
             ..
-        } = texture;
+        } = self;
 
         unsafe {
             if sampler != ash::vk::Sampler::null() {
-                device.destroy_sampler(sampler, None);
+                device_handle.destroy_sampler(sampler, None);
             }
             if image_view != ash::vk::ImageView::null() {
-                device.destroy_image_view(image_view, None);
+                device_handle.destroy_image_view(image_view, None);
             }
             if image != ash::vk::Image::null() {
-                device.destroy_image(image, None);
+                device_handle.destroy_image(image, None);
             }
             if mem != ash::vk::DeviceMemory::null() {
-                device.free_memory(mem, None);
+                device_handle.free_memory(mem, None);
             }
         }
     }
@@ -144,6 +148,8 @@ impl VulkanBackend {
             id: TEXTURE_ID.fetch_add(1, Ordering::SeqCst),
             compare_enabled: info.sampler.compare.is_some(),
             view_type: view_create_info.view_type,
+            device_handle: device.clone(),
+            current_layout: Rc::new(Cell::new(ash::vk::ImageLayout::UNDEFINED)),
         })
     }
 
@@ -187,6 +193,7 @@ impl VulkanBackend {
             tex_image,
             ash::vk::ImageLayout::UNDEFINED,
             ash::vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            ash::vk::ImageAspectFlags::COLOR,
             1,
         )?;
         self.copy_buffer_to_image(
@@ -204,6 +211,7 @@ impl VulkanBackend {
             tex_image,
             ash::vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            ash::vk::ImageAspectFlags::COLOR,
             1,
         )?;
         self.end_single_time_commands(command_buff)?;
@@ -250,6 +258,8 @@ impl VulkanBackend {
             id: TEXTURE_ID.fetch_add(1, Ordering::SeqCst),
             compare_enabled: info.sampler.compare.is_some(),
             view_type: view_create_info.view_type,
+            device_handle: self.device.device.clone(),
+            current_layout: Rc::new(Cell::new(ash::vk::ImageLayout::UNDEFINED)),
         })
     }
 
@@ -351,6 +361,7 @@ impl VulkanBackend {
             cubemap,
             ash::vk::ImageLayout::UNDEFINED,
             ash::vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            ash::vk::ImageAspectFlags::COLOR,
             6,
         )?;
         let mut face_offset = 0u64;
@@ -364,6 +375,7 @@ impl VulkanBackend {
             cubemap,
             ash::vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            ash::vk::ImageAspectFlags::COLOR,
             6,
         )?;
         self.end_single_time_commands(cmd)?;
@@ -409,6 +421,8 @@ impl VulkanBackend {
             id: TEXTURE_ID.fetch_add(1, Ordering::SeqCst),
             compare_enabled: sampler_desc.compare.is_some(),
             view_type: ash::vk::ImageViewType::CUBE,
+            device_handle: self.device.device.clone(),
+            current_layout: Rc::new(Cell::new(ash::vk::ImageLayout::UNDEFINED)),
         })
     }
 
@@ -493,6 +507,8 @@ impl VulkanBackend {
             id: TEXTURE_ID.fetch_add(1, Ordering::SeqCst),
             compare_enabled,
             view_type: view_create_info.view_type,
+            device_handle: self.device.device.clone(),
+            current_layout: Rc::new(Cell::new(ash::vk::ImageLayout::UNDEFINED)),
         })
     }
 }

@@ -14,7 +14,7 @@ struct PS_OUT {
 	float4 color : SV_Target;
 };
 
-[[vk::binding(4, 0)]]
+[[vk::binding(5, 0)]]
 Sampler2D<float4> textures[] : register(t0);
 
 static const uint POS_ALBEDO = 0;

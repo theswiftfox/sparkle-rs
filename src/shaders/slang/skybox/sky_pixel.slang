@@ -3,8 +3,10 @@ struct PS_IN {
     float3 texCoord: TEXCOORD;
 };
 
-[[vk::binding(7, 0)]]
+[[vk::binding(6, 0)]]
 SamplerCube<float4> skybox : register(t0);
+// TextureCube<float4> skybox: register(t0);
+// SamplerState linearSampler;
 
 [shader("pixel")]
 float4 main(PS_IN input) : SV_TARGET {

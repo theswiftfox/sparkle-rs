@@ -193,6 +193,7 @@ impl VulkanBackend {
             image,
             ash::vk::ImageLayout::UNDEFINED,
             ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            ash::vk::ImageAspectFlags::COLOR,
             1,
         )?;
 
@@ -268,6 +269,7 @@ impl VulkanBackend {
             image,
             ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             ash::vk::ImageLayout::PRESENT_SRC_KHR,
+            ash::vk::ImageAspectFlags::COLOR,
             1,
         )?;
 
@@ -285,6 +287,7 @@ impl VulkanBackend {
         image: ash::vk::Image,
         old_layout: ash::vk::ImageLayout,
         new_layout: ash::vk::ImageLayout,
+        aspect: ash::vk::ImageAspectFlags,
         layer_count: u32,
     ) -> Result<(), GpuError> {
         let mut src_access_mask = ash::vk::AccessFlags2::empty();
@@ -292,10 +295,14 @@ impl VulkanBackend {
         let mut src_stage_mask = ash::vk::PipelineStageFlags2::empty();
         let mut dst_stage_mask = ash::vk::PipelineStageFlags2::empty();
 
+        if old_layout == new_layout {
+            return Ok(());
+        }
+
         match (old_layout, new_layout) {
             (ash::vk::ImageLayout::UNDEFINED, ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL) => {
                 dst_access_mask = ash::vk::AccessFlags2::COLOR_ATTACHMENT_WRITE;
-                src_stage_mask = ash::vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT;
+                src_stage_mask = ash::vk::PipelineStageFlags2::TOP_OF_PIPE;
                 dst_stage_mask = ash::vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT;
             }
             (
@@ -323,6 +330,64 @@ impl VulkanBackend {
                 src_stage_mask = ash::vk::PipelineStageFlags2::TRANSFER;
                 dst_stage_mask = ash::vk::PipelineStageFlags2::FRAGMENT_SHADER;
             }
+            (ash::vk::ImageLayout::UNDEFINED, ash::vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL) => {
+                dst_access_mask = ash::vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE;
+
+                src_stage_mask = ash::vk::PipelineStageFlags2::TOP_OF_PIPE;
+                dst_stage_mask = ash::vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
+                    | ash::vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS;
+            }
+            (
+                ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            ) => {
+                src_access_mask = ash::vk::AccessFlags2::COLOR_ATTACHMENT_WRITE;
+                dst_access_mask = ash::vk::AccessFlags2::SHADER_READ;
+                src_stage_mask = ash::vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT;
+                dst_stage_mask = ash::vk::PipelineStageFlags2::FRAGMENT_SHADER;
+            }
+            (
+                ash::vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
+                ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            ) => {
+                src_access_mask = ash::vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE;
+                dst_access_mask = ash::vk::AccessFlags2::SHADER_READ;
+                src_stage_mask = ash::vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
+                    | ash::vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS;
+                dst_stage_mask = ash::vk::PipelineStageFlags2::FRAGMENT_SHADER;
+            }
+            (
+                ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            ) => {
+                src_access_mask = ash::vk::AccessFlags2::SHADER_READ;
+                dst_access_mask = ash::vk::AccessFlags2::COLOR_ATTACHMENT_WRITE;
+                src_stage_mask = ash::vk::PipelineStageFlags2::FRAGMENT_SHADER;
+                dst_stage_mask = ash::vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT;
+            }
+            (
+                ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                ash::vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
+            ) => {
+                src_access_mask = ash::vk::AccessFlags2::SHADER_READ;
+                dst_access_mask = ash::vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE;
+                src_stage_mask = ash::vk::PipelineStageFlags2::FRAGMENT_SHADER;
+                dst_stage_mask = ash::vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
+                    | ash::vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS;
+            }
+            (
+                ash::vk::ImageLayout::PRESENT_SRC_KHR,
+                ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            ) => {
+                dst_access_mask = ash::vk::AccessFlags2::COLOR_ATTACHMENT_WRITE;
+                src_stage_mask = ash::vk::PipelineStageFlags2::TOP_OF_PIPE;
+                dst_stage_mask = ash::vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT;
+            }
+            (ash::vk::ImageLayout::UNDEFINED, ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL) => {
+                dst_access_mask = ash::vk::AccessFlags2::SHADER_READ;
+                src_stage_mask = ash::vk::PipelineStageFlags2::TOP_OF_PIPE;
+                dst_stage_mask = ash::vk::PipelineStageFlags2::FRAGMENT_SHADER;
+            }
             _ => {
                 return Err(GpuError::new(
                     format!("Invalid layout transition {old_layout:?} -> {new_layout:?}"),
@@ -342,7 +407,7 @@ impl VulkanBackend {
             dst_queue_family_index: ash::vk::QUEUE_FAMILY_IGNORED,
             image,
             subresource_range: ash::vk::ImageSubresourceRange {
-                aspect_mask: ash::vk::ImageAspectFlags::COLOR,
+                aspect_mask: aspect,
                 base_mip_level: 0,
                 level_count: 1,
                 base_array_layer: 0,

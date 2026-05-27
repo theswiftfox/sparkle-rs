@@ -251,14 +251,14 @@ impl<B: GpuBackend> Renderer<B> {
         let backbuffer_format = self.backend.backbuffer().format();
 
         let Shaders {
-            deferred_pre: deferred_pre_wgsl,
-            ssao: ssao_wgsl,
-            ssao_blur: ssao_blur_wgsl,
+            deferred_pre,
+            ssao,
+            ssao_blur,
             shadow: shadow_wgsl,
-            deferred_light: deferred_light_wgsl,
-            forward: forward_wgsl,
-            output: output_wgsl,
-            skybox: skybox_wgsl,
+            deferred_light,
+            forward,
+            output,
+            skybox,
         } = self.backend.load_shaders();
 
         println!("Initializing draw programs...");
@@ -267,18 +267,20 @@ impl<B: GpuBackend> Renderer<B> {
         self.deferred_program_pre = Some(DeferredPassPre::create(
             &self.backend,
             resolution,
-            &deferred_pre_wgsl,
+            &deferred_pre,
         )?);
         println!("  deferred_pre: OK");
 
         // SSAO pass (ambient occlusion)
-        self.ssao_program = Some(SsaoPass::create(
-            &self.backend,
-            resolution,
-            &ssao_wgsl,
-            &ssao_blur_wgsl,
-        )?);
-        println!("  ssao: OK");
+        if self.settings.ssao {
+            self.ssao_program = Some(SsaoPass::create(
+                &self.backend,
+                resolution,
+                &ssao,
+                &ssao_blur,
+            )?);
+            println!("  ssao: OK");
+        }
 
         // Shadow mapping pass
         self.shadow_program = Some(ShadowPass::create(&self.backend, &shadow_wgsl)?);
@@ -288,22 +290,18 @@ impl<B: GpuBackend> Renderer<B> {
         self.deferred_program_light = Some(DeferredPassLight::create(
             &self.backend,
             resolution,
-            &deferred_light_wgsl,
+            &deferred_light,
         )?);
         println!("  deferred_light: OK");
 
         // Forward pass (transparent objects)
-        self.forward_program = Some(ForwardPass::create(
-            &self.backend,
-            resolution,
-            &forward_wgsl,
-        )?);
+        self.forward_program = Some(ForwardPass::create(&self.backend, resolution, &forward)?);
         println!("  forward: OK");
 
         // Output composite pass
         self.output_program = Some(OutputPass::create(
             &self.backend,
-            &output_wgsl,
+            &output,
             backbuffer_format,
         )?);
         println!("  output: OK");
@@ -311,7 +309,7 @@ impl<B: GpuBackend> Renderer<B> {
         // Skybox pass
         self.skybox_program = Some(SkyBoxPass::create(
             &self.backend,
-            &skybox_wgsl,
+            &skybox,
             backbuffer_format,
         )?);
         println!("  skybox: OK");
@@ -735,7 +733,6 @@ impl<B: GpuBackend> Renderer<B> {
             self.backend.end_render_pass();
             self.backend.end_event();
         }
-
         // SSAO (ambient occlusion)
         if let Some(ref ssao) = self.ssao_program {
             if self.settings.ssao {
@@ -976,11 +973,11 @@ impl<B: GpuBackend> Renderer<B> {
             output.prepare_draw(&mut self.backend);
             if let Some(ref dl) = self.deferred_program_light {
                 self.backend
-                    .bind_render_target_as_texture(0, dl.render_target());
+                    .bind_render_target_as_texture(7, dl.render_target());
             }
             if let Some(ref fwd) = self.forward_program {
                 self.backend
-                    .bind_render_target_as_texture(1, fwd.render_target());
+                    .bind_render_target_as_texture(8, fwd.render_target());
             }
             self.screen_quad.draw(&mut self.backend);
             self.backend.end_render_pass();
