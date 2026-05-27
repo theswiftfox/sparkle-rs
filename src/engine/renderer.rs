@@ -931,11 +931,11 @@ impl<B: GpuBackend> Renderer<B> {
                     shadow.set_light_space(light.light_proj);
                     shadow.update(&self.backend);
 
-                    // Update shared shadow UBO (binding 3)
+                    // Update shared shadow UBO (binding 3) via command buffer
                     let ls = LightSpaceUniforms {
                         light_space_matrix: light.light_proj,
                     };
-                    self.backend.update_buffer(
+                    self.backend.cmd_update_buffer(
                         &self.ubo_shadow_light_space,
                         as_bytes(std::slice::from_ref(&ls)),
                     );
@@ -982,9 +982,9 @@ impl<B: GpuBackend> Renderer<B> {
                 def_light.set_light(&light);
                 def_light.update(&self.backend);
 
-                // Update shared light UBO (binding 2)
+                // Update shared light UBO (binding 2) via command buffer
                 let gpu_light = GpuLight::from_light(&light);
-                self.backend.update_buffer(
+                self.backend.cmd_update_buffer(
                     &self.ubo_light_data,
                     as_bytes(std::slice::from_ref(&gpu_light)),
                 );
@@ -1042,7 +1042,7 @@ impl<B: GpuBackend> Renderer<B> {
 
                 // Update shared light UBO (binding 2) for forward pass too
                 let gpu_light = GpuLight::from_light(&light);
-                self.backend.update_buffer(
+                self.backend.cmd_update_buffer(
                     &self.ubo_light_data,
                     as_bytes(std::slice::from_ref(&gpu_light)),
                 );

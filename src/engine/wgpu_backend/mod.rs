@@ -903,6 +903,10 @@ impl GpuBackend for WgpuBackend {
         self.queue.write_buffer(&buffer.buffer, 0, data);
     }
 
+    fn cmd_update_buffer(&mut self, buffer: &Self::Buffer, data: &[u8]) {
+        self.queue.write_buffer(&buffer.buffer, 0, data);
+    }
+
     // --- Frame lifecycle ---
 
     fn begin_frame(&mut self) -> Result<(), GpuError> {

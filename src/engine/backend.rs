@@ -440,8 +440,15 @@ pub trait GpuBackend: Sized + 'static {
 
     // --- Buffer operations ---
 
-    /// Upload new data to a uniform/dynamic buffer.
+    /// Upload new data to a uniform/dynamic buffer (CPU memcpy, immediate).
     fn update_buffer(&self, buffer: &Self::Buffer, data: &[u8]);
+
+    /// Record a buffer update into the current command buffer.
+    /// Data is baked into the command stream so each pass sees correct values
+    /// even when the same buffer is updated multiple times per frame.
+    /// Includes a pipeline barrier (transfer write -> uniform read).
+    /// Must be called outside a render pass.
+    fn cmd_update_buffer(&mut self, buffer: &Self::Buffer, data: &[u8]);
 
     // --- Frame lifecycle ---
 

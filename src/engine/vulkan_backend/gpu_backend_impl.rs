@@ -433,6 +433,37 @@ impl GpuBackend for VulkanBackend {
         }
     }
 
+    fn cmd_update_buffer(&mut self, buffer: &Self::Buffer, data: &[u8]) {
+        let Some(CurrentFrame { command_buffer, .. }) = self.current_frame else {
+            return;
+        };
+        let size = (data.len() as ash::vk::DeviceSize).min(buffer.size);
+        unsafe {
+            self.device
+                .cmd_update_buffer(command_buffer, buffer.buffer, 0, &data[..size as usize]);
+        }
+        let barrier = ash::vk::BufferMemoryBarrier {
+            src_access_mask: ash::vk::AccessFlags::TRANSFER_WRITE,
+            dst_access_mask: ash::vk::AccessFlags::UNIFORM_READ,
+            buffer: buffer.buffer,
+            offset: 0,
+            size: ash::vk::WHOLE_SIZE,
+            ..Default::default()
+        };
+        unsafe {
+            self.device.cmd_pipeline_barrier(
+                command_buffer,
+                ash::vk::PipelineStageFlags::TRANSFER,
+                ash::vk::PipelineStageFlags::VERTEX_SHADER
+                    | ash::vk::PipelineStageFlags::FRAGMENT_SHADER,
+                ash::vk::DependencyFlags::empty(),
+                &[],
+                &[barrier],
+                &[],
+            );
+        }
+    }
+
     fn begin_frame(&mut self) -> Result<(), GpuError> {
         let frame_idx = self.frame_idx;
         self.frame_idx = (self.frame_idx + 1) % (FRAMES_IN_FLIGHT as usize);
