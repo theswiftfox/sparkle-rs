@@ -437,30 +437,51 @@ impl GpuBackend for VulkanBackend {
         let Some(CurrentFrame { command_buffer, .. }) = self.current_frame else {
             return;
         };
-        let size = (data.len() as ash::vk::DeviceSize).min(buffer.size);
-        unsafe {
-            self.device
-                .cmd_update_buffer(command_buffer, buffer.buffer, 0, &data[..size as usize]);
-        }
-        let barrier = ash::vk::BufferMemoryBarrier {
-            src_access_mask: ash::vk::AccessFlags::TRANSFER_WRITE,
-            dst_access_mask: ash::vk::AccessFlags::UNIFORM_READ,
+        // Pre-barrier: ensure any prior reads finish before the CLEAR write
+        let pre_barrier = ash::vk::BufferMemoryBarrier2 {
+            src_stage_mask: ash::vk::PipelineStageFlags2::ALL_GRAPHICS
+                | ash::vk::PipelineStageFlags2::CLEAR,
+            dst_stage_mask: ash::vk::PipelineStageFlags2::CLEAR,
+            src_access_mask: ash::vk::AccessFlags2::SHADER_READ
+                | ash::vk::AccessFlags2::TRANSFER_WRITE,
+            dst_access_mask: ash::vk::AccessFlags2::TRANSFER_WRITE,
             buffer: buffer.buffer,
             offset: 0,
             size: ash::vk::WHOLE_SIZE,
             ..Default::default()
         };
+        let pre_info = ash::vk::DependencyInfo {
+            buffer_memory_barrier_count: 1,
+            p_buffer_memory_barriers: &pre_barrier,
+            ..Default::default()
+        };
         unsafe {
-            self.device.cmd_pipeline_barrier(
-                command_buffer,
-                ash::vk::PipelineStageFlags::TRANSFER,
-                ash::vk::PipelineStageFlags::VERTEX_SHADER
-                    | ash::vk::PipelineStageFlags::FRAGMENT_SHADER,
-                ash::vk::DependencyFlags::empty(),
-                &[],
-                &[barrier],
-                &[],
-            );
+            self.device.cmd_pipeline_barrier2(command_buffer, &pre_info);
+        }
+        let size = (data.len() as ash::vk::DeviceSize).min(buffer.size);
+        unsafe {
+            self.device
+                .cmd_update_buffer(command_buffer, buffer.buffer, 0, &data[..size as usize]);
+        }
+        // Post-barrier: ensure the CLEAR write completes before subsequent reads
+        let barrier = ash::vk::BufferMemoryBarrier2 {
+            src_stage_mask: ash::vk::PipelineStageFlags2::CLEAR, // was TRANSFER
+            dst_stage_mask: ash::vk::PipelineStageFlags2::VERTEX_SHADER
+                | ash::vk::PipelineStageFlags2::FRAGMENT_SHADER,
+            src_access_mask: ash::vk::AccessFlags2::TRANSFER_WRITE,
+            dst_access_mask: ash::vk::AccessFlags2::UNIFORM_READ,
+            buffer: buffer.buffer,
+            offset: 0,
+            size: ash::vk::WHOLE_SIZE,
+            ..Default::default()
+        };
+        let info = ash::vk::DependencyInfo {
+            buffer_memory_barrier_count: 1,
+            p_buffer_memory_barriers: &barrier,
+            ..Default::default()
+        };
+        unsafe {
+            self.device.cmd_pipeline_barrier2(command_buffer, &info);
         }
     }
 

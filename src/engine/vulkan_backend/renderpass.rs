@@ -301,8 +301,10 @@ impl VulkanBackend {
 
         match (old_layout, new_layout) {
             (ash::vk::ImageLayout::UNDEFINED, ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL) => {
-                dst_access_mask = ash::vk::AccessFlags2::COLOR_ATTACHMENT_WRITE;
-                src_stage_mask = ash::vk::PipelineStageFlags2::TOP_OF_PIPE;
+                dst_access_mask = ash::vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
+                    | ash::vk::AccessFlags2::COLOR_ATTACHMENT_READ;
+                src_stage_mask = ash::vk::PipelineStageFlags2::TOP_OF_PIPE
+                    | ash::vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT;
                 dst_stage_mask = ash::vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT;
             }
             (
@@ -331,7 +333,8 @@ impl VulkanBackend {
                 dst_stage_mask = ash::vk::PipelineStageFlags2::FRAGMENT_SHADER;
             }
             (ash::vk::ImageLayout::UNDEFINED, ash::vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL) => {
-                dst_access_mask = ash::vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE;
+                dst_access_mask = ash::vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE
+                    | ash::vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ;
 
                 src_stage_mask = ash::vk::PipelineStageFlags2::TOP_OF_PIPE;
                 dst_stage_mask = ash::vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
@@ -350,7 +353,8 @@ impl VulkanBackend {
                 ash::vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
                 ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             ) => {
-                src_access_mask = ash::vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE;
+                src_access_mask = ash::vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE
+                    | ash::vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ;
                 dst_access_mask = ash::vk::AccessFlags2::SHADER_READ;
                 src_stage_mask = ash::vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
                     | ash::vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS;
@@ -361,16 +365,18 @@ impl VulkanBackend {
                 ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             ) => {
                 src_access_mask = ash::vk::AccessFlags2::SHADER_READ;
-                dst_access_mask = ash::vk::AccessFlags2::COLOR_ATTACHMENT_WRITE;
+                dst_access_mask = ash::vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
+                    | ash::vk::AccessFlags2::COLOR_ATTACHMENT_READ;
                 src_stage_mask = ash::vk::PipelineStageFlags2::FRAGMENT_SHADER;
-                dst_stage_mask = ash::vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT;
+                dst_stage_mask = ash::vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT
             }
             (
                 ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 ash::vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
             ) => {
                 src_access_mask = ash::vk::AccessFlags2::SHADER_READ;
-                dst_access_mask = ash::vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE;
+                dst_access_mask = ash::vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE
+                    | ash::vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ;
                 src_stage_mask = ash::vk::PipelineStageFlags2::FRAGMENT_SHADER;
                 dst_stage_mask = ash::vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
                     | ash::vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS;
@@ -379,8 +385,10 @@ impl VulkanBackend {
                 ash::vk::ImageLayout::PRESENT_SRC_KHR,
                 ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             ) => {
-                dst_access_mask = ash::vk::AccessFlags2::COLOR_ATTACHMENT_WRITE;
-                src_stage_mask = ash::vk::PipelineStageFlags2::TOP_OF_PIPE;
+                dst_access_mask = ash::vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
+                    | ash::vk::AccessFlags2::COLOR_ATTACHMENT_READ;
+                src_stage_mask = ash::vk::PipelineStageFlags2::TOP_OF_PIPE
+                    | ash::vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT;
                 dst_stage_mask = ash::vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT;
             }
             (ash::vk::ImageLayout::UNDEFINED, ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL) => {
