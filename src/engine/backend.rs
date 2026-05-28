@@ -507,10 +507,10 @@ pub trait GpuBackend: Sized + 'static {
     // --- Accessors ---
 
     /// Get the current frame's backbuffer render target.
-    fn backbuffer(&self) -> &Self::RenderTarget;
+    fn backbuffer(&self) -> Self::RenderTarget;
 
     /// Get the main depth buffer render target.
-    fn main_depth_target(&self) -> &Self::RenderTarget;
+    fn main_depth_target(&self) -> Self::RenderTarget;
 
     /// Get the default full-window viewport.
     fn default_viewport(&self) -> ViewportDesc;

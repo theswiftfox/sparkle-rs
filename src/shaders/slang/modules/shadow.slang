@@ -1,7 +1,7 @@
 import light;
 
-[[vk::binding(8, 0)]] Texture2D txShadowMap : register(t6);
-[[vk::binding(9, 0)]] SamplerComparisonState samplerShadowMap : register(s7);
+[[vk::binding(8, 0)]] Texture2D txShadowMaps[] : register(t6);
+[[vk::binding(9, 0)]] SamplerComparisonState samplerShadowMaps[] : register(s7);
 
 // from https://www.geeks3d.com/20100628/3d-programming-ready-to-use-64-sample-poisson-disc/
 static float2 poissonDisk[64] = {
@@ -29,7 +29,7 @@ float random(float3 seed3, int i) {
     return frac(sin(dot_product) * 43758.5453);
 }
 
-public float shadow(float4 pos, float3 normal) {
+public float shadow(float4 pos, float3 normal, uint shadowIdx) {
 	float4 fragmentLS = mul(light0.lightSpace, pos);
 	float3 lightDir = light0.type == AMBIENT ?
 		-light0.position : light0.position;
@@ -47,7 +47,7 @@ public float shadow(float4 pos, float3 normal) {
 			float bias = max(0.005 * (1.0 - dot(normal, lightDir)), 0.0005);
 			for (int i = 0; i < sampleCount; i++) {
 				int index = i;
-				visibility += clamp(txShadowMap.SampleCmpLevelZero(samplerShadowMap, shadowTexCoords + poissonDisk[index]/1000.0, pixelDepth /*- bias*/), 0.0, 1.0) / float(sampleCount);
+				visibility += clamp(txShadowMaps[shadowIdx].SampleCmpLevelZero(samplerShadowMaps[shadowIdx], shadowTexCoords + poissonDisk[index]/1000.0, pixelDepth /*- bias*/), 0.0, 1.0) / float(sampleCount);
 			}
 	}
 	return visibility;

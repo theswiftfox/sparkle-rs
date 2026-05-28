@@ -5,6 +5,12 @@ use crate::engine::{
     vulkan_backend::VulkanBackend,
 };
 
+pub struct PerFrameCopy {
+    pub buffer: ash::vk::Buffer,
+    pub memory: ash::vk::DeviceMemory,
+    pub mapped: *mut c_void,
+}
+
 pub struct VulkanBuffer {
     pub buffer: ash::vk::Buffer,
     pub memory: ash::vk::DeviceMemory,
@@ -12,6 +18,7 @@ pub struct VulkanBuffer {
     pub flags: ash::vk::MemoryPropertyFlags,
     pub size: ash::vk::DeviceSize,
     device_handle: ash::Device,
+    pub per_frame_copies: Option<Vec<PerFrameCopy>>,
 }
 
 impl VulkanBuffer {
@@ -31,14 +38,53 @@ impl VulkanBuffer {
                 device_handle.free_memory(*memory, None);
             }
         }
+
+        if let Some(copies) = &self.per_frame_copies {
+            for copy in copies {
+                unsafe {
+                    if copy.buffer != ash::vk::Buffer::null() {
+                        device_handle.destroy_buffer(copy.buffer, None);
+                    }
+                    if copy.memory != ash::vk::DeviceMemory::null() {
+                        device_handle.free_memory(copy.memory, None);
+                    }
+                }
+            }
+        }
     }
 
     pub fn is_host_mapable(&self) -> bool {
         host_mappable(self.flags)
     }
+
+    pub fn frame_buffer(&self, frame_idx: usize) -> ash::vk::Buffer {
+        match &self.per_frame_copies {
+            None => self.buffer,
+            Some(copies) => {
+                if frame_idx == 0 {
+                    self.buffer
+                } else {
+                    copies[frame_idx - 1].buffer
+                }
+            }
+        }
+    }
+
+    pub fn frame_mapped(&self, frame_idx: usize) -> *mut c_void {
+        match &self.per_frame_copies {
+            None => self.mapped,
+            Some(copies) => {
+                if frame_idx == 0 {
+                    self.mapped
+                } else {
+                    copies[frame_idx - 1].mapped
+                }
+            }
+        }
+    }
 }
 
-fn host_mappable(flags: ash::vk::MemoryPropertyFlags) -> bool {
+pub fn host_mappable(flags: ash::vk::MemoryPropertyFlags) -> bool {
     flags
         & (ash::vk::MemoryPropertyFlags::HOST_VISIBLE | ash::vk::MemoryPropertyFlags::HOST_COHERENT)
         == (ash::vk::MemoryPropertyFlags::HOST_VISIBLE
@@ -84,6 +130,7 @@ impl VulkanBackend {
             flags: properties,
             size,
             device_handle: self.device.device.clone(),
+            per_frame_copies: None,
         })
     }
 }

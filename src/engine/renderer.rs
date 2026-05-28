@@ -925,7 +925,6 @@ impl<B: GpuBackend> Renderer<B> {
 
                 // Shadow pass
                 if let Some(ref mut shadow) = self.shadow_program {
-                    let shadow_map = shadow.shadow_map().clone();
                     let shadow_vp = *shadow.viewport();
 
                     shadow.set_light_space(light.light_proj);
@@ -945,7 +944,7 @@ impl<B: GpuBackend> Renderer<B> {
                         label: "shadow",
                         color_targets: vec![],
                         depth_target: Some(DepthAttachment {
-                            target: &shadow_map,
+                            target: &shadow.shadow_map(),
                             load_op: LoadOp::Clear,
                             clear_depth: 1.0,
                             write_enabled: true,

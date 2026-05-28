@@ -28,6 +28,7 @@ Sampler2D<float4> textures[] : register(t0);
 	uint tex1;
 	uint tex2;
 	uint tex3;
+	uint tex4;
 };
 
 [shader("pixel")]
@@ -48,7 +49,7 @@ PS_OUT main(PS_IN input) {
 	float3 color = 0.0;
 	if (light0.type != AMBIENT) {
 		float3 F0 = lerp(float3(0.04, 0.04, 0.04), alb.rgb, mr.r);
-		float shadowed = shadow(input.worldPos, N);
+		float shadowed = shadow(input.worldPos, N, tex3);
 		color += BRDF(
 			cameraPos,
 			N,

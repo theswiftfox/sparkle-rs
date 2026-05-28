@@ -1,5 +1,5 @@
-use std::{cell::Cell, rc::Rc};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{cell::Cell, rc::Rc};
 
 use crate::engine::{
     backend::{
@@ -605,6 +605,26 @@ impl VulkanBackend {
             device_handle: self.device.device.clone(),
             current_layout: Rc::new(Cell::new(ash::vk::ImageLayout::UNDEFINED)),
         })
+    }
+}
+
+impl std::fmt::Debug for VulkanTexture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VulkanTexture")
+            .field("image", &self.image)
+            .field("mem", &self.mem)
+            .field("image_view", &self.image_view)
+            .field("sampler", &self.sampler)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("format", &self.format)
+            .field("view_type", &self.view_type)
+            .field("compare_enabled", &self.compare_enabled)
+            .field("id", &self.id)
+            .field("descriptor_index", &self.descriptor_index)
+            .field("device_handle", &self.device_handle.handle())
+            .field("current_layout", &self.current_layout)
+            .finish()
     }
 }
 

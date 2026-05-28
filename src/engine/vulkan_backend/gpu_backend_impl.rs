@@ -4,9 +4,10 @@ use std::ffi::CString;
 
 use crate::engine::{
     backend::{
-        BlendMode, BufferDesc, BufferUsage, Drawable, GpuBackend, GpuError, GpuErrorKind,
-        PipelineDesc, RenderPassDesc, RenderTargetDesc, SamplerDesc, ShaderStage, Shaders,
-        TextureDesc, TextureFormat, ViewportDesc,
+        AddressMode, BlendMode, BufferDesc, BufferUsage, CompareFunc, Drawable, FilterMode,
+        GpuBackend, GpuError, GpuErrorKind, GpuRenderTarget, GpuTexture, PipelineDesc,
+        RenderPassDesc, RenderTargetDesc, SamplerDesc, ShaderStage, Shaders, TextureDesc,
+        TextureFormat, ViewportDesc,
     },
     vulkan_backend::{
         CurrentFrame, FRAMES_IN_FLIGHT, PushConstants, SHADER_ENTRY_POINT, VulkanBackend,
@@ -21,10 +22,65 @@ pub struct Shader {
     code: &'static [u8],
 }
 
+#[derive(Clone)]
+pub enum RenderTarget {
+    Texture(TextureRenderTarget),
+    Swapchain(VulkanTexture),
+}
+
+impl RenderTarget {
+    fn get_target(&self, idx: usize) -> &VulkanTexture {
+        match self {
+            RenderTarget::Swapchain(tex) => tex,
+            RenderTarget::Texture(tex) => &tex.targets[idx],
+        }
+    }
+}
+
+impl GpuTexture for RenderTarget {
+    fn width(&self) -> u32 {
+        match self {
+            RenderTarget::Texture(tex) => tex.width,
+            RenderTarget::Swapchain(tex) => tex.width,
+        }
+    }
+
+    fn height(&self) -> u32 {
+        match self {
+            RenderTarget::Texture(tex) => tex.height,
+            RenderTarget::Swapchain(tex) => tex.height,
+        }
+    }
+
+    fn format(&self) -> TextureFormat {
+        match self {
+            RenderTarget::Texture(tex) => tex.format,
+            RenderTarget::Swapchain(tex) => tex.format,
+        }
+    }
+
+    fn id(&self) -> usize {
+        match self {
+            RenderTarget::Texture(tex) => tex.id,
+            RenderTarget::Swapchain(tex) => tex.id,
+        }
+    }
+}
+#[derive(Clone)]
+pub struct TextureRenderTarget {
+    width: u32,
+    height: u32,
+    format: TextureFormat,
+    id: usize,
+    targets: [VulkanTexture; FRAMES_IN_FLIGHT as usize],
+}
+
+impl GpuRenderTarget for RenderTarget {}
+
 impl GpuBackend for VulkanBackend {
     type Texture = VulkanTexture;
 
-    type RenderTarget = VulkanTexture;
+    type RenderTarget = RenderTarget;
 
     type Buffer = VulkanBuffer;
 
@@ -148,7 +204,52 @@ impl GpuBackend for VulkanBackend {
                 | ash::vk::MemoryPropertyFlags::HOST_VISIBLE
                 | ash::vk::MemoryPropertyFlags::HOST_COHERENT;
         }
-        let buffer = self.create_vulkan_buffer(desc.size as u64, usage, flags)?;
+        let mut buffer = self.create_vulkan_buffer(desc.size as u64, usage, flags)?;
+
+        // Per-frame copies prevent GPU data hazards when multiple in-flight
+        // frames write to the same uniform buffer via cmd_update_buffer.
+        if desc.usage == BufferUsage::Uniform {
+            let copies: Result<
+                Vec<crate::engine::vulkan_backend::buffer::PerFrameCopy>,
+                GpuError,
+            > = (1..FRAMES_IN_FLIGHT)
+                .map(|_| {
+                    let (buf, mem) = VulkanBackend::create_buffer(
+                        &self.instance,
+                        &self.device,
+                        self.phys_device,
+                        desc.size as u64,
+                        usage,
+                        flags,
+                    )?;
+                    let mapped = if crate::engine::vulkan_backend::buffer::host_mappable(flags) {
+                        unsafe {
+                            self.device.map_memory(
+                                mem,
+                                0,
+                                desc.size as u64,
+                                ash::vk::MemoryMapFlags::empty(),
+                            )
+                        }
+                        .map_err(|e| {
+                            GpuError::new(
+                                format!("Failed to map per-frame copy memory: {e:?}"),
+                                GpuErrorKind::ResourceUpdate,
+                            )
+                        })?
+                    } else {
+                        std::ptr::null_mut()
+                    };
+                    Ok(crate::engine::vulkan_backend::buffer::PerFrameCopy {
+                        buffer: buf,
+                        memory: mem,
+                        mapped,
+                    })
+                })
+                .collect();
+            buffer.per_frame_copies = Some(copies?);
+        }
+
         if let Some(data) = data {
             self.update_buffer(&buffer, data);
         }
@@ -159,10 +260,28 @@ impl GpuBackend for VulkanBackend {
         &self,
         desc: &RenderTargetDesc,
     ) -> Result<Self::RenderTarget, GpuError> {
-        let mut rt =
-            Self::create_vk_render_target(&self.instance, &self.device, self.phys_device, desc)?;
-        self.register_texture(&mut rt);
-        Ok(rt)
+        let targets: [VulkanTexture; FRAMES_IN_FLIGHT as usize] = (0..FRAMES_IN_FLIGHT)
+            .map(|_| {
+                let mut rt = Self::create_vk_render_target(
+                    &self.instance,
+                    &self.device,
+                    self.phys_device,
+                    desc,
+                )?;
+                self.register_texture(&mut rt);
+                Ok(rt)
+            })
+            .collect::<Result<Vec<_>, GpuError>>()?
+            .try_into()
+            .expect("Vec of size FRAMES_IN_FLIGHT has to fit in array");
+
+        Ok(RenderTarget::Texture(TextureRenderTarget {
+            width: desc.width,
+            height: desc.height,
+            format: desc.format,
+            id: targets[0].id,
+            targets,
+        }))
     }
 
     fn create_pipeline(
@@ -399,9 +518,26 @@ impl GpuBackend for VulkanBackend {
                             .mapped
                             .copy_from(data.as_ptr() as *const _, size as usize);
                     }
+                    // Also write to per-frame copies
+                    if let Some(copies) = &buffer.per_frame_copies {
+                        for copy in copies {
+                            if copy.mapped != std::ptr::null_mut() {
+                                unsafe {
+                                    copy.mapped
+                                        .copy_from(data.as_ptr() as *const _, size as usize);
+                                }
+                            }
+                        }
+                    }
                     Ok(())
                 } else {
-                    backend.copy_to_buffer(buffer.memory, data.as_ptr() as *const _, size)
+                    backend.copy_to_buffer(buffer.memory, data.as_ptr() as *const _, size)?;
+                    if let Some(copies) = &buffer.per_frame_copies {
+                        for copy in copies {
+                            backend.copy_to_buffer(copy.memory, data.as_ptr() as *const _, size)?;
+                        }
+                    }
+                    Ok(())
                 }
             } else {
                 let command_buffer = backend.begin_single_time_commands().unwrap();
@@ -419,6 +555,11 @@ impl GpuBackend for VulkanBackend {
                     .copy_to_buffer(m_staging, data.as_ptr() as *const _, size)
                     .unwrap();
                 backend.copy_buffer(command_buffer, b_staging, 0, buffer.buffer, 0, size);
+                if let Some(copies) = &buffer.per_frame_copies {
+                    for copy in copies {
+                        backend.copy_buffer(command_buffer, b_staging, 0, copy.buffer, 0, size);
+                    }
+                }
                 backend.end_single_time_commands(command_buffer).unwrap();
 
                 unsafe {
@@ -434,9 +575,10 @@ impl GpuBackend for VulkanBackend {
     }
 
     fn cmd_update_buffer(&mut self, buffer: &Self::Buffer, data: &[u8]) {
-        let Some(CurrentFrame { command_buffer, .. }) = self.current_frame else {
+        let Some(CurrentFrame { idx, command_buffer, .. }) = self.current_frame else {
             return;
         };
+        let target = buffer.frame_buffer(idx);
         // Pre-barrier: ensure any prior reads finish before the CLEAR write
         let pre_barrier = ash::vk::BufferMemoryBarrier2 {
             src_stage_mask: ash::vk::PipelineStageFlags2::ALL_GRAPHICS
@@ -445,7 +587,7 @@ impl GpuBackend for VulkanBackend {
             src_access_mask: ash::vk::AccessFlags2::SHADER_READ
                 | ash::vk::AccessFlags2::TRANSFER_WRITE,
             dst_access_mask: ash::vk::AccessFlags2::TRANSFER_WRITE,
-            buffer: buffer.buffer,
+            buffer: target,
             offset: 0,
             size: ash::vk::WHOLE_SIZE,
             ..Default::default()
@@ -461,16 +603,16 @@ impl GpuBackend for VulkanBackend {
         let size = (data.len() as ash::vk::DeviceSize).min(buffer.size);
         unsafe {
             self.device
-                .cmd_update_buffer(command_buffer, buffer.buffer, 0, &data[..size as usize]);
+                .cmd_update_buffer(command_buffer, target, 0, &data[..size as usize]);
         }
         // Post-barrier: ensure the CLEAR write completes before subsequent reads
         let barrier = ash::vk::BufferMemoryBarrier2 {
-            src_stage_mask: ash::vk::PipelineStageFlags2::CLEAR, // was TRANSFER
+            src_stage_mask: ash::vk::PipelineStageFlags2::CLEAR,
             dst_stage_mask: ash::vk::PipelineStageFlags2::VERTEX_SHADER
                 | ash::vk::PipelineStageFlags2::FRAGMENT_SHADER,
             src_access_mask: ash::vk::AccessFlags2::TRANSFER_WRITE,
             dst_access_mask: ash::vk::AccessFlags2::UNIFORM_READ,
-            buffer: buffer.buffer,
+            buffer: target,
             offset: 0,
             size: ash::vk::WHOLE_SIZE,
             ..Default::default()
@@ -753,16 +895,22 @@ impl GpuBackend for VulkanBackend {
     }
 
     fn begin_render_pass(&mut self, desc: &RenderPassDesc<Self>) {
-        let Some(CurrentFrame { command_buffer, .. }) = self.current_frame else {
+        let Some(CurrentFrame {
+            idx,
+            command_buffer,
+            ..
+        }) = self.current_frame
+        else {
             println!("Cannot begin render pass if no frame was started..");
             return;
         };
 
-        desc.color_targets.iter().for_each(|target| {
-            let old_layout = target.target.current_layout.get();
+        desc.color_targets.iter().for_each(|attachment| {
+            let target = attachment.target.get_target(idx);
+            let old_layout = target.current_layout.get();
             self.transition_image_layout(
                 command_buffer,
-                target.target.image,
+                target.image,
                 old_layout,
                 ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                 ash::vk::ImageAspectFlags::COLOR,
@@ -770,15 +918,15 @@ impl GpuBackend for VulkanBackend {
             )
             .unwrap();
             target
-                .target
                 .current_layout
                 .set(ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
         });
-        if let Some(depth_target) = &desc.depth_target {
-            let old_layout = depth_target.target.current_layout.get();
+        if let Some(depth_attachment) = &desc.depth_target {
+            let depth_target = depth_attachment.target.get_target(idx);
+            let old_layout = depth_target.current_layout.get();
             self.transition_image_layout(
                 command_buffer,
-                depth_target.target.image,
+                depth_target.image,
                 old_layout,
                 ash::vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
                 ash::vk::ImageAspectFlags::DEPTH,
@@ -786,7 +934,6 @@ impl GpuBackend for VulkanBackend {
             )
             .unwrap();
             depth_target
-                .target
                 .current_layout
                 .set(ash::vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL);
         }
@@ -794,16 +941,18 @@ impl GpuBackend for VulkanBackend {
         let color_attachments = desc
             .color_targets
             .iter()
-            .map(|target| {
+            .map(|attachment| {
+                let target = attachment.target.get_target(idx);
+
                 let clear_value = ash::vk::ClearValue {
                     color: ash::vk::ClearColorValue {
-                        float32: target.clear_color,
+                        float32: attachment.clear_color,
                     },
                 };
-                let load_op: ash::vk::AttachmentLoadOp = target.load_op.into();
+                let load_op: ash::vk::AttachmentLoadOp = attachment.load_op.into();
                 let store_op = ash::vk::AttachmentStoreOp::STORE;
 
-                let image_view = target.target.image_view;
+                let image_view = target.image_view;
                 ash::vk::RenderingAttachmentInfo {
                     image_view,
                     image_layout: ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
@@ -815,17 +964,19 @@ impl GpuBackend for VulkanBackend {
             })
             .collect::<Vec<_>>();
 
-        let (depth_target, depth_target_count) = if let Some(target) = &desc.depth_target {
+        let (depth_attachment, depth_target_count) = if let Some(attachment) = &desc.depth_target {
+            let target = attachment.target.get_target(idx);
+
             let clear_value = ash::vk::ClearValue {
                 depth_stencil: ash::vk::ClearDepthStencilValue {
-                    depth: target.clear_depth,
+                    depth: attachment.clear_depth,
                     stencil: 1,
                 },
             };
-            let load_op: ash::vk::AttachmentLoadOp = target.load_op.into();
+            let load_op: ash::vk::AttachmentLoadOp = attachment.load_op.into();
             let store_op = ash::vk::AttachmentStoreOp::STORE;
 
-            let image_view = target.target.image_view;
+            let image_view = target.image_view;
             (
                 ash::vk::RenderingAttachmentInfo {
                     image_view,
@@ -842,42 +993,50 @@ impl GpuBackend for VulkanBackend {
         };
 
         let depth_target_ptr = if depth_target_count == 1 {
-            &depth_target
+            &depth_attachment
         } else {
             std::ptr::null()
         };
 
         self.current_pass_targets.clear();
-        for target in &desc.color_targets {
+        for attachment in &desc.color_targets {
+            let target = attachment.target.get_target(idx);
+
             self.current_pass_targets.push((
-                target.target.image,
+                target.image,
                 ash::vk::ImageAspectFlags::COLOR,
-                target.target.current_layout.clone(),
+                target.current_layout.clone(),
             ));
         }
-        if let Some(depth) = &desc.depth_target {
+        if let Some(attachment) = &desc.depth_target {
+            let target = attachment.target.get_target(idx);
+
             self.current_pass_targets.push((
-                depth.target.image,
+                target.image,
                 ash::vk::ImageAspectFlags::DEPTH,
-                depth.target.current_layout.clone(),
+                target.current_layout.clone(),
             ));
         }
 
         let area = if let Some(att) = desc.color_targets.first() {
+            let target = att.target.get_target(idx);
+
             ash::vk::Rect2D {
                 offset: ash::vk::Offset2D { x: 0i32, y: 0i32 },
                 extent: ash::vk::Extent2D {
-                    width: att.target.width,
-                    height: att.target.height,
+                    width: target.width,
+                    height: target.height,
                 },
                 ..Default::default()
             }
         } else if let Some(att) = &desc.depth_target {
+            let target = att.target.get_target(idx);
+
             ash::vk::Rect2D {
                 offset: ash::vk::Offset2D { x: 0i32, y: 0i32 },
                 extent: ash::vk::Extent2D {
-                    width: att.target.width,
-                    height: att.target.height,
+                    width: target.width,
+                    height: target.height,
                 },
                 ..Default::default()
             }
@@ -994,6 +1153,12 @@ impl GpuBackend for VulkanBackend {
     }
 
     fn bind_render_target_as_texture(&mut self, slot: u32, target: &Self::RenderTarget) {
+        let Some(CurrentFrame { idx, .. }) = self.current_frame else {
+            eprintln!("Cannot bind attachment outside of frame");
+            return;
+        };
+        let target = target.get_target(idx);
+
         if target.descriptor_index == u32::MAX {
             return;
         }
@@ -1002,6 +1167,7 @@ impl GpuBackend for VulkanBackend {
             1 => self.pending_push.tex1 = target.descriptor_index,
             2 => self.pending_push.tex2 = target.descriptor_index,
             3 => self.pending_push.tex3 = target.descriptor_index,
+            4 => self.pending_push.tex4 = target.descriptor_index,
             _ => {}
         }
     }
@@ -1012,22 +1178,64 @@ impl GpuBackend for VulkanBackend {
     }
 
     fn bind_ubo_to_descriptor(&self, binding: u32, buffer: &Self::Buffer) {
-        let info = ash::vk::DescriptorBufferInfo {
-            buffer: buffer.buffer,
-            offset: 0,
-            range: ash::vk::WHOLE_SIZE,
-        };
-        for set in &self.descriptors.sets {
-            let write = ash::vk::WriteDescriptorSet {
-                dst_set: *set,
+        if let Some(copies) = &buffer.per_frame_copies {
+            // Per-frame buffer: write each copy to its corresponding set.
+            // Primary buffer is set 0, additional copies are sets 1..N.
+            let info0 = ash::vk::DescriptorBufferInfo {
+                buffer: buffer.buffer,
+                offset: 0,
+                range: ash::vk::WHOLE_SIZE,
+            };
+            let write0 = ash::vk::WriteDescriptorSet {
+                dst_set: self.descriptors.sets[0],
                 dst_binding: binding,
                 dst_array_element: 0,
                 descriptor_type: ash::vk::DescriptorType::UNIFORM_BUFFER,
                 descriptor_count: 1,
-                p_buffer_info: &info,
+                p_buffer_info: &info0,
                 ..Default::default()
             };
-            unsafe { self.device.update_descriptor_sets(&[write], &[]) };
+            unsafe { self.device.update_descriptor_sets(&[write0], &[]) };
+            for (i, copy) in copies.iter().enumerate() {
+                let set_idx = i + 1;
+                if set_idx >= self.descriptors.sets.len() {
+                    break;
+                }
+                let info = ash::vk::DescriptorBufferInfo {
+                    buffer: copy.buffer,
+                    offset: 0,
+                    range: ash::vk::WHOLE_SIZE,
+                };
+                let write = ash::vk::WriteDescriptorSet {
+                    dst_set: self.descriptors.sets[set_idx],
+                    dst_binding: binding,
+                    dst_array_element: 0,
+                    descriptor_type: ash::vk::DescriptorType::UNIFORM_BUFFER,
+                    descriptor_count: 1,
+                    p_buffer_info: &info,
+                    ..Default::default()
+                };
+                unsafe { self.device.update_descriptor_sets(&[write], &[]) };
+            }
+        } else {
+            // Single-frame buffer: write the same buffer to all descriptor sets.
+            let info = ash::vk::DescriptorBufferInfo {
+                buffer: buffer.buffer,
+                offset: 0,
+                range: ash::vk::WHOLE_SIZE,
+            };
+            for set in &self.descriptors.sets {
+                let write = ash::vk::WriteDescriptorSet {
+                    dst_set: *set,
+                    dst_binding: binding,
+                    dst_array_element: 0,
+                    descriptor_type: ash::vk::DescriptorType::UNIFORM_BUFFER,
+                    descriptor_count: 1,
+                    p_buffer_info: &info,
+                    ..Default::default()
+                };
+                unsafe { self.device.update_descriptor_sets(&[write], &[]) };
+            }
         }
     }
 
@@ -1091,18 +1299,23 @@ impl GpuBackend for VulkanBackend {
         });
     }
 
-    fn backbuffer(&self) -> &Self::RenderTarget {
-        let Some(CurrentFrame { render_idx, .. }) = self.current_frame else {
-            return &self.swapchain.swapchain_images[0];
+    fn backbuffer(&self) -> Self::RenderTarget {
+        let image = if let Some(CurrentFrame { render_idx, .. }) = self.current_frame {
+            &self.swapchain.swapchain_images[render_idx as usize]
+        } else {
+            &self.swapchain.swapchain_images[0]
         };
-        &self.swapchain.swapchain_images[render_idx as usize]
+
+        RenderTarget::Swapchain(image.clone())
     }
 
-    fn main_depth_target(&self) -> &Self::RenderTarget {
-        let Some(CurrentFrame { idx, .. }) = self.current_frame else {
-            return &self.depth_targets[0];
+    fn main_depth_target(&self) -> Self::RenderTarget {
+        let image = if let Some(CurrentFrame { idx, .. }) = self.current_frame {
+            &self.depth_targets[idx]
+        } else {
+            &self.depth_targets[0]
         };
-        &self.depth_targets[idx]
+        RenderTarget::Swapchain(image.clone())
     }
 
     fn default_viewport(&self) -> ViewportDesc {

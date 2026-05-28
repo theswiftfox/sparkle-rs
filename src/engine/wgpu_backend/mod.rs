@@ -1326,12 +1326,12 @@ impl GpuBackend for WgpuBackend {
 
     // --- Accessors ---
 
-    fn backbuffer(&self) -> &Self::RenderTarget {
-        &self.backbuffer_target
+    fn backbuffer(&self) -> Self::RenderTarget {
+        self.backbuffer_target.clone()
     }
 
-    fn main_depth_target(&self) -> &Self::RenderTarget {
-        &self.depth_target
+    fn main_depth_target(&self) -> Self::RenderTarget {
+        self.depth_target.clone()
     }
 
     fn default_viewport(&self) -> ViewportDesc {

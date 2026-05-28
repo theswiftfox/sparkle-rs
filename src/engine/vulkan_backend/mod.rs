@@ -133,7 +133,10 @@ impl TextureRegistry {
             slot
         } else {
             let slot = self.next_2d;
-            assert!(slot < MAX_BINDLESS_TEXTURES, "Exceeded max bindless 2D texture slots");
+            assert!(
+                slot < MAX_BINDLESS_TEXTURES,
+                "Exceeded max bindless 2D texture slots"
+            );
             self.next_2d += 1;
             slot
         }
@@ -144,7 +147,10 @@ impl TextureRegistry {
             slot
         } else {
             let slot = self.next_cube;
-            assert!(slot < MAX_BINDLESS_CUBEMAPS, "Exceeded max bindless cubemap slots");
+            assert!(
+                slot < MAX_BINDLESS_CUBEMAPS,
+                "Exceeded max bindless cubemap slots"
+            );
             self.next_cube += 1;
             slot
         }
@@ -188,21 +194,20 @@ pub(crate) struct PushConstants {
     tex1: u32,
     tex2: u32,
     tex3: u32,
+    tex4: u32,
 }
 
 impl Default for PushConstants {
     fn default() -> Self {
         PushConstants {
             model: [
-                1.0, 0.0, 0.0, 0.0,
-                0.0, 1.0, 0.0, 0.0,
-                0.0, 0.0, 1.0, 0.0,
-                0.0, 0.0, 0.0, 1.0,
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
             ],
             tex0: 0,
             tex1: 0,
             tex2: 0,
             tex3: 0,
+            tex4: 0,
         }
     }
 }

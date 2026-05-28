@@ -20,6 +20,7 @@ Sampler2D<uint4> gbuffer[] : register(t0);
 	uint tex1;
 	uint tex2;
 	uint tex3;
+	uint tex4;
 };
 
 [shader("pixel")]
@@ -46,7 +47,7 @@ PS_OUT main(float4 screenPos : SV_Position) {
 	float3 color = 0.0;
 	if (light0.type != AMBIENT) {
 		float3 F0 = lerp(float3(0.04, 0.04, 0.04), albedo.rgb, mr.r);
-		float shadowed = shadow(pos, normal);
+		float shadowed = shadow(pos, normal, tex3);
 		color += BRDF(
 			cameraPos,
 			normal,
