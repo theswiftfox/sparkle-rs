@@ -1,3 +1,5 @@
+import color_utils;
+
 struct PS_IN {
 	float4 pos : SV_Position;
 	float4 worldPos : POSITION_WORLD;
@@ -34,11 +36,14 @@ Sampler2D<float4> textures[] : register(t0);
 	uint tex3;
 };
 
+[vk::constant_id(1)] float gamma = 2.2;
+
 [shader("pixel")]
 PS_OUT main(PS_IN input) {
     PS_OUT output = (PS_OUT)0;
 
 	float4 albedo = textures[tex0].Sample(input.txCoord);
+	albedo.rgb = srgbToLinear(albedo.rgb, gamma);
     float4 pos = input.worldPos;
 
 	float3 normal = textures[tex2].Sample(input.txCoord).xyz;

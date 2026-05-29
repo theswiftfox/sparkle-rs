@@ -20,6 +20,7 @@ pub struct VulkanTexture {
     pub width: u32,
     pub height: u32,
     pub format: TextureFormat,
+    pub mip_levels: u32,
     pub view_type: ash::vk::ImageViewType,
     pub compare_enabled: bool,
     pub id: usize,
@@ -219,7 +220,7 @@ impl VulkanBackend {
                 )
             })?;
 
-        let sampler_info = info.sampler.into_vk(&instance, phys_device);
+        let sampler_info = info.sampler.into_vk(&instance, phys_device, None);
 
         let sampler = unsafe { device.create_sampler(&sampler_info, None) }.map_err(|e| {
             GpuError::new(
@@ -236,6 +237,7 @@ impl VulkanBackend {
             width: info.width,
             height: info.height,
             format: info.format,
+            mip_levels: 1,
             id: TEXTURE_ID.fetch_add(1, Ordering::SeqCst),
             compare_enabled: info.sampler.compare.is_some(),
             view_type: view_create_info.view_type,
@@ -265,7 +267,7 @@ impl VulkanBackend {
         self.copy_to_buffer(staging_mem, image_data.as_ptr() as *const _, image_size)?;
 
         let format: ash::vk::Format = info.format.into();
-        let mip_levels = 1; // todo: info.generate_mipmaps -> mip_levels
+        let mip_levels = calculate_mip_levels(info.width, info.height);
         let (tex_image, tex_mem) = Self::create_image(
             &self.instance,
             &self.device,
@@ -275,7 +277,9 @@ impl VulkanBackend {
             format,
             mip_levels,
             ash::vk::ImageTiling::OPTIMAL,
-            ash::vk::ImageUsageFlags::TRANSFER_DST | ash::vk::ImageUsageFlags::SAMPLED,
+            ash::vk::ImageUsageFlags::TRANSFER_SRC
+                | ash::vk::ImageUsageFlags::TRANSFER_DST
+                | ash::vk::ImageUsageFlags::SAMPLED,
             ash::vk::MemoryPropertyFlags::DEVICE_LOCAL,
         )?;
 
@@ -287,6 +291,7 @@ impl VulkanBackend {
             ash::vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             ash::vk::ImageAspectFlags::COLOR,
             1,
+            mip_levels,
         )?;
         self.copy_buffer_to_image(
             command_buff,
@@ -298,14 +303,16 @@ impl VulkanBackend {
             0,
             1,
         );
-        self.transition_image_layout(
+
+        self.generate_mipmaps(
             command_buff,
             tex_image,
-            ash::vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-            ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            ash::vk::ImageAspectFlags::COLOR,
-            1,
+            format,
+            info.width,
+            info.height,
+            mip_levels,
         )?;
+
         self.end_single_time_commands(command_buff)?;
 
         let view_create_info = ash::vk::ImageViewCreateInfo {
@@ -315,7 +322,7 @@ impl VulkanBackend {
             subresource_range: ash::vk::ImageSubresourceRange {
                 aspect_mask: ash::vk::ImageAspectFlags::COLOR,
                 base_mip_level: 0,
-                level_count: 1,
+                level_count: mip_levels,
                 base_array_layer: 0,
                 layer_count: 1,
             },
@@ -330,7 +337,9 @@ impl VulkanBackend {
                 )
             })?;
 
-        let sampler_info = info.sampler.into_vk(&self.instance, self.phys_device);
+        let sampler_info = info
+            .sampler
+            .into_vk(&self.instance, self.phys_device, Some(mip_levels));
 
         let sampler = unsafe { self.device.create_sampler(&sampler_info, None) }.map_err(|e| {
             GpuError::new(
@@ -347,6 +356,7 @@ impl VulkanBackend {
             width: info.width,
             height: info.height,
             format: info.format,
+            mip_levels,
             id: TEXTURE_ID.fetch_add(1, Ordering::SeqCst),
             compare_enabled: info.sampler.compare.is_some(),
             view_type: view_create_info.view_type,
@@ -456,6 +466,7 @@ impl VulkanBackend {
             ash::vk::ImageLayout::TRANSFER_DST_OPTIMAL,
             ash::vk::ImageAspectFlags::COLOR,
             6,
+            1,
         )?;
         let mut face_offset = 0u64;
         for i in 0..6 {
@@ -470,6 +481,7 @@ impl VulkanBackend {
             ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             ash::vk::ImageAspectFlags::COLOR,
             6,
+            1,
         )?;
         self.end_single_time_commands(cmd)?;
 
@@ -495,7 +507,7 @@ impl VulkanBackend {
                 )
             })?;
 
-        let sampler_info = sampler_desc.into_vk(&self.instance, self.phys_device);
+        let sampler_info = sampler_desc.into_vk(&self.instance, self.phys_device, None);
         let sampler = unsafe { self.device.create_sampler(&sampler_info, None) }.map_err(|e| {
             GpuError::new(
                 format!("Failed to create cubemap sampler: {e:?}"),
@@ -511,6 +523,7 @@ impl VulkanBackend {
             width,
             height,
             format,
+            mip_levels: 1,
             id: TEXTURE_ID.fetch_add(1, Ordering::SeqCst),
             compare_enabled: sampler_desc.compare.is_some(),
             view_type: ash::vk::ImageViewType::CUBE,
@@ -575,7 +588,7 @@ impl VulkanBackend {
             })?;
 
         let (sampler, compare_enabled) = if let Some(sampler_desc) = sampler_desc {
-            let sampler_info = sampler_desc.into_vk(&self.instance, self.phys_device);
+            let sampler_info = sampler_desc.into_vk(&self.instance, self.phys_device, None);
 
             let sampler =
                 unsafe { self.device.create_sampler(&sampler_info, None) }.map_err(|e| {
@@ -598,6 +611,7 @@ impl VulkanBackend {
             width,
             height,
             format,
+            mip_levels: 1,
             id: TEXTURE_ID.fetch_add(1, Ordering::SeqCst),
             compare_enabled,
             view_type: view_create_info.view_type,
@@ -606,6 +620,172 @@ impl VulkanBackend {
             current_layout: Rc::new(Cell::new(ash::vk::ImageLayout::UNDEFINED)),
         })
     }
+
+    fn generate_mipmaps(
+        &self,
+        command_buffer: ash::vk::CommandBuffer,
+        image: ash::vk::Image,
+        format: ash::vk::Format,
+        width: u32,
+        height: u32,
+        mip_levels: u32,
+    ) -> Result<(), GpuError> {
+        let format_props = unsafe {
+            self.instance
+                .get_physical_device_format_properties(self.phys_device, format)
+        };
+        if (format_props.optimal_tiling_features
+            & ash::vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR)
+            != ash::vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR
+        {
+            return Err(GpuError::new(
+                "texture image format does not support linear blitting!",
+                GpuErrorKind::ResourceCreation,
+            ));
+        }
+
+        let mut barrier = ash::vk::ImageMemoryBarrier {
+            src_access_mask: ash::vk::AccessFlags::TRANSFER_WRITE,
+            dst_access_mask: ash::vk::AccessFlags::TRANSFER_READ,
+            old_layout: ash::vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            new_layout: ash::vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            src_queue_family_index: ash::vk::QUEUE_FAMILY_IGNORED,
+            dst_queue_family_index: ash::vk::QUEUE_FAMILY_IGNORED,
+            image,
+            subresource_range: ash::vk::ImageSubresourceRange {
+                aspect_mask: ash::vk::ImageAspectFlags::COLOR,
+                base_array_layer: 0,
+                layer_count: 1,
+                level_count: 1,
+                base_mip_level: 0,
+            },
+            ..Default::default()
+        };
+
+        let mut mip_width = width;
+        let mut mip_height = height;
+
+        for i in 1..mip_levels {
+            barrier.subresource_range.base_mip_level = i - 1;
+            barrier.old_layout = ash::vk::ImageLayout::TRANSFER_DST_OPTIMAL;
+            barrier.new_layout = ash::vk::ImageLayout::TRANSFER_SRC_OPTIMAL;
+            barrier.src_access_mask = ash::vk::AccessFlags::TRANSFER_WRITE;
+            barrier.dst_access_mask = ash::vk::AccessFlags::TRANSFER_READ;
+
+            unsafe {
+                self.device.cmd_pipeline_barrier(
+                    command_buffer,
+                    ash::vk::PipelineStageFlags::TRANSFER,
+                    ash::vk::PipelineStageFlags::TRANSFER,
+                    ash::vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[barrier],
+                );
+            }
+
+            let offsets = [
+                ash::vk::Offset3D { x: 0, y: 0, z: 0 },
+                ash::vk::Offset3D {
+                    x: mip_width as i32,
+                    y: mip_height as i32,
+                    z: 1,
+                },
+            ];
+            let dst_offsets = [
+                ash::vk::Offset3D { x: 0, y: 0, z: 0 },
+                ash::vk::Offset3D {
+                    x: if mip_width > 1 {
+                        (mip_width / 2) as i32
+                    } else {
+                        1
+                    },
+                    y: if mip_height > 1 {
+                        (mip_height / 2) as i32
+                    } else {
+                        1
+                    },
+                    z: 1,
+                },
+            ];
+            let blit = ash::vk::ImageBlit {
+                src_subresource: ash::vk::ImageSubresourceLayers {
+                    aspect_mask: ash::vk::ImageAspectFlags::COLOR,
+                    mip_level: i - 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+                dst_subresource: ash::vk::ImageSubresourceLayers {
+                    aspect_mask: ash::vk::ImageAspectFlags::COLOR,
+                    mip_level: i,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+                src_offsets: offsets,
+                dst_offsets,
+            };
+
+            unsafe {
+                self.device.cmd_blit_image(
+                    command_buffer,
+                    image,
+                    ash::vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                    image,
+                    ash::vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &[blit],
+                    ash::vk::Filter::LINEAR,
+                );
+            }
+
+            barrier.old_layout = ash::vk::ImageLayout::TRANSFER_SRC_OPTIMAL;
+            barrier.new_layout = ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+            barrier.src_access_mask = ash::vk::AccessFlags::TRANSFER_READ;
+            barrier.dst_access_mask = ash::vk::AccessFlags::SHADER_READ;
+
+            unsafe {
+                self.device.cmd_pipeline_barrier(
+                    command_buffer,
+                    ash::vk::PipelineStageFlags::TRANSFER,
+                    ash::vk::PipelineStageFlags::FRAGMENT_SHADER,
+                    ash::vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[barrier],
+                );
+            }
+
+            if mip_width > 1 {
+                mip_width = mip_width / 2;
+            }
+            if mip_height > 1 {
+                mip_height = mip_height / 2
+            }
+        }
+
+        barrier.subresource_range.base_mip_level = mip_levels - 1;
+        barrier.old_layout = ash::vk::ImageLayout::TRANSFER_DST_OPTIMAL;
+        barrier.new_layout = ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+        barrier.src_access_mask = ash::vk::AccessFlags::TRANSFER_WRITE;
+        barrier.dst_access_mask = ash::vk::AccessFlags::SHADER_READ;
+
+        unsafe {
+            self.device.cmd_pipeline_barrier(
+                command_buffer,
+                ash::vk::PipelineStageFlags::TRANSFER,
+                ash::vk::PipelineStageFlags::FRAGMENT_SHADER,
+                ash::vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[barrier],
+            );
+        }
+
+        Ok(())
+    }
+}
+
+fn calculate_mip_levels(width: u32, height: u32) -> u32 {
+    width.max(height).ilog2() + 1
 }
 
 impl std::fmt::Debug for VulkanTexture {
@@ -642,6 +822,7 @@ impl Into<ash::vk::Format> for TextureFormat {
             TextureFormat::R16g16b16a16Float => ash::vk::Format::R16G16B16A16_SFLOAT,
             TextureFormat::Depth32Float => ash::vk::Format::D32_SFLOAT,
             TextureFormat::Depth24Stencil8 => ash::vk::Format::D24_UNORM_S8_UINT,
+            TextureFormat::Abgr10Unorm => ash::vk::Format::A2B10G10R10_UNORM_PACK32,
         }
     }
 }
@@ -666,6 +847,7 @@ impl TryFrom<ash::vk::Format> for TextureFormat {
             ash::vk::Format::R16G16B16A16_SFLOAT => TextureFormat::R16g16b16a16Float,
             ash::vk::Format::D32_SFLOAT => TextureFormat::Depth32Float,
             ash::vk::Format::D24_UNORM_S8_UINT => TextureFormat::Depth24Stencil8,
+            ash::vk::Format::A2B10G10R10_UNORM_PACK32 => TextureFormat::Abgr10Unorm,
             f => {
                 return Err(GpuError::new(
                     format!("VK Format {f:?} is not yet supported"),
@@ -684,6 +866,7 @@ impl SamplerDesc {
         &self,
         instance: &ash::Instance,
         device: ash::vk::PhysicalDevice,
+        mip_levels: Option<u32>,
     ) -> ash::vk::SamplerCreateInfo<'_> {
         let anisotropy = if self.filter == FilterMode::Anisotropic {
             ash::vk::TRUE
@@ -706,7 +889,7 @@ impl SamplerDesc {
             Some(CompareFunc::Never) => (ash::vk::TRUE, ash::vk::CompareOp::NEVER),
         };
 
-        ash::vk::SamplerCreateInfo {
+        let mut info = ash::vk::SamplerCreateInfo {
             mag_filter: ash::vk::Filter::LINEAR,
             min_filter: ash::vk::Filter::LINEAR,
             anisotropy_enable: anisotropy,
@@ -718,7 +901,12 @@ impl SamplerDesc {
             compare_enable,
             compare_op,
             ..Default::default()
+        };
+        if let Some(mip_levels) = mip_levels {
+            info.min_lod = 0f32;
+            info.max_lod = mip_levels as f32;
         }
+        info
     }
 }
 

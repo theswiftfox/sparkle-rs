@@ -113,6 +113,7 @@ fn to_wgpu_format(format: TextureFormat) -> wgpu::TextureFormat {
         TextureFormat::R16g16b16a16Float => wgpu::TextureFormat::Rgba16Float,
         TextureFormat::Depth32Float => wgpu::TextureFormat::Depth32Float,
         TextureFormat::Depth24Stencil8 => wgpu::TextureFormat::Depth24PlusStencil8,
+        TextureFormat::Abgr10Unorm => wgpu::TextureFormat::Bgra8UnormSrgb, // fallback panic!("Not supported in wgpu"),
     }
 }
 

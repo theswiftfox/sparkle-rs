@@ -69,6 +69,9 @@ pub enum TextureFormat {
     Rgba32Uint,
     R16g16b16a16Float,
 
+    // hdr format
+    Abgr10Unorm,
+
     // Depth formats
     Depth32Float,
     Depth24Stencil8,

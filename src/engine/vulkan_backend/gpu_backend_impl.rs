@@ -1,18 +1,17 @@
 // use std::any::TypeId;
 
-use std::ffi::CString;
+use std::{ffi::CString, mem::offset_of};
 
 use crate::engine::{
     backend::{
-        AddressMode, BlendMode, BufferDesc, BufferUsage, CompareFunc, Drawable, FilterMode,
-        GpuBackend, GpuError, GpuErrorKind, GpuRenderTarget, GpuTexture, PipelineDesc,
-        RenderPassDesc, RenderTargetDesc, SamplerDesc, ShaderStage, Shaders, TextureDesc,
-        TextureFormat, ViewportDesc,
+        BlendMode, BufferDesc, BufferUsage, Drawable, GpuBackend, GpuError, GpuErrorKind,
+        GpuRenderTarget, GpuTexture, PipelineDesc, RenderPassDesc, RenderTargetDesc, SamplerDesc,
+        ShaderStage, Shaders, TextureDesc, TextureFormat, ViewportDesc,
     },
     vulkan_backend::{
-        CurrentFrame, FRAMES_IN_FLIGHT, PushConstants, SHADER_ENTRY_POINT, VulkanBackend,
-        buffer::VulkanBuffer, create_shader_module, texture::VulkanTexture,
-        util::gpu_error_out_of_range,
+        CurrentFrame, FRAMES_IN_FLIGHT, GAMMA_DEFAULT, PushConstants, SHADER_ENTRY_POINT,
+        SpecializationConstants, VulkanBackend, buffer::VulkanBuffer, create_shader_module,
+        texture::VulkanTexture, util::gpu_error_out_of_range,
     },
 };
 
@@ -209,44 +208,43 @@ impl GpuBackend for VulkanBackend {
         // Per-frame copies prevent GPU data hazards when multiple in-flight
         // frames write to the same uniform buffer via cmd_update_buffer.
         if desc.usage == BufferUsage::Uniform {
-            let copies: Result<
-                Vec<crate::engine::vulkan_backend::buffer::PerFrameCopy>,
-                GpuError,
-            > = (1..FRAMES_IN_FLIGHT)
-                .map(|_| {
-                    let (buf, mem) = VulkanBackend::create_buffer(
-                        &self.instance,
-                        &self.device,
-                        self.phys_device,
-                        desc.size as u64,
-                        usage,
-                        flags,
-                    )?;
-                    let mapped = if crate::engine::vulkan_backend::buffer::host_mappable(flags) {
-                        unsafe {
-                            self.device.map_memory(
-                                mem,
-                                0,
-                                desc.size as u64,
-                                ash::vk::MemoryMapFlags::empty(),
-                            )
-                        }
-                        .map_err(|e| {
-                            GpuError::new(
-                                format!("Failed to map per-frame copy memory: {e:?}"),
-                                GpuErrorKind::ResourceUpdate,
-                            )
-                        })?
-                    } else {
-                        std::ptr::null_mut()
-                    };
-                    Ok(crate::engine::vulkan_backend::buffer::PerFrameCopy {
-                        buffer: buf,
-                        memory: mem,
-                        mapped,
+            let copies: Result<Vec<crate::engine::vulkan_backend::buffer::PerFrameCopy>, GpuError> =
+                (1..FRAMES_IN_FLIGHT)
+                    .map(|_| {
+                        let (buf, mem) = VulkanBackend::create_buffer(
+                            &self.instance,
+                            &self.device,
+                            self.phys_device,
+                            desc.size as u64,
+                            usage,
+                            flags,
+                        )?;
+                        let mapped = if crate::engine::vulkan_backend::buffer::host_mappable(flags)
+                        {
+                            unsafe {
+                                self.device.map_memory(
+                                    mem,
+                                    0,
+                                    desc.size as u64,
+                                    ash::vk::MemoryMapFlags::empty(),
+                                )
+                            }
+                            .map_err(|e| {
+                                GpuError::new(
+                                    format!("Failed to map per-frame copy memory: {e:?}"),
+                                    GpuErrorKind::ResourceUpdate,
+                                )
+                            })?
+                        } else {
+                            std::ptr::null_mut()
+                        };
+                        Ok(crate::engine::vulkan_backend::buffer::PerFrameCopy {
+                            buffer: buf,
+                            memory: mem,
+                            mapped,
+                        })
                     })
-                })
-                .collect();
+                    .collect();
             buffer.per_frame_copies = Some(copies?);
         }
 
@@ -288,16 +286,56 @@ impl GpuBackend for VulkanBackend {
         &self,
         desc: &PipelineDesc<Self::ShaderSource>,
     ) -> Result<Self::Pipeline, GpuError> {
+        let specialization_constants = SpecializationConstants {
+            hdr_enabled: if self.swapchain.surface_format.is_hdr {
+                ash::vk::TRUE
+            } else {
+                ash::vk::FALSE
+            },
+            gamma: GAMMA_DEFAULT,
+        };
+        let map_entries = [
+            ash::vk::SpecializationMapEntry {
+                constant_id: 0,
+                offset: offset_of!(SpecializationConstants, hdr_enabled) as u32,
+                size: size_of_val(&specialization_constants.hdr_enabled),
+            },
+            ash::vk::SpecializationMapEntry {
+                constant_id: 1,
+                offset: offset_of!(SpecializationConstants, gamma) as u32,
+                size: size_of_val(&specialization_constants.gamma),
+            },
+        ];
+
+        let specialization_constants_info = ash::vk::SpecializationInfo {
+            map_entry_count: map_entries.len() as u32,
+            p_map_entries: map_entries.as_ptr(),
+            data_size: size_of::<SpecializationConstants>(),
+            p_data: &specialization_constants as *const _ as *const _,
+            ..Default::default()
+        };
+        println!(
+            "Create specialization constants (size: {}): {} offset: {} | {} offset: {}",
+            size_of::<SpecializationConstants>(),
+            specialization_constants.hdr_enabled,
+            map_entries[0].offset,
+            specialization_constants.gamma,
+            map_entries[1].offset
+        );
+        println!("{:?}", map_entries);
+
         let shader_modules = desc
             .shader_source
             .iter()
             .map(|source| {
                 println!("Compiling shader: {}", desc.label);
                 let module = create_shader_module(source.code, &self.device, source.label)?;
+
                 Ok(ash::vk::PipelineShaderStageCreateInfo {
                     stage: source.stage,
                     module,
                     p_name: SHADER_ENTRY_POINT.as_ptr(),
+                    p_specialization_info: &specialization_constants_info as *const _,
                     ..Default::default()
                 })
             })
@@ -575,7 +613,12 @@ impl GpuBackend for VulkanBackend {
     }
 
     fn cmd_update_buffer(&mut self, buffer: &Self::Buffer, data: &[u8]) {
-        let Some(CurrentFrame { idx, command_buffer, .. }) = self.current_frame else {
+        let Some(CurrentFrame {
+            idx,
+            command_buffer,
+            ..
+        }) = self.current_frame
+        else {
             return;
         };
         let target = buffer.frame_buffer(idx);
@@ -750,6 +793,7 @@ impl GpuBackend for VulkanBackend {
             ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             ash::vk::ImageAspectFlags::COLOR,
             1,
+            swapchain_texture.mip_levels,
         )?;
         swapchain_texture
             .current_layout
@@ -762,6 +806,7 @@ impl GpuBackend for VulkanBackend {
             ash::vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
             ash::vk::ImageAspectFlags::DEPTH,
             1,
+            depth_texture.mip_levels,
         )?;
         depth_texture
             .current_layout
@@ -778,14 +823,26 @@ impl GpuBackend for VulkanBackend {
             );
         }
 
-        self.current_frame = Some(CurrentFrame {
-            idx: frame_idx,
-            render_idx: swapchain_idx,
-            command_buffer,
-            fence,
-            present_sem: present_semaphore,
-            render_sem: render_semaphore,
-        });
+        if let Some(current_frame) = &mut self.current_frame {
+            current_frame.idx = frame_idx;
+            current_frame.render_idx = swapchain_idx;
+            current_frame.command_buffer = command_buffer;
+            current_frame.fence = fence;
+            current_frame.present_sem = present_semaphore;
+            current_frame.render_sem = render_semaphore;
+            current_frame.pass_targets.clear();
+        } else {
+            self.current_frame = Some(CurrentFrame {
+                idx: frame_idx,
+                render_idx: swapchain_idx,
+                command_buffer,
+                fence,
+                present_sem: present_semaphore,
+                render_sem: render_semaphore,
+                pass_targets: Vec::new(),
+                pending_push: PushConstants::default(),
+            });
+        }
 
         Ok(())
     }
@@ -814,6 +871,7 @@ impl GpuBackend for VulkanBackend {
             ash::vk::ImageLayout::PRESENT_SRC_KHR,
             ash::vk::ImageAspectFlags::COLOR,
             1,
+            swapchain_tex.mip_levels,
         )?;
         swapchain_tex
             .current_layout
@@ -915,6 +973,7 @@ impl GpuBackend for VulkanBackend {
                 ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                 ash::vk::ImageAspectFlags::COLOR,
                 1,
+                target.mip_levels,
             )
             .unwrap();
             target
@@ -931,6 +990,7 @@ impl GpuBackend for VulkanBackend {
                 ash::vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
                 ash::vk::ImageAspectFlags::DEPTH,
                 1,
+                depth_target.mip_levels,
             )
             .unwrap();
             depth_target
@@ -998,11 +1058,14 @@ impl GpuBackend for VulkanBackend {
             std::ptr::null()
         };
 
-        self.current_pass_targets.clear();
+        let Some(CurrentFrame { pass_targets, .. }) = &mut self.current_frame else {
+            return;
+        };
+        pass_targets.clear();
         for attachment in &desc.color_targets {
             let target = attachment.target.get_target(idx);
 
-            self.current_pass_targets.push((
+            pass_targets.push((
                 target.image,
                 ash::vk::ImageAspectFlags::COLOR,
                 target.current_layout.clone(),
@@ -1011,7 +1074,7 @@ impl GpuBackend for VulkanBackend {
         if let Some(attachment) = &desc.depth_target {
             let target = attachment.target.get_target(idx);
 
-            self.current_pass_targets.push((
+            pass_targets.push((
                 target.image,
                 ash::vk::ImageAspectFlags::DEPTH,
                 target.current_layout.clone(),
@@ -1064,14 +1127,19 @@ impl GpuBackend for VulkanBackend {
     }
 
     fn end_render_pass(&mut self) {
-        let Some(CurrentFrame { command_buffer, .. }) = self.current_frame else {
+        let Some(CurrentFrame {
+            command_buffer,
+            pass_targets,
+            ..
+        }) = &self.current_frame
+        else {
             println!("Cannot end render pass without begin_frame called first");
             return;
         };
         unsafe {
-            self.device.cmd_end_rendering(command_buffer);
+            self.device.cmd_end_rendering(*command_buffer);
         }
-        for &(image, aspect, ref layout_cell) in &self.current_pass_targets {
+        for &(image, aspect, ref layout_cell) in pass_targets {
             // Skip swapchain images — they transition to PRESENT_SRC_KHR
             // in end_frame, not SHADER_READ_ONLY_OPTIMAL
             // (swapchain images lack SAMPLED_BIT)
@@ -1086,11 +1154,12 @@ impl GpuBackend for VulkanBackend {
             let old_layout = layout_cell.get();
             if self
                 .transition_image_layout(
-                    command_buffer,
+                    *command_buffer,
                     image,
                     old_layout,
                     ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                     aspect,
+                    1,
                     1,
                 )
                 .is_ok()
@@ -1098,7 +1167,10 @@ impl GpuBackend for VulkanBackend {
                 layout_cell.set(ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
             }
         }
-        self.current_pass_targets.clear();
+        let Some(CurrentFrame { pass_targets, .. }) = &mut self.current_frame else {
+            return;
+        };
+        pass_targets.clear();
     }
 
     fn set_pipeline(&mut self, pipeline: &Self::Pipeline) {
@@ -1140,14 +1212,17 @@ impl GpuBackend for VulkanBackend {
     }
 
     fn bind_texture(&mut self, slot: u32, texture: &Self::Texture) {
+        let Some(CurrentFrame { pending_push, .. }) = &mut self.current_frame else {
+            return;
+        };
         if texture.descriptor_index == u32::MAX {
             return;
         }
         match slot {
-            0 => self.pending_push.tex0 = texture.descriptor_index,
-            1 => self.pending_push.tex1 = texture.descriptor_index,
-            2 => self.pending_push.tex2 = texture.descriptor_index,
-            3 => self.pending_push.tex3 = texture.descriptor_index,
+            0 => pending_push.tex0 = texture.descriptor_index,
+            1 => pending_push.tex1 = texture.descriptor_index,
+            2 => pending_push.tex2 = texture.descriptor_index,
+            3 => pending_push.tex3 = texture.descriptor_index,
             _ => {}
         }
     }
@@ -1162,12 +1237,15 @@ impl GpuBackend for VulkanBackend {
         if target.descriptor_index == u32::MAX {
             return;
         }
+        let Some(CurrentFrame { pending_push, .. }) = &mut self.current_frame else {
+            return;
+        };
         match slot {
-            0 => self.pending_push.tex0 = target.descriptor_index,
-            1 => self.pending_push.tex1 = target.descriptor_index,
-            2 => self.pending_push.tex2 = target.descriptor_index,
-            3 => self.pending_push.tex3 = target.descriptor_index,
-            4 => self.pending_push.tex4 = target.descriptor_index,
+            0 => pending_push.tex0 = target.descriptor_index,
+            1 => pending_push.tex1 = target.descriptor_index,
+            2 => pending_push.tex2 = target.descriptor_index,
+            3 => pending_push.tex3 = target.descriptor_index,
+            4 => pending_push.tex4 = target.descriptor_index,
             _ => {}
         }
     }
@@ -1268,6 +1346,9 @@ impl GpuBackend for VulkanBackend {
         let Some(CurrentFrame { command_buffer, .. }) = self.current_frame else {
             return;
         };
+        let Some(CurrentFrame { pending_push, .. }) = &mut self.current_frame else {
+            return;
+        };
 
         unsafe {
             self.device.cmd_push_constants(
@@ -1276,7 +1357,7 @@ impl GpuBackend for VulkanBackend {
                 ash::vk::ShaderStageFlags::VERTEX | ash::vk::ShaderStageFlags::FRAGMENT,
                 0,
                 std::slice::from_raw_parts(
-                    &self.pending_push as *const PushConstants as *const u8,
+                    pending_push as *const PushConstants as *const u8,
                     std::mem::size_of::<PushConstants>(),
                 ),
             );
@@ -1289,12 +1370,15 @@ impl GpuBackend for VulkanBackend {
                 0,
             );
         }
-        self.pending_push = PushConstants::default();
+        *pending_push = PushConstants::default();
     }
 
     fn set_model_matrix(&mut self, model: &glm::Mat4) {
+        let Some(CurrentFrame { pending_push, .. }) = &mut self.current_frame else {
+            return;
+        };
         let data = crate::engine::backend::as_bytes(std::slice::from_ref(model));
-        self.pending_push.model.copy_from_slice(unsafe {
+        pending_push.model.copy_from_slice(unsafe {
             std::slice::from_raw_parts(data.as_ptr() as *const f32, 16)
         });
     }

@@ -28,9 +28,13 @@ const REQUIRED_EXTS: [&CStr; 3] = [
     ash::vk::KHR_SWAPCHAIN_NAME,
     ash::vk::KHR_SHADER_DRAW_PARAMETERS_NAME,
     ash::vk::KHR_SYNCHRONIZATION2_NAME,
+    // ash::vk::EXT_SWAPCHAIN_COLORSPACE_NAME,
+    // ash::vk::EXT_HDR_METADATA_NAME,
 ];
 
 const FRAMES_IN_FLIGHT: u32 = 2u32;
+
+const GAMMA_DEFAULT: f32 = 2.4f32;
 
 struct Instance {
     instance: ash::Instance,
@@ -71,9 +75,29 @@ struct Swapchain {
     swapchain: ash::vk::SwapchainKHR,
     swapchain_images: Vec<VulkanTexture>,
     swapchain_extent: ash::vk::Extent2D,
-    surface_format: ash::vk::SurfaceFormatKHR,
+    surface_format: SurfaceFormat,
     surface: ash::vk::SurfaceKHR,
     sync_mode: SyncMode,
+}
+
+struct SurfaceFormat {
+    format: ash::vk::SurfaceFormatKHR,
+    is_hdr: bool,
+}
+impl Deref for SurfaceFormat {
+    type Target = ash::vk::SurfaceFormatKHR;
+
+    fn deref(&self) -> &Self::Target {
+        &self.format
+    }
+}
+impl Default for SurfaceFormat {
+    fn default() -> Self {
+        Self {
+            format: Default::default(),
+            is_hdr: Default::default(),
+        }
+    }
 }
 
 struct SyncObjects {
@@ -95,6 +119,12 @@ struct CurrentFrame {
     fence: ash::vk::Fence,
     present_sem: ash::vk::Semaphore,
     render_sem: ash::vk::Semaphore,
+    pass_targets: Vec<(
+        ash::vk::Image,
+        ash::vk::ImageAspectFlags,
+        Rc<Cell<ash::vk::ImageLayout>>,
+    )>,
+    pending_push: PushConstants,
 }
 
 struct CommandPool {
@@ -212,6 +242,22 @@ impl Default for PushConstants {
     }
 }
 
+#[repr(C, align(4))]
+#[derive(Clone, Copy)]
+pub(crate) struct SpecializationConstants {
+    hdr_enabled: u32,
+    gamma: f32,
+}
+
+impl Default for SpecializationConstants {
+    fn default() -> Self {
+        Self {
+            hdr_enabled: 0,
+            gamma: 2.2f32,
+        }
+    }
+}
+
 pub struct VulkanBackend {
     window: Arc<winit::window::Window>,
     context: ash::Entry,
@@ -230,13 +276,7 @@ pub struct VulkanBackend {
     khr_sync: ash::khr::synchronization2::Device,
     frame_idx: usize,
     current_frame: Option<CurrentFrame>,
-    current_pass_targets: Vec<(
-        ash::vk::Image,
-        ash::vk::ImageAspectFlags,
-        Rc<Cell<ash::vk::ImageLayout>>,
-    )>,
     texture_registry: RefCell<TextureRegistry>,
-    pending_push: PushConstants,
 }
 
 pub fn initialize(
@@ -271,6 +311,7 @@ pub fn initialize(
         &logical_device,
         surface,
         sync_mode,
+        settings.hdr_preferred,
     )?;
 
     let pipeline = create_graphics_pipeline(&logical_device, &swapchain)?;
@@ -327,9 +368,7 @@ pub fn initialize(
         khr_sync,
         frame_idx: 0,
         current_frame: None,
-        current_pass_targets: Vec::new(),
         texture_registry: RefCell::new(TextureRegistry::new()),
-        pending_push: PushConstants::default(),
     })
 }
 
@@ -747,7 +786,7 @@ fn create_graphics_pipeline(
         )?;
     let rendering_create_info = ash::vk::PipelineRenderingCreateInfo {
         color_attachment_count: 1,
-        p_color_attachment_formats: &swapchain.surface_format.format as *const _,
+        p_color_attachment_formats: &swapchain.surface_format.format.format as *const _,
         ..Default::default()
     };
 
@@ -848,6 +887,7 @@ fn create_swapchain_and_depth_buffer(
     logical_device: &LogicalDevice,
     surface: ash::vk::SurfaceKHR,
     sync_mode: SyncMode,
+    hdr_preferred: bool,
 ) -> Result<(Swapchain, [VulkanTexture; FRAMES_IN_FLIGHT as usize]), GpuError> {
     let surface_khr = ash::khr::surface::Instance::new(context, instance);
 
@@ -883,15 +923,15 @@ fn create_swapchain_and_depth_buffer(
     };
     let swap_extent = util::choose_swap_extent(&surface_capababilities, &window);
     let swap_image_count = util::choose_swap_min_image_count(&surface_capababilities);
-    let swap_format = util::choose_swapchain_format(&surface_formats)?;
+    let swap_format = util::choose_swapchain_format(&surface_formats, hdr_preferred)?;
     let present_mode = util::choose_present_mode(&present_modes, sync_mode)?;
 
-    let engine_fmt: TextureFormat = swap_format.format.try_into()?;
+    let engine_fmt: TextureFormat = swap_format.format.format.try_into()?;
 
     let create_info = ash::vk::SwapchainCreateInfoKHR {
         surface,
         min_image_count: swap_image_count,
-        image_format: swap_format.format,
+        image_format: swap_format.format.format,
         image_color_space: swap_format.color_space,
         image_extent: swap_extent,
         image_array_layers: 1,
@@ -920,7 +960,7 @@ fn create_swapchain_and_depth_buffer(
         })?;
 
     let swapchain_image_views =
-        create_image_views(logical_device, &swapchain_images, swap_format.format)?;
+        create_image_views(logical_device, &swapchain_images, swap_format.format.format)?;
 
     let sampler_info = ash::vk::SamplerCreateInfo {
         mag_filter: ash::vk::Filter::LINEAR,
@@ -952,6 +992,7 @@ fn create_swapchain_and_depth_buffer(
             width: swap_extent.width,
             height: swap_extent.height,
             format: engine_fmt,
+            mip_levels: 1,
             view_type: ash::vk::ImageViewType::TYPE_2D,
             compare_enabled: false,
             id: 0,

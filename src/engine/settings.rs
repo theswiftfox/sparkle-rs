@@ -21,6 +21,7 @@ pub struct Settings {
     pub ssao: bool,
 
     pub sync_mode: SyncMode,
+    pub hdr_preferred: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -104,6 +105,7 @@ impl std::default::Default for Settings {
             gpu_validation: false,
             ssao: false,
             sync_mode: SyncMode::VSync,
+            hdr_preferred: true,
         }
     }
 }

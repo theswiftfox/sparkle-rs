@@ -195,6 +195,7 @@ impl VulkanBackend {
             ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             ash::vk::ImageAspectFlags::COLOR,
             1,
+            1,
         )?;
 
         let clear_value = ash::vk::ClearValue {
@@ -271,6 +272,7 @@ impl VulkanBackend {
             ash::vk::ImageLayout::PRESENT_SRC_KHR,
             ash::vk::ImageAspectFlags::COLOR,
             1,
+            1,
         )?;
 
         unsafe { self.device.end_command_buffer(command_buffer) }.map_err(|e| {
@@ -289,6 +291,7 @@ impl VulkanBackend {
         new_layout: ash::vk::ImageLayout,
         aspect: ash::vk::ImageAspectFlags,
         layer_count: u32,
+        mip_map_levels: u32,
     ) -> Result<(), GpuError> {
         let mut src_access_mask = ash::vk::AccessFlags2::empty();
         let mut dst_access_mask = ash::vk::AccessFlags2::empty();
@@ -417,7 +420,7 @@ impl VulkanBackend {
             subresource_range: ash::vk::ImageSubresourceRange {
                 aspect_mask: aspect,
                 base_mip_level: 0,
-                level_count: 1,
+                level_count: mip_map_levels,
                 base_array_layer: 0,
                 layer_count,
                 ..Default::default()

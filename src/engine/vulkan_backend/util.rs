@@ -5,7 +5,7 @@ use wgpu::rwh::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHa
 use crate::engine::{
     backend::{CompareFunc, CullMode, GpuError, GpuErrorKind, LoadOp, VertexFormat, ViewportDesc},
     settings::SyncMode,
-    vulkan_backend::{Swapchain, VulkanBackend, create_swapchain_and_depth_buffer},
+    vulkan_backend::{SurfaceFormat, Swapchain, VulkanBackend, create_swapchain_and_depth_buffer},
 };
 
 pub fn get_instance_extensions(
@@ -219,25 +219,62 @@ pub fn create_surface(
 
 pub fn choose_swapchain_format(
     available_formats: &[ash::vk::SurfaceFormatKHR],
-) -> Result<ash::vk::SurfaceFormatKHR, GpuError> {
+    hdr_preferred: bool,
+) -> Result<SurfaceFormat, GpuError> {
+    const HDR_COLOR_SPACES: [ash::vk::ColorSpaceKHR; 2] = [
+        ash::vk::ColorSpaceKHR::HDR10_HLG_EXT,
+        ash::vk::ColorSpaceKHR::HDR10_ST2084_EXT,
+    ];
+    const HDR_COLOR_FORMAT: ash::vk::Format = ash::vk::Format::A2B10G10R10_UNORM_PACK32;
+    const DEFAULT_COLOR_SPACE: ash::vk::ColorSpaceKHR = ash::vk::ColorSpaceKHR::SRGB_NONLINEAR;
+    const DEFAULT_COLOR_FORMAT: ash::vk::Format = ash::vk::Format::B8G8R8A8_SRGB;
+
     if available_formats.is_empty() {
         return Err(GpuError::new(
             "No available surface formats",
             GpuErrorKind::Other,
         ));
     }
-    // Prefer BGRA8 with SRGB nonlinear color space, as it's widely supported and has good color accuracy
-    Ok(available_formats
+    // as first fallback take BGRA8 with SRGB nonlinear color space, as it's widely supported and has good color accuracy
+    // if none match take the first available format
+
+    let (hdr_formats, sdr_formats): (Vec<_>, Vec<_>) = available_formats
         .iter()
-        .find(|f| {
-            f.format == ash::vk::Format::B8G8R8A8_SRGB
+        .filter_map(|f| {
+            if f.format != DEFAULT_COLOR_FORMAT && f.format != HDR_COLOR_FORMAT {
+                return None;
+            }
+            println!("checking format: {f:?}");
+            if hdr_preferred
+                && f.format == HDR_COLOR_FORMAT
+                && HDR_COLOR_SPACES.contains(&f.color_space)
+            {
+                return Some((*f, true));
+            } else if f.format == DEFAULT_COLOR_FORMAT
                 && f.color_space == ash::vk::ColorSpaceKHR::SRGB_NONLINEAR
+            {
+                return Some((*f, false));
+            }
+            return None;
         })
-        .cloned()
-        .unwrap_or_else(|| {
-            // Fallback to the first available format if the preferred one isn't found
-            available_formats[0]
-        }))
+        .partition(|(_, is_hdr)| *is_hdr);
+    println!(
+        "Filtered formats:\n hdr_preferred: {hdr_preferred}\n HDR: {:?}\n SDR: {:?}",
+        hdr_formats, sdr_formats
+    );
+
+    if hdr_preferred && let Some((format, is_hdr)) = hdr_formats.first().cloned() {
+        Ok(SurfaceFormat { format, is_hdr })
+    } else if let Some((format, is_hdr)) = sdr_formats.first().cloned() {
+        Ok(SurfaceFormat { format, is_hdr })
+    } else {
+        let format = available_formats[0];
+        eprintln!("No preferred surface found, falling back to {:?}", format);
+        Ok(SurfaceFormat {
+            format,
+            is_hdr: false,
+        })
+    }
 }
 
 pub fn choose_present_mode(
@@ -670,7 +707,7 @@ impl VulkanBackend {
             swapchain_images: Vec::new(),
             swapchain_extent: ash::vk::Extent2D::default(),
             fn_ptr: self.swapchain.fn_ptr.clone(),
-            surface_format: ash::vk::SurfaceFormatKHR::default(),
+            surface_format: SurfaceFormat::default(),
             surface: ash::vk::SurfaceKHR::null(),
             sync_mode: self.swapchain.sync_mode,
         };
@@ -684,6 +721,7 @@ impl VulkanBackend {
             &self.device,
             old.surface,
             old.sync_mode,
+            old.surface_format.is_hdr,
         )?;
 
         std::mem::swap(&mut self.swapchain, &mut new_swapchain);
