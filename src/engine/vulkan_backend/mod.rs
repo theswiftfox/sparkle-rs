@@ -18,6 +18,8 @@ mod renderpass;
 mod texture;
 mod util;
 
+const ENABLE_MARKER: bool = false;
+
 const VK_API_VERSION: u32 = ash::vk::API_VERSION_1_3;
 
 const VALIDATION_LAYER: &CStr =

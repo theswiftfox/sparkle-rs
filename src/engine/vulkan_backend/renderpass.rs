@@ -1,6 +1,6 @@
 use crate::engine::{
     backend::{GpuError, GpuErrorKind},
-    vulkan_backend::{FRAMES_IN_FLIGHT, VulkanBackend, util::gpu_error_out_of_range},
+    vulkan_backend::{ENABLE_MARKER, VulkanBackend},
 };
 
 impl VulkanBackend {
@@ -371,11 +371,7 @@ impl VulkanBackend {
                 dst_access_mask = ash::vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE
                     | ash::vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ;
 
-                src_stage_mask = if old_layout == ash::vk::ImageLayout::UNDEFINED {
-                    ash::vk::PipelineStageFlags2::TOP_OF_PIPE
-                } else {
-                    ash::vk::PipelineStageFlags2::FRAGMENT_SHADER
-                };
+                src_stage_mask = ash::vk::PipelineStageFlags2::FRAGMENT_SHADER;
                 dst_stage_mask = ash::vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
                     | ash::vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS;
             }
@@ -388,7 +384,8 @@ impl VulkanBackend {
                 src_stage_mask = ash::vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT;
                 dst_stage_mask = ash::vk::PipelineStageFlags2::FRAGMENT_SHADER;
             }
-            (
+            (ash::vk::ImageLayout::UNDEFINED, ash::vk::ImageLayout::DEPTH_READ_ONLY_OPTIMAL)
+            | (
                 ash::vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
                 ash::vk::ImageLayout::DEPTH_READ_ONLY_OPTIMAL,
             ) => {
@@ -430,7 +427,7 @@ impl VulkanBackend {
             }
             (ash::vk::ImageLayout::UNDEFINED, ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL) => {
                 dst_access_mask = ash::vk::AccessFlags2::SHADER_READ;
-                src_stage_mask = ash::vk::PipelineStageFlags2::TOP_OF_PIPE;
+                src_stage_mask = ash::vk::PipelineStageFlags2::FRAGMENT_SHADER;
                 dst_stage_mask = ash::vk::PipelineStageFlags2::FRAGMENT_SHADER;
             }
             _ => {
@@ -442,7 +439,9 @@ impl VulkanBackend {
             }
         };
 
-        println!("MARKER ==== TRANSITION IMAGE\n  {old_layout:?} -> {new_layout:?}");
+        if ENABLE_MARKER {
+            println!("MARKER ==== TRANSITION IMAGE\n  {old_layout:?} -> {new_layout:?}");
+        }
 
         let barrier = ash::vk::ImageMemoryBarrier2 {
             src_stage_mask,

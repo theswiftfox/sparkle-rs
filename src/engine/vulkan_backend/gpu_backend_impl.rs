@@ -9,9 +9,9 @@ use crate::engine::{
         ShaderStage, Shaders, TextureDesc, TextureFormat, ViewportDesc,
     },
     vulkan_backend::{
-        CurrentFrame, FRAMES_IN_FLIGHT, GAMMA_DEFAULT, PushConstants, SHADER_ENTRY_POINT,
-        SpecializationConstants, VulkanBackend, buffer::VulkanBuffer, create_shader_module,
-        texture::VulkanTexture, util::gpu_error_out_of_range,
+        CurrentFrame, ENABLE_MARKER, FRAMES_IN_FLIGHT, GAMMA_DEFAULT, PushConstants,
+        SHADER_ENTRY_POINT, SpecializationConstants, VulkanBackend, buffer::VulkanBuffer,
+        create_shader_module, texture::VulkanTexture, util::gpu_error_out_of_range,
     },
 };
 
@@ -779,7 +779,9 @@ impl GpuBackend for VulkanBackend {
             gpu_error_out_of_range("Command Buffer", frame_idx, self.command_buffers.len())
         })?;
 
-        println!("MARKER ==== WAIT FENCE");
+        if ENABLE_MARKER {
+            println!("MARKER ==== WAIT FENCE");
+        }
         unsafe { self.device.wait_for_fences(&[fence], true, u64::MAX) }.map_err(|e| {
             GpuError::new(
                 format!("Wait for Fences failed: {e:?}"),
@@ -787,7 +789,9 @@ impl GpuBackend for VulkanBackend {
             )
         })?;
 
-        println!("MARKER ==== AQUIRE NEXT SWAPCHAIN IMAGE");
+        if ENABLE_MARKER {
+            println!("MARKER ==== AQUIRE NEXT SWAPCHAIN IMAGE");
+        }
         let (swapchain_idx, _optimal) = match unsafe {
             self.swapchain.fn_ptr.acquire_next_image(
                 self.swapchain.swapchain,
@@ -820,12 +824,16 @@ impl GpuBackend for VulkanBackend {
                 )
             })?;
 
-        println!("MARKER ==== RESET FENCES");
+        if ENABLE_MARKER {
+            println!("MARKER ==== RESET FENCES");
+        }
         unsafe { self.device.reset_fences(&[fence]) }.map_err(|e| {
             GpuError::new(format!("Reset Fences failed: {e:?}"), GpuErrorKind::Other)
         })?;
 
-        println!("MARKER ==== RESET COMMAND BUFFER");
+        if ENABLE_MARKER {
+            println!("MARKER ==== RESET COMMAND BUFFER");
+        }
         unsafe {
             self.device
                 .reset_command_buffer(command_buffer, ash::vk::CommandBufferResetFlags::empty())
@@ -837,7 +845,9 @@ impl GpuBackend for VulkanBackend {
             )
         })?;
 
-        println!("MARKER ==== BEGIN COMMAND BUFFER");
+        if ENABLE_MARKER {
+            println!("MARKER ==== BEGIN COMMAND BUFFER");
+        }
         unsafe {
             self.device.begin_command_buffer(
                 command_buffer,
@@ -909,7 +919,9 @@ impl GpuBackend for VulkanBackend {
             .current_layout
             .set(ash::vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL);
 
-        println!("MARKER ==== CMD BIND DESCRIPTOR SETS");
+        if ENABLE_MARKER {
+            println!("MARKER ==== CMD BIND DESCRIPTOR SETS");
+        }
         unsafe {
             self.device.cmd_bind_descriptor_sets(
                 command_buffer,
@@ -975,7 +987,9 @@ impl GpuBackend for VulkanBackend {
             .current_layout
             .set(ash::vk::ImageLayout::PRESENT_SRC_KHR);
 
-        println!("MARKER ==== END COMMAND BUFFER");
+        if ENABLE_MARKER {
+            println!("MARKER ==== END COMMAND BUFFER");
+        }
         unsafe { self.device.end_command_buffer(command_buffer) }.map_err(|e| {
             GpuError::new(
                 format!("CommandBuffer recording failed: {e:?}"),
@@ -995,7 +1009,9 @@ impl GpuBackend for VulkanBackend {
             ..Default::default()
         };
 
-        println!("MARKER ==== QUEUE SUBMIT");
+        if ENABLE_MARKER {
+            println!("MARKER ==== QUEUE SUBMIT");
+        }
         unsafe { self.device.queue_submit(self.queue, &[submit_info], fence) }.map_err(|e| {
             GpuError::new(
                 format!("Failed to submit render pass to queue: {e:?}"),
@@ -1005,7 +1021,9 @@ impl GpuBackend for VulkanBackend {
     }
 
     fn present(&mut self) -> Result<(), GpuError> {
-        println!("MARKER ==== PRESENT");
+        if ENABLE_MARKER {
+            println!("MARKER ==== PRESENT");
+        }
 
         // Increment frame index for the NEXT frame after we've submitted this one
         self.frame_idx = (self.frame_idx + 1) % (FRAMES_IN_FLIGHT as usize);
@@ -1225,7 +1243,9 @@ impl GpuBackend for VulkanBackend {
             ..Default::default()
         };
 
-        println!("MARKER ==== CMD BEGIN RENDERING");
+        if ENABLE_MARKER {
+            println!("MARKER ==== CMD BEGIN RENDERING");
+        }
         unsafe {
             self.device
                 .cmd_begin_rendering(command_buffer, &rendering_info);
@@ -1242,7 +1262,9 @@ impl GpuBackend for VulkanBackend {
             println!("Cannot end render pass without begin_frame called first");
             return;
         };
-        println!("MARKER ==== CMD END RENDERING");
+        if ENABLE_MARKER {
+            println!("MARKER ==== CMD END RENDERING");
+        }
         unsafe {
             self.device.cmd_end_rendering(*command_buffer);
         }
@@ -1406,7 +1428,9 @@ impl GpuBackend for VulkanBackend {
                 ..Default::default()
             };
 
-            println!("MARKER ==== CMD UPDATE DESCRIPTOR SETS");
+            if ENABLE_MARKER {
+                println!("MARKER ==== CMD UPDATE DESCRIPTOR SETS");
+            }
             unsafe { self.device.update_descriptor_sets(&[write0], &[]) };
             for (i, copy) in copies.iter().enumerate() {
                 let set_idx = i + 1;
@@ -1485,7 +1509,6 @@ impl GpuBackend for VulkanBackend {
         };
 
         unsafe {
-            // println!("MARKER ==== CMD PUSH CONSTANTS");
             self.device.cmd_push_constants(
                 command_buffer,
                 self.pipeline_layout,
@@ -1496,7 +1519,6 @@ impl GpuBackend for VulkanBackend {
                     std::mem::size_of::<PushConstants>(),
                 ),
             );
-            // println!("MARKER ==== CMD DRAW INDEXED");
             self.device.cmd_draw_indexed(
                 command_buffer,
                 index_count,
@@ -1574,7 +1596,9 @@ impl GpuBackend for VulkanBackend {
             return;
         };
         let name = format!("{name} - BEGIN");
-        println!("MARKER ==== LABEL: {name}");
+        if ENABLE_MARKER {
+            println!("MARKER ==== LABEL: {name}");
+        }
 
         let Ok(c_str) = CString::new(name) else {
             return;
@@ -1604,7 +1628,9 @@ impl GpuBackend for VulkanBackend {
             return;
         };
         let name = format!("END EVENT");
-        println!("MARKER ==== LABEL: {name}");
+        if ENABLE_MARKER {
+            println!("MARKER ==== LABEL: {name}");
+        }
 
         let Ok(c_str) = CString::new(name) else {
             return;
