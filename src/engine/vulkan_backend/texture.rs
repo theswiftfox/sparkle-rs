@@ -20,6 +20,7 @@ pub struct VulkanTexture {
     pub width: u32,
     pub height: u32,
     pub format: TextureFormat,
+    pub aspect: ash::vk::ImageAspectFlags,
     pub mip_levels: u32,
     pub view_type: ash::vk::ImageViewType,
     pub compare_enabled: bool,
@@ -94,7 +95,7 @@ impl VulkanBackend {
             for set in &self.descriptors.sets {
                 let image_info = ash::vk::DescriptorImageInfo {
                     image_view: tex.image_view,
-                    image_layout: ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    image_layout: ash::vk::ImageLayout::DEPTH_READ_ONLY_OPTIMAL,
                     ..Default::default()
                 };
                 let sampler_info = ash::vk::DescriptorImageInfo {
@@ -237,6 +238,7 @@ impl VulkanBackend {
             width: info.width,
             height: info.height,
             format: info.format,
+            aspect: aspect_mask,
             mip_levels: 1,
             id: TEXTURE_ID.fetch_add(1, Ordering::SeqCst),
             compare_enabled: info.sampler.compare.is_some(),
@@ -356,6 +358,7 @@ impl VulkanBackend {
             width: info.width,
             height: info.height,
             format: info.format,
+            aspect: ash::vk::ImageAspectFlags::COLOR,
             mip_levels,
             id: TEXTURE_ID.fetch_add(1, Ordering::SeqCst),
             compare_enabled: info.sampler.compare.is_some(),
@@ -523,6 +526,7 @@ impl VulkanBackend {
             width,
             height,
             format,
+            aspect: ash::vk::ImageAspectFlags::COLOR,
             mip_levels: 1,
             id: TEXTURE_ID.fetch_add(1, Ordering::SeqCst),
             compare_enabled: sampler_desc.compare.is_some(),
@@ -552,7 +556,7 @@ impl VulkanBackend {
 
         let vk_format: ash::vk::Format = format.into();
 
-        let (depth_img, _mem) = Self::create_image(
+        let (depth_img, mem) = Self::create_image(
             &self.instance,
             &self.device,
             self.phys_device,
@@ -561,7 +565,7 @@ impl VulkanBackend {
             vk_format,
             1,
             ash::vk::ImageTiling::OPTIMAL,
-            ash::vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+            ash::vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | ash::vk::ImageUsageFlags::SAMPLED,
             ash::vk::MemoryPropertyFlags::DEVICE_LOCAL,
         )?;
 
@@ -605,12 +609,13 @@ impl VulkanBackend {
 
         Ok(VulkanTexture {
             image: depth_img,
-            mem: ash::vk::DeviceMemory::null(),
+            mem,
             image_view,
             sampler,
             width,
             height,
             format,
+            aspect: ash::vk::ImageAspectFlags::DEPTH,
             mip_levels: 1,
             id: TEXTURE_ID.fetch_add(1, Ordering::SeqCst),
             compare_enabled,

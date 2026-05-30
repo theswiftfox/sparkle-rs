@@ -714,8 +714,9 @@ impl<B: GpuBackend> Renderer<B> {
     ///   3. `finish_frame()` — submit commands and present
     /// Between steps 2 and 3, the editor can render its overlay (egui).
     pub fn update(&mut self, dt: f32, camera: &mut dyn Camera) -> Result<(), GpuError> {
+        self.backend.begin_frame()?;
         self.update_state(dt, camera);
-        self.render_scene(camera)?;
+        self.render(camera)?;
         self.finish_frame()
     }
 
@@ -728,6 +729,7 @@ impl<B: GpuBackend> Renderer<B> {
 
     /// Step 2: Execute the full rendering pipeline (all passes), but do NOT
     /// present. Call after update_state() and before finish_frame().
+    /// Note: ensure begin_frame was called by update_state or manually
     pub fn render_scene(&mut self, camera: &dyn Camera) -> Result<(), GpuError> {
         self.render(camera)
     }
@@ -793,9 +795,6 @@ impl<B: GpuBackend> Renderer<B> {
 
     /// Execute the full rendering pipeline for one frame.
     fn render(&mut self, camera: &dyn Camera) -> Result<(), GpuError> {
-        self.backend.begin_frame()?;
-
-        let backbuffer = self.backend.backbuffer().clone();
         let depth = self.backend.main_depth_target().clone();
         let viewport = self.backend.default_viewport();
 
@@ -907,36 +906,30 @@ impl<B: GpuBackend> Renderer<B> {
             }
         }
 
-        // Per-light passes (shadow -> deferred light -> forward)
+        // Process lights individually to correctly synchronize shadow mapping and accumulation
         let lights = self.scene.get_lights().clone();
         let mut first_light = true;
 
         for mut light in lights {
-            if light.t != LightType::Ambient {
-                // Calculate light-space matrix for shadow mapping
-                let dir = light.position * (-1.0) * self.shadow_dist;
-                let mut up = glm::vec3(0.0, 1.0, 0.0);
-                if (up.dot(&dir.normalize()) - 1.0).abs() <= 0.0000001 {
-                    up = glm::vec3(0.0, 0.0, 1.0);
-                }
-                let pos = camera.position();
-                let light_view = glm::look_at(&(pos + dir), &pos, &up);
-                light.light_proj = light.light_proj * light_view;
-
-                // Shadow pass
-                if let Some(ref mut shadow) = self.shadow_program {
-                    let shadow_vp = *shadow.viewport();
+            // 1. Shadow Mapping for this light
+            if let Some(ref mut shadow) = self.shadow_program {
+                if light.t != LightType::Ambient {
+                    let dir = light.position * (-1.0) * self.shadow_dist;
+                    let mut up = glm::vec3(0.0, 1.0, 0.0);
+                    if (up.dot(&dir.normalize()) - 1.0).abs() <= 0.0000001 {
+                        up = glm::vec3(0.0, 0.0, 1.0);
+                    }
+                    let pos = camera.position();
+                    let light_view = glm::look_at(&(pos + dir), &pos, &up);
+                    light.light_proj = light.light_proj * light_view;
 
                     shadow.set_light_space(light.light_proj);
                     shadow.update(&self.backend);
-
-                    // Update shared shadow UBO (binding 3) via command buffer
-                    let ls = LightSpaceUniforms {
-                        light_space_matrix: light.light_proj,
-                    };
                     self.backend.cmd_update_buffer(
                         &self.ubo_shadow_light_space,
-                        as_bytes(std::slice::from_ref(&ls)),
+                        as_bytes(std::slice::from_ref(&LightSpaceUniforms {
+                            light_space_matrix: light.light_proj,
+                        })),
                     );
 
                     self.backend.begin_event("Shadow Mapping");
@@ -944,28 +937,23 @@ impl<B: GpuBackend> Renderer<B> {
                         label: "shadow",
                         color_targets: vec![],
                         depth_target: Some(DepthAttachment {
-                            target: &shadow.shadow_map(),
-                            load_op: LoadOp::Clear,
+                            target: shadow.shadow_map(),
+                            load_op: LoadOp::Clear, // Always clear for the specific light's map
                             clear_depth: 1.0,
                             write_enabled: true,
                         }),
                     });
-                    self.backend.set_viewport(&shadow_vp);
+                    self.backend.set_viewport(shadow.viewport());
                     shadow.prepare_draw(&mut self.backend);
-                    // Inline draw loop with per-drawable pipeline switching for double-sided
                     if let Ok(drawables) = self.scene.traverse() {
                         let mut last_ds: Option<bool> = None;
-                        for i in 0..drawables.len() {
-                            let drawable = drawables[i].borrow();
+                        for drawable in drawables {
+                            let drawable = drawable.borrow();
                             let ds = drawable.is_double_sided();
-                            let pipeline_switched = last_ds != Some(ds);
-                            if pipeline_switched {
+                            if last_ds != Some(ds) {
                                 shadow.set_pipeline_for(&mut self.backend, ds);
                                 last_ds = Some(ds);
                             }
-                            // let rebind_material = pipeline_switched
-                            //     || i == 0
-                            //     || !drawables[i - 1].borrow().material().eq(drawable.material());
                             drawable.draw(&mut self.backend, false);
                         }
                     }
@@ -974,90 +962,71 @@ impl<B: GpuBackend> Renderer<B> {
                 }
             }
 
-            // Deferred light pass (fullscreen quad, accumulative blending)
+            // Bind shared inputs for lighting and transparency
+            if let Some(ref sp) = self.shadow_program {
+                self.backend
+                    .bind_render_target_as_texture(3, sp.shadow_map());
+            }
+            if let Some(ref ssao) = self.ssao_program {
+                self.backend
+                    .bind_render_target_as_texture(4, ssao.blur_target());
+            }
+            if let Some(ref dp) = self.deferred_program_pre {
+                self.backend
+                    .bind_render_target_as_texture(0, dp.positions());
+                self.backend
+                    .bind_render_target_as_texture(1, dp.normal_roughness());
+                self.backend
+                    .bind_render_target_as_texture(2, dp.albedo_metallic());
+            }
+
+            // 2. Deferred Lighting accumulation
             if let Some(ref mut def_light) = self.deferred_program_light {
                 let def_light_rt = def_light.render_target().clone();
-
                 def_light.set_light(&light);
                 def_light.update(&self.backend);
-
-                // Update shared light UBO (binding 2) via command buffer
-                let gpu_light = GpuLight::from_light(&light);
                 self.backend.cmd_update_buffer(
                     &self.ubo_light_data,
-                    as_bytes(std::slice::from_ref(&gpu_light)),
+                    as_bytes(std::slice::from_ref(&GpuLight::from_light(&light))),
                 );
-
-                let load = if first_light {
-                    LoadOp::Clear
-                } else {
-                    LoadOp::Load
-                };
 
                 self.backend.begin_event("Deferred Light Pass");
                 self.backend.begin_render_pass(&RenderPassDesc {
                     label: "deferred_light",
                     color_targets: vec![ColorAttachment {
                         target: &def_light_rt,
-                        load_op: load,
+                        load_op: if first_light {
+                            LoadOp::Clear
+                        } else {
+                            LoadOp::Load
+                        },
                         clear_color: [0.0, 0.0, 0.0, 0.0],
                     }],
                     depth_target: None,
                 });
                 self.backend.set_viewport(&viewport);
                 def_light.prepare_draw(&mut self.backend);
-
-                // Bind G-buffer inputs
-                if let Some(ref dp) = self.deferred_program_pre {
-                    self.backend
-                        .bind_render_target_as_texture(0, dp.positions());
-                    self.backend
-                        .bind_render_target_as_texture(1, dp.normal_roughness());
-                    self.backend
-                        .bind_render_target_as_texture(2, dp.albedo_metallic());
-                }
-                // Bind shadow map (sequential slot 3 = 4th texture in group 3)
-                if let Some(ref sp) = self.shadow_program {
-                    self.backend
-                        .bind_render_target_as_texture(3, sp.shadow_map());
-                }
-                // Bind blurred SSAO texture (sequential slot 4 = 5th texture in group 3)
-                if let Some(ref ssao) = self.ssao_program {
-                    self.backend
-                        .bind_render_target_as_texture(4, ssao.blur_target());
-                }
-
                 self.screen_quad.draw(&mut self.backend);
                 self.backend.end_render_pass();
                 self.backend.end_event();
             }
 
-            // Forward pass (transparent objects)
+            // 3. Forward accumulation
             if let Some(ref mut fwd) = self.forward_program {
                 let fwd_rt = fwd.render_target().clone();
-
                 fwd.set_light(&light);
                 fwd.update(&self.backend);
-
-                // Update shared light UBO (binding 2) for forward pass too
-                let gpu_light = GpuLight::from_light(&light);
-                self.backend.cmd_update_buffer(
-                    &self.ubo_light_data,
-                    as_bytes(std::slice::from_ref(&gpu_light)),
-                );
-
-                let load = if first_light {
-                    LoadOp::Clear
-                } else {
-                    LoadOp::Load
-                };
 
                 self.backend.begin_event("Forward Pass");
                 self.backend.begin_render_pass(&RenderPassDesc {
                     label: "forward",
                     color_targets: vec![ColorAttachment {
                         target: &fwd_rt,
-                        load_op: load,
+                        load_op: if first_light {
+                            LoadOp::Clear
+                        } else {
+                            LoadOp::Load
+                        },
                         clear_color: [0.0, 0.0, 0.0, 0.0],
                     }],
                     depth_target: Some(DepthAttachment {
@@ -1069,34 +1038,22 @@ impl<B: GpuBackend> Renderer<B> {
                 });
                 self.backend.set_viewport(&viewport);
                 fwd.prepare_draw(&mut self.backend);
-                // Bind shadow map (sequential slot 0 = 1st texture in group 3)
-                if let Some(ref sp) = self.shadow_program {
-                    self.backend
-                        .bind_render_target_as_texture(0, sp.shadow_map());
-                }
-                // Inline draw loop with per-drawable pipeline switching for double-sided
                 if let Ok(drawables) = self.scene.traverse() {
                     let mut last_ds: Option<bool> = None;
-                    for i in 0..drawables.len() {
-                        let drawable = drawables[i].borrow();
+                    for drawable in drawables {
+                        let drawable = drawable.borrow();
                         if drawable.object_type() != ObjType::Transparent {
                             continue;
                         }
                         let ds = drawable.is_double_sided();
-                        let pipeline_switched = last_ds != Some(ds);
-                        if pipeline_switched {
+                        if last_ds != Some(ds) {
                             fwd.set_pipeline_for(&mut self.backend, ds);
-                            // Rebind shadow map (external to pass, in group 3)
                             if let Some(ref sp) = self.shadow_program {
                                 self.backend
-                                    .bind_render_target_as_texture(0, sp.shadow_map());
+                                    .bind_render_target_as_texture(3, sp.shadow_map());
                             }
                             last_ds = Some(ds);
                         }
-                        // Always rebind material after pipeline switch (clears group 2)
-                        // let rebind_material = pipeline_switched
-                        //     || i == 0
-                        //     || !drawables[i - 1].borrow().material().eq(drawable.material());
                         drawable.draw(&mut self.backend, true);
                     }
                 }
@@ -1107,6 +1064,16 @@ impl<B: GpuBackend> Renderer<B> {
             first_light = false;
         }
 
+        let backbuffer = self.backend.backbuffer().clone();
+
+        if let Some(ref dl) = self.deferred_program_light {
+            self.backend
+                .bind_render_target_as_texture(0, dl.render_target());
+        }
+        if let Some(ref fwd) = self.forward_program {
+            self.backend
+                .bind_render_target_as_texture(1, fwd.render_target());
+        }
         // Output composite (deferred + forward -> backbuffer)
         if let Some(ref output) = self.output_program {
             self.backend.begin_event("Output Composite");
@@ -1121,14 +1088,6 @@ impl<B: GpuBackend> Renderer<B> {
             });
             self.backend.set_viewport(&viewport);
             output.prepare_draw(&mut self.backend);
-            if let Some(ref dl) = self.deferred_program_light {
-                self.backend
-                    .bind_render_target_as_texture(0, dl.render_target());
-            }
-            if let Some(ref fwd) = self.forward_program {
-                self.backend
-                    .bind_render_target_as_texture(1, fwd.render_target());
-            }
             self.screen_quad.draw(&mut self.backend);
             self.backend.end_render_pass();
             self.backend.end_event();

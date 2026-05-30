@@ -992,6 +992,7 @@ fn create_swapchain_and_depth_buffer(
             width: swap_extent.width,
             height: swap_extent.height,
             format: engine_fmt,
+            aspect: ash::vk::ImageAspectFlags::COLOR,
             mip_levels: 1,
             view_type: ash::vk::ImageViewType::TYPE_2D,
             compare_enabled: false,
