@@ -174,8 +174,8 @@ struct SsaoUniforms {
 pub(crate) struct SsaoPass<B: GpuBackend> {
     ssao_pipeline: B::Pipeline,
     blur_pipeline: B::Pipeline,
-    uniforms_buf: B::Buffer,
-    noise_texture: B::Texture,
+    pub(crate) uniforms_buf: B::Buffer,
+    pub(crate) noise_texture: B::Texture,
     ssao_target: B::RenderTarget,
     blur_target: B::RenderTarget,
     uniforms: SsaoUniforms,
@@ -195,8 +195,6 @@ impl<B: GpuBackend> SsaoPass<B> {
     /// Bind the SSAO pipeline, uniforms, and noise texture for the main SSAO sub-pass.
     pub fn prepare_draw_ssao(&self, backend: &mut B) {
         backend.set_pipeline(&self.ssao_pipeline);
-        backend.bind_uniform(ShaderStage::Fragment, 0, &self.uniforms_buf);
-        backend.bind_texture(0, &self.noise_texture);
     }
 
     /// Bind the blur pipeline for the blur sub-pass.
@@ -1009,7 +1007,7 @@ impl<B: GpuBackend> OutputPass<B> {
 /// (mat3→mat4 conversion) so the skybox moves with the camera.
 pub(crate) struct SkyBoxPass<B: GpuBackend> {
     pipeline: B::Pipeline,
-    vertex_uniforms_buf: B::Buffer,
+    pub(crate) vertex_uniforms_buf: B::Buffer,
     vertex_uniforms: ViewProjUniforms,
 }
 
@@ -1017,7 +1015,6 @@ impl<B: GpuBackend> SkyBoxPass<B> {
     /// Bind pipeline and vertex uniform buffer for drawing.
     pub fn prepare_draw(&self, backend: &mut B) {
         backend.set_pipeline(&self.pipeline);
-        backend.bind_uniform(ShaderStage::Vertex, 0, &self.vertex_uniforms_buf);
     }
 
     /// Upload view/projection matrices to GPU.
