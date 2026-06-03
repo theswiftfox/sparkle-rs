@@ -703,7 +703,7 @@ impl GpuBackend for VulkanBackend {
             src_stage_mask: ash::vk::PipelineStageFlags2::ALL_GRAPHICS
                 | ash::vk::PipelineStageFlags2::TRANSFER,
             dst_stage_mask: ash::vk::PipelineStageFlags2::TRANSFER,
-            src_access_mask: ash::vk::AccessFlags2::SHADER_READ
+            src_access_mask: ash::vk::AccessFlags2::UNIFORM_READ
                 | ash::vk::AccessFlags2::TRANSFER_WRITE,
             dst_access_mask: ash::vk::AccessFlags2::TRANSFER_WRITE,
             buffer: target,
@@ -875,8 +875,7 @@ impl GpuBackend for VulkanBackend {
                 )
             })?;
 
-        // Immediately transition swapchain image to satisfy "must not use before acquire" rule.
-        // We transition from UNDEFINED to COLOR_ATTACHMENT_OPTIMAL to prepare for rendering.
+        // Transition swapchain image
         self.transition_image_layout(
             command_buffer,
             swapchain_texture.image,
@@ -890,25 +889,11 @@ impl GpuBackend for VulkanBackend {
             .current_layout
             .set(ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
 
+        // Transition main depth target
         let depth_texture = &self.depth_targets[frame_idx];
-
-        self.transition_image_layout(
-            command_buffer,
-            swapchain_texture.image,
-            ash::vk::ImageLayout::UNDEFINED,
-            ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            ash::vk::ImageAspectFlags::COLOR,
-            1,
-            swapchain_texture.mip_levels,
-        )?;
-        swapchain_texture
-            .current_layout
-            .set(ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
-
         self.transition_image_layout(
             command_buffer,
             depth_texture.image,
-            // depth_texture.current_layout.get(),
             ash::vk::ImageLayout::UNDEFINED,
             ash::vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
             ash::vk::ImageAspectFlags::DEPTH,

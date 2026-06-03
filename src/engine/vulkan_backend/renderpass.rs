@@ -333,8 +333,12 @@ impl VulkanBackend {
                 src_stage_mask = ash::vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT;
                 dst_stage_mask = ash::vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT;
             }
-            (layout, _) if layout == new_layout => {
-                // If layouts match and aren't attachments, no barrier is strictly required for read-only layouts
+            (layout, _)
+                if layout == new_layout
+                    && layout != ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+                    && layout != ash::vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL =>
+            {
+                // Skip only if not an attachment; attachments require a barrier even if the layout matches
                 return Ok(());
             }
             (ash::vk::ImageLayout::GENERAL, ash::vk::ImageLayout::PRESENT_SRC_KHR)
@@ -362,8 +366,16 @@ impl VulkanBackend {
                 src_stage_mask = ash::vk::PipelineStageFlags2::TRANSFER;
                 dst_stage_mask = ash::vk::PipelineStageFlags2::FRAGMENT_SHADER;
             }
-            (ash::vk::ImageLayout::UNDEFINED, ash::vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL)
-            | (
+            (ash::vk::ImageLayout::UNDEFINED, ash::vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL) => {
+                src_access_mask = ash::vk::AccessFlags2::empty();
+                dst_access_mask = ash::vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE
+                    | ash::vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ;
+
+                src_stage_mask = ash::vk::PipelineStageFlags2::TOP_OF_PIPE;
+                dst_stage_mask = ash::vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
+                    | ash::vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS;
+            }
+            (
                 ash::vk::ImageLayout::DEPTH_READ_ONLY_OPTIMAL,
                 ash::vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
             ) => {
@@ -384,14 +396,21 @@ impl VulkanBackend {
                 src_stage_mask = ash::vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT;
                 dst_stage_mask = ash::vk::PipelineStageFlags2::FRAGMENT_SHADER;
             }
-            (ash::vk::ImageLayout::UNDEFINED, ash::vk::ImageLayout::DEPTH_READ_ONLY_OPTIMAL)
-            | (
+            (ash::vk::ImageLayout::UNDEFINED, ash::vk::ImageLayout::DEPTH_READ_ONLY_OPTIMAL) => {
+                src_access_mask = ash::vk::AccessFlags2::empty();
+                dst_access_mask = ash::vk::AccessFlags2::SHADER_READ;
+                src_stage_mask = ash::vk::PipelineStageFlags2::TOP_OF_PIPE;
+                dst_stage_mask = ash::vk::PipelineStageFlags2::FRAGMENT_SHADER;
+            }
+            (
                 ash::vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
                 ash::vk::ImageLayout::DEPTH_READ_ONLY_OPTIMAL,
             ) => {
-                src_access_mask = ash::vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE;
+                src_access_mask = ash::vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_WRITE
+                    | ash::vk::AccessFlags2::DEPTH_STENCIL_ATTACHMENT_READ;
                 dst_access_mask = ash::vk::AccessFlags2::SHADER_READ;
-                src_stage_mask = ash::vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS;
+                src_stage_mask = ash::vk::PipelineStageFlags2::EARLY_FRAGMENT_TESTS
+                    | ash::vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS;
                 dst_stage_mask = ash::vk::PipelineStageFlags2::FRAGMENT_SHADER;
             }
             (
@@ -426,8 +445,9 @@ impl VulkanBackend {
                     | ash::vk::PipelineStageFlags2::LATE_FRAGMENT_TESTS;
             }
             (ash::vk::ImageLayout::UNDEFINED, ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL) => {
+                src_access_mask = ash::vk::AccessFlags2::empty();
                 dst_access_mask = ash::vk::AccessFlags2::SHADER_READ;
-                src_stage_mask = ash::vk::PipelineStageFlags2::FRAGMENT_SHADER;
+                src_stage_mask = ash::vk::PipelineStageFlags2::TOP_OF_PIPE;
                 dst_stage_mask = ash::vk::PipelineStageFlags2::FRAGMENT_SHADER;
             }
             _ => {

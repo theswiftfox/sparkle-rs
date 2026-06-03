@@ -175,15 +175,21 @@ impl VulkanBackend {
     ) -> Result<VulkanTexture, GpuError> {
         let format: ash::vk::Format = info.format.into();
 
-        let (base_usage, aspect_mask) = match info.format {
-            TextureFormat::Depth32Float | TextureFormat::Depth24Stencil8 => (
+        let (base_usage, aspect_mask) = if info.format == TextureFormat::Depth32Float {
+            (
                 ash::vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
                 ash::vk::ImageAspectFlags::DEPTH,
-            ),
-            _ => (
+            )
+        } else if info.format == TextureFormat::Depth24Stencil8 {
+            (
+                ash::vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+                ash::vk::ImageAspectFlags::DEPTH | ash::vk::ImageAspectFlags::STENCIL,
+            )
+        } else {
+            (
                 ash::vk::ImageUsageFlags::COLOR_ATTACHMENT,
                 ash::vk::ImageAspectFlags::COLOR,
-            ),
+            )
         };
 
         let (rt, rt_mem) = Self::create_image(

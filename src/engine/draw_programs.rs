@@ -374,14 +374,11 @@ impl<B: GpuBackend> SsaoPass<B> {
 /// Output: `Rgba32Float` render target.
 pub(crate) struct ForwardPass<B: GpuBackend> {
     pipeline: B::Pipeline,
-    pipeline_double_sided: B::Pipeline,
-    vertex_uniforms_buf: B::Buffer,
-    pixel_uniforms_buf: B::Buffer,
-    light_buf: B::Buffer,
+    pipeline_double_sided: B::Pipeline, // Shared UBOs are bound globally
+    pub(crate) vertex_uniforms: ViewProjUniforms, // Shared UBOs are bound globally
     render_target: B::RenderTarget,
-    vertex_uniforms: ViewProjUniforms,
-    pixel_uniforms: CameraUniforms,
-    light_data: GpuLight,
+    pub(crate) pixel_uniforms: CameraUniforms,
+    pub(crate) light_data: GpuLight,
 }
 
 impl<B: GpuBackend> ForwardPass<B> {
@@ -392,9 +389,6 @@ impl<B: GpuBackend> ForwardPass<B> {
     /// Bind pipeline and all uniform buffers for drawing.
     pub fn prepare_draw(&self, backend: &mut B) {
         backend.set_pipeline(&self.pipeline);
-        backend.bind_uniform(ShaderStage::Vertex, 0, &self.vertex_uniforms_buf);
-        backend.bind_uniform(ShaderStage::Fragment, 0, &self.pixel_uniforms_buf);
-        backend.bind_uniform(ShaderStage::Fragment, 1, &self.light_buf);
     }
 
     /// Switch pipeline based on whether the drawable is double-sided.
@@ -405,28 +399,27 @@ impl<B: GpuBackend> ForwardPass<B> {
         } else {
             backend.set_pipeline(&self.pipeline);
         }
-        backend.bind_uniform(ShaderStage::Vertex, 0, &self.vertex_uniforms_buf);
-        backend.bind_uniform(ShaderStage::Fragment, 0, &self.pixel_uniforms_buf);
-        backend.bind_uniform(ShaderStage::Fragment, 1, &self.light_buf);
     }
 
     /// Upload all CPU-side uniform data to GPU buffers.
-    pub fn update(&self, backend: &B) {
-        backend.update_buffer(
-            &self.vertex_uniforms_buf,
-            as_bytes(std::slice::from_ref(&self.vertex_uniforms)),
-        );
-        backend.update_buffer(
-            &self.pixel_uniforms_buf,
-            as_bytes(std::slice::from_ref(&self.pixel_uniforms)),
-        );
-        backend.update_buffer(
-            &self.light_buf,
-            as_bytes(std::slice::from_ref(&self.light_data)),
-        );
-    }
+    // This method is no longer needed as the Renderer will directly update shared UBOs.
+    // pub fn update(&self, backend: &B) {
+    //     backend.update_buffer(
+    //         &self.vertex_uniforms_buf,
+    //         as_bytes(std::slice::from_ref(&self.vertex_uniforms)),
+    //     );
+    //     backend.update_buffer(
+    //         &self.pixel_uniforms_buf,
+    //         as_bytes(std::slice::from_ref(&self.pixel_uniforms)),
+    //     );
+    //     backend.update_buffer(
+    //         &self.light_buf,
+    //         as_bytes(std::slice::from_ref(&self.light_data)),
+    //     );
+    // }
 
     pub fn set_view(&mut self, view: glm::Mat4) {
+        // This updates the CPU-side struct
         self.vertex_uniforms.view = view;
     }
 
@@ -444,10 +437,12 @@ impl<B: GpuBackend> ForwardPass<B> {
     }
 
     pub fn set_ssao(&mut self, enabled: bool) {
+        // This updates the CPU-side struct
         self.pixel_uniforms.ssao = if enabled { 1 } else { 0 };
     }
 
     pub fn set_light(&mut self, light: &Light) {
+        // This updates the CPU-side struct
         self.light_data = GpuLight::from_light(light);
     }
 
@@ -520,47 +515,6 @@ impl<B: GpuBackend> ForwardPass<B> {
             ],
         })?;
 
-        let vertex_uniforms = ViewProjUniforms {
-            view: glm::identity(),
-            proj: glm::identity(),
-        };
-        let pixel_uniforms = CameraUniforms {
-            camera_pos: glm::zero(),
-            ssao: 1,
-        };
-        let light_data = GpuLight {
-            position: glm::zero(),
-            t: 0,
-            color: glm::zero(),
-            radius: 0.0,
-            light_space: glm::identity(),
-        };
-
-        let vertex_uniforms_buf = backend.create_buffer(
-            &BufferDesc {
-                label: "Forward ViewProj Uniforms".into(),
-                usage: BufferUsage::Uniform,
-                size: std::mem::size_of::<ViewProjUniforms>(),
-            },
-            Some(as_bytes(std::slice::from_ref(&vertex_uniforms))),
-        )?;
-        let pixel_uniforms_buf = backend.create_buffer(
-            &BufferDesc {
-                label: "Forward Camera Uniforms".into(),
-                usage: BufferUsage::Uniform,
-                size: std::mem::size_of::<CameraUniforms>(),
-            },
-            Some(as_bytes(std::slice::from_ref(&pixel_uniforms))),
-        )?;
-        let light_buf = backend.create_buffer(
-            &BufferDesc {
-                label: "Forward Light Uniforms".into(),
-                usage: BufferUsage::Uniform,
-                size: std::mem::size_of::<GpuLight>(),
-            },
-            Some(as_bytes(std::slice::from_ref(&light_data))),
-        )?;
-
         let render_target = backend.create_render_target(&RenderTargetDesc {
             width: resolution.0,
             height: resolution.1,
@@ -569,15 +523,24 @@ impl<B: GpuBackend> ForwardPass<B> {
         })?;
 
         Ok(ForwardPass {
+            vertex_uniforms: ViewProjUniforms {
+                view: glm::identity(),
+                proj: glm::identity(),
+            },
+            pixel_uniforms: CameraUniforms {
+                camera_pos: glm::zero(),
+                ssao: 1,
+            },
+            light_data: GpuLight {
+                position: glm::zero(),
+                t: 0,
+                color: glm::zero(),
+                radius: 0.0,
+                light_space: glm::identity(),
+            },
             pipeline,
             pipeline_double_sided,
-            vertex_uniforms_buf,
-            pixel_uniforms_buf,
-            light_buf,
             render_target,
-            vertex_uniforms,
-            pixel_uniforms,
-            light_data,
         })
     }
 
@@ -603,13 +566,9 @@ impl<B: GpuBackend> ForwardPass<B> {
 pub(crate) struct DeferredPassPre<B: GpuBackend> {
     pipeline: B::Pipeline,
     pipeline_double_sided: B::Pipeline,
-    vertex_uniforms_buf: B::Buffer,
-    pixel_uniforms_buf: B::Buffer,
     positions_target: B::RenderTarget,
     normal_roughness_target: B::RenderTarget,
     albedo_metallic_target: B::RenderTarget,
-    vertex_uniforms: ViewProjUniforms,
-    pixel_uniforms: NearFarUniforms,
 }
 
 impl<B: GpuBackend> DeferredPassPre<B> {
@@ -628,8 +587,6 @@ impl<B: GpuBackend> DeferredPassPre<B> {
     /// Bind pipeline and all uniform buffers for drawing.
     pub fn prepare_draw(&self, backend: &mut B) {
         backend.set_pipeline(&self.pipeline);
-        backend.bind_uniform(ShaderStage::Vertex, 0, &self.vertex_uniforms_buf);
-        backend.bind_uniform(ShaderStage::Fragment, 0, &self.pixel_uniforms_buf);
     }
 
     /// Switch pipeline based on whether the drawable is double-sided.
@@ -641,38 +598,6 @@ impl<B: GpuBackend> DeferredPassPre<B> {
         } else {
             backend.set_pipeline(&self.pipeline);
         }
-        backend.bind_uniform(ShaderStage::Vertex, 0, &self.vertex_uniforms_buf);
-        backend.bind_uniform(ShaderStage::Fragment, 0, &self.pixel_uniforms_buf);
-    }
-
-    /// Upload all CPU-side uniform data to GPU buffers.
-    pub fn update(&self, backend: &B) {
-        backend.update_buffer(
-            &self.vertex_uniforms_buf,
-            as_bytes(std::slice::from_ref(&self.vertex_uniforms)),
-        );
-        backend.update_buffer(
-            &self.pixel_uniforms_buf,
-            as_bytes(std::slice::from_ref(&self.pixel_uniforms)),
-        );
-    }
-
-    pub fn set_view(&mut self, view: glm::Mat4) {
-        self.vertex_uniforms.view = view;
-    }
-
-    pub fn set_proj(&mut self, proj: glm::Mat4) {
-        self.vertex_uniforms.proj = proj;
-    }
-
-    pub fn set_view_proj(&mut self, view: glm::Mat4, proj: glm::Mat4) {
-        self.vertex_uniforms.view = view;
-        self.vertex_uniforms.proj = proj;
-    }
-
-    pub fn set_camera_planes(&mut self, near: f32, far: f32) {
-        self.pixel_uniforms.near_plane = near;
-        self.pixel_uniforms.far_plane = far;
     }
 
     pub fn create(
@@ -742,34 +667,6 @@ impl<B: GpuBackend> DeferredPassPre<B> {
             ],
         })?;
 
-        let vertex_uniforms = ViewProjUniforms {
-            view: glm::identity(),
-            proj: glm::identity(),
-        };
-        let pixel_uniforms = NearFarUniforms {
-            near_plane: 0.0,
-            far_plane: 0.0,
-            _pad: 0.0,
-            _pad2: 0.0,
-        };
-
-        let vertex_uniforms_buf = backend.create_buffer(
-            &BufferDesc {
-                label: "Deferred Pre ViewProj Uniforms".into(),
-                usage: BufferUsage::Uniform,
-                size: std::mem::size_of::<ViewProjUniforms>(),
-            },
-            Some(as_bytes(std::slice::from_ref(&vertex_uniforms))),
-        )?;
-        let pixel_uniforms_buf = backend.create_buffer(
-            &BufferDesc {
-                label: "Deferred Pre NearFar Uniforms".into(),
-                usage: BufferUsage::Uniform,
-                size: std::mem::size_of::<NearFarUniforms>(),
-            },
-            Some(as_bytes(std::slice::from_ref(&pixel_uniforms))),
-        )?;
-
         let positions_target = backend.create_render_target(&RenderTargetDesc {
             width: resolution.0,
             height: resolution.1,
@@ -792,13 +689,9 @@ impl<B: GpuBackend> DeferredPassPre<B> {
         Ok(DeferredPassPre {
             pipeline,
             pipeline_double_sided,
-            vertex_uniforms_buf,
-            pixel_uniforms_buf,
             positions_target,
             normal_roughness_target,
             albedo_metallic_target,
-            vertex_uniforms,
-            pixel_uniforms,
         })
     }
 
@@ -837,11 +730,8 @@ impl<B: GpuBackend> DeferredPassPre<B> {
 /// Output: `R16g16b16a16Float` render target (accumulated light).
 pub(crate) struct DeferredPassLight<B: GpuBackend> {
     pipeline: B::Pipeline,
-    pixel_uniforms_buf: B::Buffer,
-    light_buf: B::Buffer,
     render_target: B::RenderTarget,
     pixel_uniforms: CameraUniforms,
-    light_data: GpuLight,
 }
 
 impl<B: GpuBackend> DeferredPassLight<B> {
@@ -852,32 +742,21 @@ impl<B: GpuBackend> DeferredPassLight<B> {
     /// Bind pipeline and all uniform buffers for drawing.
     pub fn prepare_draw(&self, backend: &mut B) {
         backend.set_pipeline(&self.pipeline);
-        backend.bind_uniform(ShaderStage::Fragment, 0, &self.pixel_uniforms_buf);
-        backend.bind_uniform(ShaderStage::Fragment, 1, &self.light_buf);
     }
 
     /// Upload all CPU-side uniform data to GPU buffers.
-    pub fn update(&self, backend: &B) {
-        backend.update_buffer(
-            &self.pixel_uniforms_buf,
-            as_bytes(std::slice::from_ref(&self.pixel_uniforms)),
-        );
-        backend.update_buffer(
-            &self.light_buf,
-            as_bytes(std::slice::from_ref(&self.light_data)),
-        );
-    }
-
+    // This method is no longer needed as the Renderer will directly update shared UBOs.
+    // pub fn update(&self, backend: &B) {
+    //     backend.update_buffer(&self.pixel_uniforms_buf, as_bytes(std::slice::from_ref(&self.pixel_uniforms)));
+    //     backend.update_buffer(&self.light_buf, as_bytes(std::slice::from_ref(&self.light_data)));
+    // }
     pub fn set_camera_pos(&mut self, pos: glm::Vec3) {
+        // This updates the CPU-side struct
         self.pixel_uniforms.camera_pos = pos;
     }
 
     pub fn set_ssao(&mut self, enabled: bool) {
         self.pixel_uniforms.ssao = if enabled { 1 } else { 0 };
-    }
-
-    pub fn set_light(&mut self, light: &Light) {
-        self.light_data = GpuLight::from_light(light);
     }
 
     pub fn create(
@@ -917,35 +796,6 @@ impl<B: GpuBackend> DeferredPassLight<B> {
             ],
         })?;
 
-        let pixel_uniforms = CameraUniforms {
-            camera_pos: glm::zero(),
-            ssao: 1,
-        };
-        let light_data = GpuLight {
-            position: glm::zero(),
-            t: 0,
-            color: glm::zero(),
-            radius: 0.0,
-            light_space: glm::identity(),
-        };
-
-        let pixel_uniforms_buf = backend.create_buffer(
-            &BufferDesc {
-                label: "Deferred Light Camera Uniforms".into(),
-                usage: BufferUsage::Uniform,
-                size: std::mem::size_of::<CameraUniforms>(),
-            },
-            Some(as_bytes(std::slice::from_ref(&pixel_uniforms))),
-        )?;
-        let light_buf = backend.create_buffer(
-            &BufferDesc {
-                label: "Deferred Light `Light` Uniforms".into(),
-                usage: BufferUsage::Uniform,
-                size: std::mem::size_of::<GpuLight>(),
-            },
-            Some(as_bytes(std::slice::from_ref(&light_data))),
-        )?;
-
         let render_target = backend.create_render_target(&RenderTargetDesc {
             width: resolution.0,
             height: resolution.1,
@@ -954,12 +804,12 @@ impl<B: GpuBackend> DeferredPassLight<B> {
         })?;
 
         Ok(DeferredPassLight {
+            pixel_uniforms: CameraUniforms {
+                camera_pos: glm::zero(),
+                ssao: 1,
+            },
             pipeline,
-            pixel_uniforms_buf,
-            light_buf,
             render_target,
-            pixel_uniforms,
-            light_data,
         })
     }
 
@@ -977,7 +827,7 @@ impl<B: GpuBackend> DeferredPassLight<B> {
 
 // ShadowPass
 
-const SHADOW_MAP_SIZE: u32 = 4096;
+const SHADOW_MAP_SIZE: u32 = 2048;
 
 /// Shadow mapping pass: renders the scene from the light's perspective into a depth map.
 ///
@@ -985,12 +835,11 @@ const SHADOW_MAP_SIZE: u32 = 4096;
 /// Output: `Depth32Float` shadow map render target (4096x4096).
 /// The shadow map has a comparison sampler for PCF filtering.
 pub(crate) struct ShadowPass<B: GpuBackend> {
-    pipeline: B::Pipeline,
-    pipeline_double_sided: B::Pipeline,
-    vertex_uniforms_buf: B::Buffer,
+    pipeline: B::Pipeline,              // Shared UBOs are bound globally
+    pipeline_double_sided: B::Pipeline, // Shared UBOs are bound globally
     shadow_map: B::RenderTarget,
     shadow_viewport: ViewportDesc,
-    vertex_uniforms: LightSpaceUniforms,
+    pub(crate) vertex_uniforms: LightSpaceUniforms,
 }
 
 impl<B: GpuBackend> ShadowPass<B> {
@@ -1005,7 +854,6 @@ impl<B: GpuBackend> ShadowPass<B> {
     /// Bind pipeline and vertex uniform buffer for drawing.
     pub fn prepare_draw(&self, backend: &mut B) {
         backend.set_pipeline(&self.pipeline);
-        backend.bind_uniform(ShaderStage::Vertex, 4, &self.vertex_uniforms_buf);
     }
 
     /// Switch pipeline based on whether the drawable is double-sided.
@@ -1016,16 +864,10 @@ impl<B: GpuBackend> ShadowPass<B> {
         } else {
             backend.set_pipeline(&self.pipeline);
         }
-        backend.bind_uniform(ShaderStage::Vertex, 4, &self.vertex_uniforms_buf);
     }
 
     /// Upload light-space matrix to GPU.
-    pub fn update(&self, backend: &B) {
-        backend.update_buffer(
-            &self.vertex_uniforms_buf,
-            as_bytes(std::slice::from_ref(&self.vertex_uniforms)),
-        );
-    }
+    // This method is no longer needed as the Renderer will directly update shared UBOs.
 
     pub fn set_light_space(&mut self, light_space_matrix: glm::Mat4) {
         self.vertex_uniforms.light_space_matrix = light_space_matrix;
@@ -1072,19 +914,6 @@ impl<B: GpuBackend> ShadowPass<B> {
             ],
         })?;
 
-        let vertex_uniforms = LightSpaceUniforms {
-            light_space_matrix: glm::identity(),
-        };
-
-        let vertex_uniforms_buf = backend.create_buffer(
-            &BufferDesc {
-                label: "ShadowPass LightSpace Uniforms".into(),
-                usage: BufferUsage::Uniform,
-                size: std::mem::size_of::<LightSpaceUniforms>(),
-            },
-            Some(as_bytes(std::slice::from_ref(&vertex_uniforms))),
-        )?;
-
         let shadow_map = backend.create_render_target(&RenderTargetDesc {
             width: SHADOW_MAP_SIZE,
             height: SHADOW_MAP_SIZE,
@@ -1107,12 +936,13 @@ impl<B: GpuBackend> ShadowPass<B> {
         };
 
         Ok(ShadowPass {
+            vertex_uniforms: LightSpaceUniforms {
+                light_space_matrix: glm::identity(),
+            },
             pipeline,
             pipeline_double_sided,
-            vertex_uniforms_buf,
             shadow_map,
             shadow_viewport,
-            vertex_uniforms,
         })
     }
 }

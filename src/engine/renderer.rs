@@ -302,14 +302,6 @@ impl<B: GpuBackend> Renderer<B> {
             as_bytes(std::slice::from_ref(&self.near_far_cpu)),
         );
 
-        // Legacy draw program updates (wgpu path)
-        if let Some(ref mut fwd) = self.forward_program {
-            fwd.set_proj(proj);
-        }
-        if let Some(ref mut dp) = self.deferred_program_pre {
-            dp.set_proj(proj);
-            dp.set_camera_planes(near, far);
-        }
         if let Some(ref mut sky) = self.skybox_program {
             sky.set_proj(proj);
         }
@@ -764,7 +756,7 @@ impl<B: GpuBackend> Renderer<B> {
         self.skybox_view_proj_cpu.view = glm::mat3_to_mat4(&glm::mat4_to_mat3(&view));
         self.backend.update_buffer(
             &self.ubo_skybox_view_proj,
-            as_bytes(std::slice::from_ref(&self.skybox_view_proj_cpu)),
+            as_bytes(std::slice::from_ref(&self.skybox_view_proj_cpu)), // This is fine, outside the loop
         );
 
         // Keep legacy draw program updates (still needed by wgpu path)
@@ -772,20 +764,11 @@ impl<B: GpuBackend> Renderer<B> {
             fwd.set_view(view);
             fwd.set_camera_pos(pos);
             fwd.set_ssao(ssao_enabled);
-            fwd.update(&self.backend);
         }
-        if let Some(ref mut dp) = self.deferred_program_pre {
-            dp.set_view(view);
-            dp.update(&self.backend);
-        }
+
         if let Some(ref mut dl) = self.deferred_program_light {
             dl.set_camera_pos(pos);
             dl.set_ssao(ssao_enabled);
-            dl.update(&self.backend);
-        }
-        if let Some(ref mut ssao) = self.ssao_program {
-            ssao.set_view(view);
-            ssao.update(&self.backend);
         }
         if let Some(ref mut sky) = self.skybox_program {
             sky.set_view(glm::mat3_to_mat4(&glm::mat4_to_mat3(&view)));
@@ -863,6 +846,14 @@ impl<B: GpuBackend> Renderer<B> {
                 let ssao_rt = ssao.ssao_target().clone();
                 let blur_rt = ssao.blur_target().clone();
 
+                // Bind G-buffer inputs (slot 0 = position, slot 1 = normal+roughness)
+                if let Some(ref dp) = self.deferred_program_pre {
+                    self.backend
+                        .bind_render_target_as_texture(0, dp.positions());
+                    self.backend
+                        .bind_render_target_as_texture(1, dp.normal_roughness());
+                }
+
                 // Sub-pass 2a: compute raw SSAO
                 self.backend.begin_event("SSAO");
                 self.backend.begin_render_pass(&RenderPassDesc {
@@ -876,16 +867,11 @@ impl<B: GpuBackend> Renderer<B> {
                 });
                 self.backend.set_viewport(&viewport);
                 ssao.prepare_draw_ssao(&mut self.backend);
-                // Bind G-buffer inputs (slot 0 = position, slot 1 = normal+roughness)
-                if let Some(ref dp) = self.deferred_program_pre {
-                    self.backend
-                        .bind_render_target_as_texture(0, dp.positions());
-                    self.backend
-                        .bind_render_target_as_texture(1, dp.normal_roughness());
-                }
                 self.screen_quad.draw(&mut self.backend);
                 self.backend.end_render_pass();
                 self.backend.end_event();
+
+                self.backend.bind_render_target_as_texture(0, &ssao_rt);
 
                 // Sub-pass 2b: blur SSAO
                 self.backend.begin_event("SSAO Blur");
@@ -899,7 +885,6 @@ impl<B: GpuBackend> Renderer<B> {
                     depth_target: None,
                 });
                 ssao.prepare_draw_blur(&mut self.backend);
-                self.backend.bind_render_target_as_texture(0, &ssao_rt);
                 self.screen_quad.draw(&mut self.backend);
                 self.backend.end_render_pass();
                 self.backend.end_event();
@@ -911,6 +896,11 @@ impl<B: GpuBackend> Renderer<B> {
         let mut first_light = true;
 
         for mut light in lights {
+            self.backend.cmd_update_buffer(
+                &self.ubo_light_data,
+                as_bytes(std::slice::from_ref(&GpuLight::from_light(&light))),
+            );
+
             // 1. Shadow Mapping for this light
             if let Some(ref mut shadow) = self.shadow_program {
                 if light.t != LightType::Ambient {
@@ -923,8 +913,6 @@ impl<B: GpuBackend> Renderer<B> {
                     let light_view = glm::look_at(&(pos + dir), &pos, &up);
                     light.light_proj = light.light_proj * light_view;
 
-                    shadow.set_light_space(light.light_proj);
-                    shadow.update(&self.backend);
                     self.backend.cmd_update_buffer(
                         &self.ubo_shadow_light_space,
                         as_bytes(std::slice::from_ref(&LightSpaceUniforms {
@@ -983,12 +971,6 @@ impl<B: GpuBackend> Renderer<B> {
             // 2. Deferred Lighting accumulation
             if let Some(ref mut def_light) = self.deferred_program_light {
                 let def_light_rt = def_light.render_target().clone();
-                def_light.set_light(&light);
-                def_light.update(&self.backend);
-                self.backend.cmd_update_buffer(
-                    &self.ubo_light_data,
-                    as_bytes(std::slice::from_ref(&GpuLight::from_light(&light))),
-                );
 
                 self.backend.begin_event("Deferred Light Pass");
                 self.backend.begin_render_pass(&RenderPassDesc {
@@ -1014,8 +996,6 @@ impl<B: GpuBackend> Renderer<B> {
             // 3. Forward accumulation
             if let Some(ref mut fwd) = self.forward_program {
                 let fwd_rt = fwd.render_target().clone();
-                fwd.set_light(&light);
-                fwd.update(&self.backend);
 
                 self.backend.begin_event("Forward Pass");
                 self.backend.begin_render_pass(&RenderPassDesc {

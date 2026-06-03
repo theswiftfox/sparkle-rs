@@ -1099,6 +1099,7 @@ fn create_logical_device(
         descriptor_binding_uniform_buffer_update_after_bind: ash::vk::TRUE,
         descriptor_binding_partially_bound: ash::vk::TRUE,
         descriptor_binding_sampled_image_update_after_bind: ash::vk::TRUE,
+        descriptor_binding_update_unused_while_pending: ash::vk::TRUE,
         runtime_descriptor_array: ash::vk::TRUE,
         p_next: &mut vk_13_feats as *mut _ as *mut std::ffi::c_void,
         ..Default::default()
@@ -1112,6 +1113,8 @@ fn create_logical_device(
         features: ash::vk::PhysicalDeviceFeatures {
             sampler_anisotropy: ash::vk::TRUE,
             shader_int16: ash::vk::TRUE,
+            shader_sampled_image_array_dynamic_indexing: ash::vk::TRUE,
+            shader_uniform_buffer_array_dynamic_indexing: ash::vk::TRUE,
             ..Default::default()
         },
         p_next: &mut shader_float16_feats as *mut _ as *mut std::ffi::c_void,
