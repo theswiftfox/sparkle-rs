@@ -1253,34 +1253,7 @@ impl GpuBackend for VulkanBackend {
         unsafe {
             self.device.cmd_end_rendering(*command_buffer);
         }
-        // for &(image, aspect, ref layout_cell) in pass_targets {
-        //     // Skip swapchain images — they transition to PRESENT_SRC_KHR
-        //     // in end_frame, not SHADER_READ_ONLY_OPTIMAL
-        //     // (swapchain images lack SAMPLED_BIT)
-        //     if self
-        //         .swapchain
-        //         .swapchain_images
-        //         .iter()
-        //         .any(|tex| tex.image == image)
-        //     {
-        //         continue;
-        //     }
-        //     let old_layout = layout_cell.get();
-        //     if self
-        //         .transition_image_layout(
-        //             *command_buffer,
-        //             image,
-        //             old_layout,
-        //             ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-        //             aspect,
-        //             1,
-        //             1,
-        //         )
-        //         .is_ok()
-        //     {
-        //         layout_cell.set(ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
-        //     }
-        // }
+
         let Some(CurrentFrame { pass_targets, .. }) = &mut self.current_frame else {
             return;
         };
@@ -1516,6 +1489,7 @@ impl GpuBackend for VulkanBackend {
         // Only reset the model matrix; keep texture indices as they are often
         // pass-wide or will be overwritten by the next material bind.
         pending_push.model = PushConstants::default().model;
+        pending_push.has_parallax = 0;
     }
 
     fn set_model_matrix(&mut self, model: &glm::Mat4) {
@@ -1526,6 +1500,17 @@ impl GpuBackend for VulkanBackend {
         pending_push.model.copy_from_slice(unsafe {
             std::slice::from_raw_parts(data.as_ptr() as *const f32, 16)
         });
+    }
+
+    fn set_material_properties(&mut self, props: crate::engine::backend::MaterialProperties) {
+        let Some(CurrentFrame { pending_push, .. }) = &mut self.current_frame else {
+            return;
+        };
+        pending_push.has_parallax = if props.has_parallax {
+            ash::vk::TRUE
+        } else {
+            ash::vk::FALSE
+        }
     }
 
     fn backbuffer(&self) -> Self::RenderTarget {

@@ -57,8 +57,6 @@ public float3 BRDF(
 	float dotNH = clamp(dot(N, H), 0.0, 1.0);
 	float dotHV = clamp(dot(L, H), 0.0, 1.0);
 
-	radiance *= dotNL;
-
 	// D = Normal distribution
 	float D = NDF(dotNH, roughness);
 	// G = Geometric shadowing term (Microfacets shadowing)
@@ -67,8 +65,8 @@ public float3 BRDF(
 	float3 F = FresnelSchlick(dotHV, F0);
 
 	float3 kD = 1.0 - F;
-	float3 diffuse = kD * (albedo / PI);
-	float3 specular = (F * G * D) / (4.0 * dotNL * dotNV);
+	float3 diffuse = kD * (albedo / PI) * dotNL;
+	float3 specular = (F * G * D) / (4.0 * dotNV);
 
 	float3 color = (diffuse + specular) * radiance;
 

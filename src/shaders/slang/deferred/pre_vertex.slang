@@ -1,3 +1,6 @@
+import push_constants;
+
+import util;
 
 struct VS_IN {
 	float3 pos			: POSITION;
@@ -10,6 +13,7 @@ struct VS_IN {
 struct VS_OUT {
 	float4 pos			: SV_Position;
 	float4 worldPos 	: POSITION_WORLD;
+	float3 worldView	: VIEW_WORLD;
 	float3 normal		: NORMAL;
 	float2 txCoord 		: TEXCOORD0;
 	float3x3 TBN		: TBN_MATRIX;
@@ -18,14 +22,6 @@ struct VS_OUT {
 [[vk::binding(0, 0)]] cbuffer FrameConsts : register(b0) {
 	float4x4 view;
 	float4x4 proj;
-};
-
-[[vk::push_constant]] cbuffer PushConstants {
-	float4x4 model;
-	uint tex0;
-	uint tex1;
-	uint tex2;
-	uint tex3;
 };
 
 [shader("vertex")]
@@ -45,5 +41,9 @@ VS_OUT main(VS_IN input) {
 	float3 N = normalize(mul(normalMat, input.normal));
 
 	output.TBN = float3x3(T,B,N);
+
+	float3 cameraPos = getCameraPos(view);
+	output.worldView = normalize(cameraPos - worldPos.xyz);
+
 	return output;
 }

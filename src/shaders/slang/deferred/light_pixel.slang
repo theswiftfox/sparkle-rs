@@ -16,8 +16,6 @@ Sampler2D<float4> gbuffer[] : register(t0);
 
 [[vk::push_constant]] cbuffer PushConstants {
 	float4x4 model;
-	// bool hdrEnabled;
-	// float gamma;
 	uint tex0;
 	uint tex1;
 	uint tex2;
@@ -62,9 +60,6 @@ PS_OUT main(float4 screenPos : SV_Position) {
 		float3 ambient = 0.15 * albedo.rgb * ambientOcclusion;
 		color = ambient;
 	}
-	// hdr
-	// color = (color / (color + 1.0));
-	// color = pow(color, 1/2.2);
 	output.color = float4(color, 1.0);
     return output;
 }

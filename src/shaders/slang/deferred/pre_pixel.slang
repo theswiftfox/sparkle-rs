@@ -1,8 +1,11 @@
 import color_utils;
+import push_constants;
+import parallax;
 
 struct PS_IN {
 	float4 pos : SV_Position;
 	float4 worldPos : POSITION_WORLD;
+	float3 worldView	: VIEW_WORLD;
 	float3 normal : NORMAL;
 	float2 txCoord : TEXCOORD0;
 	float3x3 TBN : TBN_MATRIX;
@@ -28,30 +31,41 @@ float calcLinearDepth(float zval)
 [[vk::binding(6, 0)]]
 Sampler2D<float4> textures[] : register(t0);
 
-[[vk::push_constant]] cbuffer PushConstants {
-	float4x4 model;
-	uint tex0;
-	uint tex1;
-	uint tex2;
-	uint tex3;
-};
-
 [vk::constant_id(1)] float gamma = 2.2;
 
 [shader("pixel")]
 PS_OUT main(PS_IN input) {
     PS_OUT output = (PS_OUT)0;
 
-	float4 albedo = textures[tex0].Sample(input.txCoord);
+	float2 dx = ddx(input.txCoord);
+	float2 dy = ddy(input.txCoord);
+
+	float3 tView = normalize(mul(input.TBN, input.worldView));
+    // flip vector to point INTO the floor surface, and match glTF UV orientation
+ 	float3 tangentView;
+    tangentView.x = tView.x;   // Keep X native
+    tangentView.y = tView.y;  // Flip Y to cancel forward/backward drift
+    tangentView.z = abs(tView.z); // Force Z positive so ray-marching always steps downward into depth layers
+
+	float2 offsetTxCoords = input.txCoord;
+	if (has_parallax > 0) {
+		offsetTxCoords = parallaxMapping(textures[tex2], input.txCoord, tangentView, dx, dy);
+	}
+
+	float2 sharpDx = dx * 0.4;
+	float2 sharpDy = dy * 0.4;
+
+	float4 albedo = textures[tex0].SampleGrad(offsetTxCoords, sharpDx, sharpDy);
 	albedo.rgb = srgbToLinear(albedo.rgb, gamma);
     float4 pos = input.worldPos;
 
-	float3 normal = textures[tex2].Sample(input.txCoord).xyz;
+	float3 normal = textures[tex2].SampleGrad(offsetTxCoords, sharpDx, sharpDy).xyz;
+	// normal.xy = normal.xy * 1.5; // increase depth illusion
 	normal = normalize((normal * 2.0) - 1.0);
 
 	float3 normal_out = normalize(mul(normal, input.TBN));
 
-	float2 mr = textures[tex1].Sample(input.txCoord).gb;
+	float2 mr = textures[tex1].SampleGrad(offsetTxCoords, sharpDx, sharpDy).gb;
 
 	float roughness = mr.g;
 	float metallic = mr.r;

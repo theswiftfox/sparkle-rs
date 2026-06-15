@@ -193,8 +193,8 @@ pub struct SamplerDesc {
 impl Default for SamplerDesc {
     fn default() -> Self {
         SamplerDesc {
-            address_u: AddressMode::Clamp,
-            address_v: AddressMode::Clamp,
+            address_u: AddressMode::Repeat,
+            address_v: AddressMode::Repeat,
             filter: FilterMode::Linear,
             compare: None,
         }
@@ -507,6 +507,8 @@ pub trait GpuBackend: Sized + 'static {
     /// on wgpu this updates the model UBO bind group.
     fn set_model_matrix(&mut self, model: &glm::Mat4);
 
+    fn set_material_properties(&mut self, props: MaterialProperties);
+
     // --- Accessors ---
 
     /// Get the current frame's backbuffer render target.
@@ -547,11 +549,16 @@ pub struct Shaders<B: GpuBackend> {
 
 // Material
 
+pub struct MaterialProperties {
+    pub has_parallax: bool,
+}
+
 static MATERIAL_ID: AtomicUsize = AtomicUsize::new(0);
 
 /// A collection of textures bound to shader slots, representing a surface material.
 pub struct Material<B: GpuBackend> {
     textures: HashMap<u32, Rc<B::Texture>>,
+    has_parallax: bool,
     id: usize,
 }
 
@@ -559,6 +566,7 @@ impl<B: GpuBackend> Material<B> {
     pub fn new() -> Self {
         Material {
             textures: HashMap::new(),
+            has_parallax: false,
             id: MATERIAL_ID.fetch_add(1, Ordering::SeqCst),
         }
     }
@@ -567,6 +575,9 @@ impl<B: GpuBackend> Material<B> {
     pub fn bind(&self, backend: &mut B) {
         for (slot, tex) in &self.textures {
             backend.bind_texture(*slot, tex);
+            backend.set_material_properties(MaterialProperties {
+                has_parallax: self.has_parallax,
+            });
         }
     }
 
@@ -575,6 +586,10 @@ impl<B: GpuBackend> Material<B> {
         self.textures.insert(slot, tex);
         // Regenerate id when material changes so sorting picks up the difference.
         self.id = MATERIAL_ID.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub fn set_parallax(&mut self, parallax: bool) {
+        self.has_parallax = parallax;
     }
 }
 
@@ -684,6 +699,9 @@ impl<B: GpuBackend> Drawable<B> {
         if bind_material {
             self.material.bind(backend);
         }
+        backend.set_material_properties(MaterialProperties {
+            has_parallax: self.material.has_parallax,
+        });
 
         backend.draw_indexed(self.index_count, 0, 0);
     }
@@ -707,6 +725,10 @@ impl<B: GpuBackend> Drawable<B> {
     /// Returns the local-space AABB of this drawable's mesh.
     pub fn aabb(&self) -> &AABB {
         &self.aabb
+    }
+
+    pub fn set_parallax(&mut self, parallax: bool) {
+        self.material.set_parallax(parallax);
     }
 
     /// Add or replace a texture on this drawable's material.

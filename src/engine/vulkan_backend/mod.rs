@@ -227,6 +227,7 @@ pub(crate) struct PushConstants {
     tex2: u32,
     tex3: u32,
     tex4: u32,
+    has_parallax: u32,
 }
 
 impl Default for PushConstants {
@@ -240,6 +241,7 @@ impl Default for PushConstants {
             tex2: 0,
             tex3: 0,
             tex4: 0,
+            has_parallax: 0,
         }
     }
 }
