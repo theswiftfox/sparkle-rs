@@ -4,6 +4,7 @@ const SETTINGS_FILE: &str = "assets/settings.ini";
 
 // todo: replace this with deserialize using serde.
 
+#[derive(Clone)]
 pub struct Settings {
     // Rendering
     pub resolution: (u32, u32),

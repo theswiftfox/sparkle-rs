@@ -375,11 +375,10 @@ impl EguiRenderer {
                 let egui::ImageData::Color(image) = &delta.image;
                 let w = image.size[0] as u32;
                 let h = image.size[1] as u32;
-                let raw: Vec<u8> =
-                    image.pixels.iter().flat_map(|c| c.to_array()).collect();
-                if let Err(e) = self.upload_texture_sub_region(
-                    tex, pos[0] as u32, pos[1] as u32, w, h, &raw,
-                ) {
+                let raw: Vec<u8> = image.pixels.iter().flat_map(|c| c.to_array()).collect();
+                if let Err(e) =
+                    self.upload_texture_sub_region(tex, pos[0] as u32, pos[1] as u32, w, h, &raw)
+                {
                     eprintln!("Failed to update egui texture sub-region: {e:?}");
                 }
                 return;
@@ -652,7 +651,9 @@ impl EguiRenderer {
     }
 
     /// Helper: create a transient one-shot command buffer for uploads.
-    fn create_upload_command_buffer(&self) -> Result<(ash::vk::CommandPool, ash::vk::CommandBuffer), GpuError> {
+    fn create_upload_command_buffer(
+        &self,
+    ) -> Result<(ash::vk::CommandPool, ash::vk::CommandBuffer), GpuError> {
         let pool_info = ash::vk::CommandPoolCreateInfo {
             flags: ash::vk::CommandPoolCreateFlags::TRANSIENT,
             queue_family_index: self.queue_family,
@@ -882,6 +883,7 @@ impl EguiRenderer {
         frame_idx: usize,
         width: u32,
         height: u32,
+        pixels_per_point: f32,
         batches: &[EguiBatch],
         vertices: &[egui::epaint::Vertex],
         indices: &[u32],
@@ -954,7 +956,12 @@ impl EguiRenderer {
         }
 
         // Push constants: scale + translate (screen → NDC)
-        let push_data: [f32; 4] = [2.0 / width as f32, -2.0 / height as f32, -1.0, 1.0];
+        let push_data: [f32; 4] = [
+            2.0 * pixels_per_point / width as f32,
+            -2.0 * pixels_per_point / height as f32,
+            -1.0,
+            1.0,
+        ];
         unsafe {
             self.device.cmd_push_constants(
                 cmd,
@@ -1073,6 +1080,7 @@ impl EguiRenderer {
 /// Helper: build vertex/index arrays from egui primitives
 pub fn build_egui_batches(
     clipped_primitives: &[egui::ClippedPrimitive],
+    pixel_per_point: f32,
 ) -> (Vec<egui::epaint::Vertex>, Vec<u32>, Vec<EguiBatch>) {
     let mut vertices: Vec<egui::epaint::Vertex> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
@@ -1089,10 +1097,10 @@ pub fn build_egui_batches(
             egui::epaint::Primitive::Callback(_) => continue,
         };
 
-        let clip_min_x = clip_rect.min.x as i32;
-        let clip_min_y = clip_rect.min.y as i32;
-        let clip_max_x = clip_rect.max.x as i32;
-        let clip_max_y = clip_rect.max.y as i32;
+        let clip_min_x = (clip_rect.min.x * pixel_per_point) as i32;
+        let clip_min_y = (clip_rect.min.y * pixel_per_point) as i32;
+        let clip_max_x = (clip_rect.max.x * pixel_per_point) as i32;
+        let clip_max_y = (clip_rect.max.y * pixel_per_point) as i32;
 
         if clip_min_x >= clip_max_x || clip_min_y >= clip_max_y {
             continue;

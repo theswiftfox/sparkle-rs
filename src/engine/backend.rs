@@ -527,6 +527,9 @@ pub trait GpuBackend: Sized + 'static {
     /// resolution-dependent resources (depth buffer, etc.).
     fn resize(&mut self, width: u32, height: u32);
 
+    /// wait for GPU to be idle
+    fn wait_idle(&self) -> Result<(), GpuError>;
+
     /// Render egui overlay on top of the scene.
     ///
     /// Called by the editor after the scene has been rendered.

@@ -1559,6 +1559,15 @@ impl GpuBackend for VulkanBackend {
         }
     }
 
+    fn wait_idle(&self) -> Result<(), GpuError> {
+        unsafe { self.device.device_wait_idle() }.map_err(|e| {
+            GpuError::new(
+                format!("Failed to wait for device idle: {e:?}"),
+                GpuErrorKind::Other,
+            )
+        })
+    }
+
     fn begin_event(&self, name: &str) {
         let Some(CurrentFrame { command_buffer, .. }) = self.current_frame else {
             return;
@@ -1626,7 +1635,7 @@ impl GpuBackend for VulkanBackend {
         &mut self,
         textures_delta: &egui::TexturesDelta,
         clipped_primitives: &[egui::ClippedPrimitive],
-        _pixels_per_point: f32,
+        pixels_per_point: f32,
     ) {
         let Some(CurrentFrame {
             idx,
@@ -1675,7 +1684,7 @@ impl GpuBackend for VulkanBackend {
             return;
         }
 
-        let (vertices, indices, batches) = build_egui_batches(clipped_primitives);
+        let (vertices, indices, batches) = build_egui_batches(clipped_primitives, pixels_per_point);
 
         // Ensure GPU buffer capacity
         {
@@ -1737,6 +1746,7 @@ impl GpuBackend for VulkanBackend {
                 idx,
                 swapchain_tex.width,
                 swapchain_tex.height,
+                pixels_per_point,
                 &batches,
                 &vertices,
                 &indices,

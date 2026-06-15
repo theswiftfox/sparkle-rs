@@ -1,6 +1,8 @@
 use std::ffi::{CStr, c_void};
 
-use wgpu::rwh::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
+use winit::raw_window_handle::{
+    HasDisplayHandle as _, HasWindowHandle as _, RawDisplayHandle, RawWindowHandle,
+};
 
 use crate::engine::{
     backend::{CompareFunc, CullMode, GpuError, GpuErrorKind, LoadOp, VertexFormat, ViewportDesc},

@@ -1443,4 +1443,8 @@ impl GpuBackend for WgpuBackend {
         self.backbuffer_target.width = width;
         self.backbuffer_target.height = height;
     }
+
+    fn wait_idle(&self) -> Result<(), GpuError> {
+        Ok(())
+    }
 }

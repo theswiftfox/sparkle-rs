@@ -49,17 +49,16 @@ pub fn draw_hamburger_menu(
                             // --- File ---
                             ui.label(egui::RichText::new("File").strong());
                             if ui.button("  Open glTF Scene...").clicked() {
-                                *pending_scene_load =
-                                    Some("assets/glTF/Sponza.gltf".to_string());
-                                ui.close_menu();
+                                *pending_scene_load = Some("assets/glTF/Sponza.gltf".to_string());
+                                ui.close_kind(egui::UiKind::Menu);
                             }
                             if ui.button("  Save Scene  (Ctrl+S)").clicked() {
                                 *pending_save = true;
-                                ui.close_menu();
+                                ui.close_kind(egui::UiKind::Menu);
                             }
                             if ui.button("  Load Scene  (Ctrl+L)").clicked() {
                                 *pending_load = true;
-                                ui.close_menu();
+                                ui.close_kind(egui::UiKind::Menu);
                             }
                             ui.separator();
 
@@ -74,7 +73,7 @@ pub fn draw_hamburger_menu(
                                 .clicked()
                             {
                                 *pending_undo = true;
-                                ui.close_menu();
+                                ui.close_kind(egui::UiKind::Menu);
                             }
                             let redo_label = match redo_desc {
                                 Some(d) => format!("  Redo: {}  (Ctrl+Shift+Z)", d),
@@ -85,7 +84,7 @@ pub fn draw_hamburger_menu(
                                 .clicked()
                             {
                                 *pending_redo = true;
-                                ui.close_menu();
+                                ui.close_kind(egui::UiKind::Menu);
                             }
                             ui.separator();
 
@@ -98,17 +97,16 @@ pub fn draw_hamburger_menu(
 
                             if ui.button("  Toggle Play Mode  (F1)").clicked() {
                                 *toggle_mode = true;
-                                ui.close_menu();
+                                ui.close_kind(egui::UiKind::Menu);
                             }
                             if ui
                                 .button(
-                                    egui::RichText::new("  Quit")
-                                        .color(egui::Color32::LIGHT_RED),
+                                    egui::RichText::new("  Quit").color(egui::Color32::LIGHT_RED),
                                 )
                                 .clicked()
                             {
                                 *pending_quit = true;
-                                ui.close_menu();
+                                ui.close_kind(egui::UiKind::Menu);
                             }
                             ui.separator();
 
@@ -133,7 +131,7 @@ pub fn draw_hamburger_menu(
 
 /// Draw the viewport overlay: FPS counter and frame time at the bottom-left.
 pub fn draw_viewport_overlay(ctx: &egui::Context, fps: f32, frame_time_ms: f32) {
-    let screen = ctx.screen_rect();
+    let screen = ctx.content_rect();
 
     egui::Area::new(egui::Id::new("viewport_overlay"))
         .fixed_pos(egui::pos2(10.0, screen.max.y - 32.0))
@@ -146,12 +144,9 @@ pub fn draw_viewport_overlay(ctx: &egui::Context, fps: f32, frame_time_ms: f32) 
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(
-                            egui::RichText::new(format!(
-                                "{:.0} FPS  {:.2} ms",
-                                fps, frame_time_ms
-                            ))
-                            .color(egui::Color32::WHITE)
-                            .size(13.0),
+                            egui::RichText::new(format!("{:.0} FPS  {:.2} ms", fps, frame_time_ms))
+                                .color(egui::Color32::WHITE)
+                                .size(13.0),
                         );
                     });
                 });
@@ -256,16 +251,12 @@ pub fn draw_inspector_window(
                         ));
                         ui.separator();
 
-                        let mut decomposed =
-                            DecomposedTransform::from_mat4(&node.local_transform);
+                        let mut decomposed = DecomposedTransform::from_mat4(&node.local_transform);
 
                         let mut changed = false;
-                        changed |=
-                            draw_vec3_editor(ui, "Position", &mut decomposed.position, 0.01);
-                        changed |=
-                            draw_vec3_editor(ui, "Rotation", &mut decomposed.rotation, 0.5);
-                        changed |=
-                            draw_vec3_editor(ui, "Scale", &mut decomposed.scale, 0.01);
+                        changed |= draw_vec3_editor(ui, "Position", &mut decomposed.position, 0.01);
+                        changed |= draw_vec3_editor(ui, "Rotation", &mut decomposed.rotation, 0.5);
+                        changed |= draw_vec3_editor(ui, "Scale", &mut decomposed.scale, 0.01);
 
                         if changed {
                             let new_mat = decomposed.to_mat4();

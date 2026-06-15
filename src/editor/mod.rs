@@ -178,8 +178,8 @@ impl<B: GpuBackend> Editor<B> {
         let response = self.egui_winit.on_window_event(window, event);
 
         // Update cached "wants input" state
-        self.egui_wants_pointer = self.egui_ctx.wants_pointer_input();
-        self.egui_wants_keyboard = self.egui_ctx.wants_keyboard_input();
+        self.egui_wants_pointer = self.egui_ctx.egui_wants_pointer_input();
+        self.egui_wants_keyboard = self.egui_ctx.egui_wants_keyboard_input();
 
         // In editor mode, also handle orbit camera input for events
         // that egui didn't consume.
@@ -324,7 +324,7 @@ impl<B: GpuBackend> Editor<B> {
         let mut gizmo_transform_edit: Option<(String, glm::Mat4)> = None;
         let mut orientation_snap: Option<(f32, f32)> = None;
 
-        let full_output = self.egui_ctx.run(raw_input, |ctx| {
+        let full_output = self.egui_ctx.run_ui(raw_input, |ctx| {
             // Check for keyboard shortcuts
             ctx.input(|i| {
                 if i.modifiers.command && i.key_pressed(egui::Key::S) {
@@ -437,7 +437,7 @@ impl<B: GpuBackend> Editor<B> {
                 if let Some(ref sel_name) = selected_node.clone() {
                     if let Some(snapshot) = scene_snapshot {
                         if let Some(node) = ui::find_node_pub(snapshot, sel_name) {
-                            let screen_rect = ctx.screen_rect();
+                            let screen_rect = ctx.content_rect();
                             let gizmo_result = gizmo::draw_and_interact(
                                 ctx,
                                 &mut gizmo_state,
@@ -463,7 +463,7 @@ impl<B: GpuBackend> Editor<B> {
                     ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary));
                 if clicked_primary && !egui_wants_pointer {
                     if let Some(pos) = ctx.input(|i| i.pointer.interact_pos()) {
-                        let screen_rect = ctx.screen_rect();
+                        let screen_rect = ctx.content_rect();
                         let ray = picking::screen_to_ray(
                             pos.x,
                             pos.y,

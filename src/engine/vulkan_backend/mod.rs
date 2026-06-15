@@ -15,7 +15,7 @@ use crate::engine::{
 mod buffer;
 mod egui;
 mod gpu_backend_impl;
-mod renderpass;
+mod image_layout_transition;
 mod texture;
 mod util;
 

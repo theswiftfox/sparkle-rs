@@ -2,16 +2,17 @@ use std::sync::Arc;
 
 use winit::{
     application::ApplicationHandler,
-    dpi::PhysicalSize,
+    dpi::LogicalSize,
     event::WindowEvent,
     event_loop::{ActiveEventLoop, EventLoop},
     window::WindowId,
 };
 
 pub struct Window {
-    winit_window: Arc<winit::window::Window>,
+    winit_window: Option<Arc<winit::window::Window>>,
     width: u32,
     height: u32,
+    title: String,
     quit_requested: bool,
 }
 
@@ -25,32 +26,26 @@ impl Window {
         title: &str,
     ) -> Result<(Self, EventLoop<()>), Box<dyn std::error::Error>> {
         let event_loop = EventLoop::new()?;
-        #[allow(deprecated)]
-        let winit_window = Arc::new(
-            event_loop
-                .create_window(
-                    winit::window::Window::default_attributes()
-                        .with_title(title)
-                        .with_inner_size(PhysicalSize::new(width, height)),
-                )?,
-        );
         Ok((
-            Window {
-                winit_window,
+            Self {
+                winit_window: None,
                 width,
                 height,
+                title: title.to_owned(),
                 quit_requested: false,
             },
             event_loop,
         ))
     }
 
-    pub fn winit_window(&self) -> &winit::window::Window {
-        &self.winit_window
+    #[must_use]
+    pub fn winit_window(&self) -> Option<Arc<winit::window::Window>> {
+        self.winit_window.clone()
     }
 
-    pub fn winit_window_arc(&self) -> Arc<winit::window::Window> {
-        self.winit_window.clone()
+    #[must_use]
+    pub fn is_initialized(&self) -> bool {
+        self.winit_window.is_some()
     }
 
     pub fn get_resolution(&self) -> (u32, u32) {
@@ -87,7 +82,18 @@ struct WindowApp<'a, F: FnMut(&mut Window, &[WindowEvent]) + 'a> {
 }
 
 impl<'a, F: FnMut(&mut Window, &[WindowEvent]) + 'a> ApplicationHandler for WindowApp<'a, F> {
-    fn resumed(&mut self, _: &ActiveEventLoop) {}
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.winit_window.is_none() {
+            match event_loop.create_window(
+                winit::window::Window::default_attributes()
+                    .with_title(&self.window.title)
+                    .with_inner_size(LogicalSize::new(self.window.width, self.window.height)),
+            ) {
+                Ok(w) => self.window.winit_window = Some(Arc::new(w)),
+                Err(e) => eprintln!("Failed to create window: {e}"),
+            }
+        }
+    }
 
     fn window_event(
         &mut self,
@@ -117,6 +123,8 @@ impl<'a, F: FnMut(&mut Window, &[WindowEvent]) + 'a> ApplicationHandler for Wind
         }
         let events = std::mem::take(&mut self.events);
         (self.frame_fn)(self.window, &events);
-        self.window.winit_window.request_redraw();
+        if let Some(w) = &self.window.winit_window {
+            w.request_redraw();
+        }
     }
 }
