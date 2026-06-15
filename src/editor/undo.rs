@@ -5,9 +5,9 @@
 //! manages the linear history with support for merging consecutive edits
 //! to the same entity (e.g., continuous drag operations).
 
+use crate::engine::backend::GpuBackend;
 use crate::engine::geometry::Light;
 use crate::engine::renderer::Renderer;
-use crate::engine::wgpu_backend::WgpuBackend;
 
 /// A reversible scene edit.
 #[derive(Clone, Debug)]
@@ -38,7 +38,7 @@ pub enum Command {
 
 impl Command {
     /// Apply this command (do / redo).
-    pub fn apply(&self, renderer: &mut Renderer<WgpuBackend>) {
+    pub fn apply<B: GpuBackend>(&self, renderer: &mut Renderer<B>) {
         match self {
             Command::SetNodeTransform {
                 node_name,
@@ -62,7 +62,7 @@ impl Command {
     }
 
     /// Reverse this command (undo).
-    pub fn undo(&self, renderer: &mut Renderer<WgpuBackend>) {
+    pub fn undo<B: GpuBackend>(&self, renderer: &mut Renderer<B>) {
         match self {
             Command::SetNodeTransform {
                 node_name,
@@ -221,7 +221,7 @@ impl UndoStack {
     }
 
     /// Undo the last command. Returns true if an undo was performed.
-    pub fn undo(&mut self, renderer: &mut Renderer<WgpuBackend>) -> bool {
+    pub fn undo<B: GpuBackend>(&mut self, renderer: &mut Renderer<B>) -> bool {
         if self.cursor == 0 {
             return false;
         }
@@ -232,7 +232,7 @@ impl UndoStack {
     }
 
     /// Redo the next command. Returns true if a redo was performed.
-    pub fn redo(&mut self, renderer: &mut Renderer<WgpuBackend>) -> bool {
+    pub fn redo<B: GpuBackend>(&mut self, renderer: &mut Renderer<B>) -> bool {
         if self.cursor >= self.commands.len() {
             return false;
         }

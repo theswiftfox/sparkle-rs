@@ -10,8 +10,12 @@ use crate::engine::{
     },
     vulkan_backend::{
         CurrentFrame, ENABLE_MARKER, FRAMES_IN_FLIGHT, GAMMA_DEFAULT, PushConstants,
-        SHADER_ENTRY_POINT, SpecializationConstants, VulkanBackend, buffer::VulkanBuffer,
-        create_shader_module, texture::VulkanTexture, util::gpu_error_out_of_range,
+        SHADER_ENTRY_POINT, SpecializationConstants, VulkanBackend,
+        buffer::VulkanBuffer,
+        create_shader_module,
+        egui::{EguiRenderer, build_egui_batches},
+        texture::VulkanTexture,
+        util::gpu_error_out_of_range,
     },
 };
 
@@ -1616,6 +1620,133 @@ impl GpuBackend for VulkanBackend {
             debug_utils_ext.cmd_insert_debug_utils_label(command_buffer, &marker_info);
         }
         let _ = unsafe { CString::from_raw(c_str) }; // ensure its cleaned up again
+    }
+
+    fn render_egui(
+        &mut self,
+        textures_delta: &egui::TexturesDelta,
+        clipped_primitives: &[egui::ClippedPrimitive],
+        _pixels_per_point: f32,
+    ) {
+        let Some(CurrentFrame {
+            idx,
+            command_buffer,
+            render_idx,
+            ..
+        }) = self.current_frame
+        else {
+            eprintln!("[egui] no current frame, skipping");
+            return;
+        };
+
+        // Lazy init egui renderer
+        if self.egui_renderer.is_none() {
+            match EguiRenderer::create(
+                &self.instance,
+                &self.device,
+                self.phys_device,
+                self.queue,
+                self.device.graphics_queue_index,
+                self.swapchain.surface_format.format.format,
+            ) {
+                Ok(r) => {
+                    self.egui_renderer = Some(r);
+                }
+                Err(e) => {
+                    eprintln!("[egui] FAILED to create EguiRenderer: {e:?}");
+                    return;
+                }
+            }
+        }
+
+        // Texture updates
+        {
+            let r = self.egui_renderer.as_mut().unwrap();
+            for (id, delta) in &textures_delta.set {
+                r.create_or_update_texture(*id, delta);
+            }
+            for id in &textures_delta.free {
+                r.free_texture(id);
+            }
+        }
+
+        if clipped_primitives.is_empty() {
+            eprintln!("[egui] clipped_primitives is empty, skipping");
+            return;
+        }
+
+        let (vertices, indices, batches) = build_egui_batches(clipped_primitives);
+
+        // Ensure GPU buffer capacity
+        {
+            let r = self.egui_renderer.as_mut().unwrap();
+            r.ensure_buffer_capacity(idx, vertices.len(), indices.len());
+        }
+
+        // Transition swapchain image to COLOR_ATTACHMENT_OPTIMAL
+        let swapchain_tex = &self.swapchain.swapchain_images[render_idx as usize];
+        if let Err(e) = self.transition_image_layout(
+            command_buffer,
+            swapchain_tex.image,
+            swapchain_tex.current_layout.get(),
+            ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            ash::vk::ImageAspectFlags::COLOR,
+            1,
+            swapchain_tex.mip_levels,
+        ) {
+            eprintln!("[egui] Failed to transition swapchain: {e:?}");
+            return;
+        }
+        swapchain_tex
+            .current_layout
+            .set(ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+
+        // Begin dynamic rendering
+        let color_attachment = ash::vk::RenderingAttachmentInfo {
+            image_view: swapchain_tex.image_view,
+            image_layout: ash::vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            load_op: ash::vk::AttachmentLoadOp::LOAD,
+            store_op: ash::vk::AttachmentStoreOp::STORE,
+            ..Default::default()
+        };
+
+        let rendering_info = ash::vk::RenderingInfo {
+            render_area: ash::vk::Rect2D {
+                offset: ash::vk::Offset2D { x: 0, y: 0 },
+                extent: ash::vk::Extent2D {
+                    width: swapchain_tex.width,
+                    height: swapchain_tex.height,
+                },
+            },
+            layer_count: 1,
+            color_attachment_count: 1,
+            p_color_attachments: &color_attachment,
+            ..Default::default()
+        };
+
+        unsafe {
+            self.device
+                .cmd_begin_rendering(command_buffer, &rendering_info);
+        }
+
+        // Draw egui
+        {
+            let r = self.egui_renderer.as_ref().unwrap();
+            r.cmd_draw(
+                command_buffer,
+                idx,
+                swapchain_tex.width,
+                swapchain_tex.height,
+                &batches,
+                &vertices,
+                &indices,
+            );
+        }
+
+        // End dynamic rendering
+        unsafe {
+            self.device.cmd_end_rendering(command_buffer);
+        }
     }
 }
 

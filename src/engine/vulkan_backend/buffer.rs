@@ -17,7 +17,7 @@ pub struct VulkanBuffer {
     pub mapped: *mut c_void,
     pub flags: ash::vk::MemoryPropertyFlags,
     pub size: ash::vk::DeviceSize,
-    device_handle: ash::Device,
+    pub(crate) device_handle: ash::Device,
     pub per_frame_copies: Option<Vec<PerFrameCopy>>,
 }
 

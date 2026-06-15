@@ -96,6 +96,9 @@ pub struct WgpuBackend {
 
     width: u32,
     height: u32,
+
+    /// Egui GPU renderer, lazily created on first `render_egui` call.
+    egui_renderer: Option<egui_wgpu::Renderer>,
 }
 
 // Format conversion helpers
@@ -385,6 +388,7 @@ impl WgpuBackend {
             pending_bindings: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
             width,
             height,
+            egui_renderer: None,
         })
     }
 
@@ -452,6 +456,10 @@ impl GpuBackend for WgpuBackend {
     type Buffer = WgpuBuffer;
     type Pipeline = WgpuPipeline;
     type ShaderSource = &'static [u8];
+
+    fn set_material_properties(&mut self, _props: MaterialProperties) {
+        unimplemented!()
+    }
 
     fn load_shaders(&self) -> Shaders<Self> {
         // Load WGSL shaders
@@ -949,6 +957,75 @@ impl GpuBackend for WgpuBackend {
             surface_texture.present();
         }
         Ok(())
+    }
+
+    fn render_egui(
+        &mut self,
+        textures_delta: &egui::TexturesDelta,
+        clipped_primitives: &[egui::ClippedPrimitive],
+        pixels_per_point: f32,
+    ) {
+        let egui_renderer = self.egui_renderer.get_or_insert_with(|| {
+            egui_wgpu::Renderer::new(
+                &self.device,
+                self.surface_config.format,
+                egui_wgpu::RendererOptions::PREDICTABLE,
+            )
+        });
+
+        for (id, image_delta) in &textures_delta.set {
+            egui_renderer.update_texture(&self.device, &self.queue, *id, image_delta);
+        }
+
+        let screen_descriptor = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [self.width, self.height],
+            pixels_per_point,
+        };
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("egui_encoder"),
+            });
+
+        egui_renderer.update_buffers(
+            &self.device,
+            &self.queue,
+            &mut encoder,
+            clipped_primitives,
+            &screen_descriptor,
+        );
+
+        {
+            let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("egui_render_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.backbuffer_target.view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+
+            egui_renderer.render(
+                &mut render_pass.forget_lifetime(),
+                clipped_primitives,
+                &screen_descriptor,
+            );
+        }
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        for id in &textures_delta.free {
+            egui_renderer.free_texture(id);
+        }
     }
 
     // --- Render pass management ---

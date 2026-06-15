@@ -3,8 +3,10 @@
 //! Provides an integrated editor mode with egui-based UI, an orbit camera for
 //! scene inspection, and toggling between Editor and Play modes.
 //!
-//! The editor owns all egui state (context, winit integration, wgpu renderer)
-//! and drives the orbit camera directly from raw winit events.
+//! The editor owns all egui state (context, winit integration) and drives the
+//! orbit camera directly from raw winit events. GPU rendering of the egui
+//! overlay is delegated to the [`GpuBackend`](crate::engine::backend::GpuBackend)
+//! implementation.
 
 pub mod gizmo;
 pub mod picking;
@@ -16,10 +18,10 @@ use crate::engine::backend::GpuBackend;
 use crate::engine::geometry::Light;
 use crate::engine::renderer::Renderer;
 use crate::engine::scene_info::NodeInfo;
-use crate::engine::wgpu_backend::WgpuBackend;
 use crate::input::Camera;
 use crate::input::orbit::OrbitCamera;
 
+use std::marker::PhantomData;
 use std::time::Instant;
 
 /// Whether the application is in editor or play mode.
@@ -39,15 +41,15 @@ struct MouseState {
 
 /// The main editor state.
 ///
-/// Owns the egui context, winit/wgpu integration layers, orbit camera, and
+/// Owns the egui context, winit integration, orbit camera, and
 /// mode toggle. Created once during initialization and passed into the
-/// frame loop.
-pub struct Editor {
+/// frame loop. Generic over the GPU backend `B`.
+pub struct Editor<B: GpuBackend> {
     mode: EditorMode,
     egui_ctx: egui::Context,
     egui_winit: egui_winit::State,
-    egui_renderer: egui_wgpu::Renderer,
     orbit_camera: OrbitCamera,
+    _phantom: PhantomData<B>,
     mouse_state: MouseState,
     frame_start: Instant,
     frame_count: u32,
@@ -87,18 +89,9 @@ pub struct Editor {
     frame_time_ms: f32,
 }
 
-impl Editor {
+impl<B: GpuBackend> Editor<B> {
     /// Create a new editor.
-    ///
-    /// Must be called after the wgpu backend is initialized.
-    pub fn new(
-        window: &winit::window::Window,
-        backend: &WgpuBackend,
-        aspect: f32,
-        fov: f32,
-        near: f32,
-        far: f32,
-    ) -> Self {
+    pub fn new(window: &winit::window::Window, aspect: f32, fov: f32, near: f32, far: f32) -> Self {
         let egui_ctx = egui::Context::default();
 
         let egui_winit = egui_winit::State::new(
@@ -110,20 +103,14 @@ impl Editor {
             None, // max texture size (None = use device default)
         );
 
-        let egui_renderer = egui_wgpu::Renderer::new(
-            backend.device(),
-            backend.surface_format(),
-            egui_wgpu::RendererOptions::PREDICTABLE
-        );
-
         let orbit_camera = OrbitCamera::new(aspect, fov, near, far);
 
         Editor {
             mode: EditorMode::Editor,
             egui_ctx,
             egui_winit,
-            egui_renderer,
             orbit_camera,
+            _phantom: PhantomData,
             mouse_state: MouseState {
                 right_down: false,
                 middle_down: false,
@@ -264,11 +251,7 @@ impl Editor {
     ///
     /// Takes `&mut Renderer` to extract scene snapshots and apply edits.
     /// Call once per frame, before `render_overlay()`.
-    pub fn begin_frame(
-        &mut self,
-        window: &winit::window::Window,
-        renderer: &mut Renderer<WgpuBackend>,
-    ) {
+    pub fn begin_frame(&mut self, window: &winit::window::Window, renderer: &mut Renderer<B>) {
         // Advance undo merge window
         self.undo_stack.new_frame();
 
@@ -328,10 +311,7 @@ impl Editor {
         // borrow conflict: self.egui_ctx.run() borrows the context while the
         // gizmo needs &mut gizmo_state (another field of self).  We swap it
         // out, use it in the closure, and restore it afterward.
-        let mut gizmo_state = std::mem::replace(
-            &mut self.gizmo_state,
-            gizmo::GizmoState::new(),
-        );
+        let mut gizmo_state = std::mem::replace(&mut self.gizmo_state, gizmo::GizmoState::new());
 
         // Pre-capture camera matrices and editor flags for gizmo + picking.
         let cam_view = self.orbit_camera.view_mat();
@@ -382,8 +362,19 @@ impl Editor {
                 );
 
                 // Floating panels (only when visible)
-                ui::draw_hierarchy_window(ctx, &mut show_hierarchy, scene_snapshot, &mut selected_node);
-                ui::draw_inspector_window(ctx, &mut show_inspector, scene_snapshot, &selected_node, &mut transform_edits);
+                ui::draw_hierarchy_window(
+                    ctx,
+                    &mut show_hierarchy,
+                    scene_snapshot,
+                    &mut selected_node,
+                );
+                ui::draw_inspector_window(
+                    ctx,
+                    &mut show_inspector,
+                    scene_snapshot,
+                    &selected_node,
+                    &mut transform_edits,
+                );
                 ui::draw_light_window(
                     ctx,
                     &mut show_lights,
@@ -468,8 +459,8 @@ impl Editor {
 
             // --- Viewport picking ---
             if mode == EditorMode::Editor && !gizmo_consumed {
-                let clicked_primary = ctx
-                    .input(|i| i.pointer.button_clicked(egui::PointerButton::Primary));
+                let clicked_primary =
+                    ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary));
                 if clicked_primary && !egui_wants_pointer {
                     if let Some(pos) = ctx.input(|i| i.pointer.interact_pos()) {
                         let screen_rect = ctx.screen_rect();
@@ -618,7 +609,7 @@ impl Editor {
     }
 
     /// Save the current scene state to a .ron file next to the glTF file.
-    fn save_scene(&self, renderer: &Renderer<WgpuBackend>) {
+    fn save_scene(&self, renderer: &Renderer<B>) {
         if let Some(data) = renderer.extract_scene_data() {
             let save_path = scene_save_path(renderer.scene_file());
             match data.save_to_file(&save_path) {
@@ -631,7 +622,7 @@ impl Editor {
     }
 
     /// Load a scene overlay from a .ron file and apply it.
-    fn load_scene_data(&mut self, renderer: &mut Renderer<WgpuBackend>) {
+    fn load_scene_data(&mut self, renderer: &mut Renderer<B>) {
         use crate::engine::scene_data::SceneData;
 
         let load_path = scene_save_path(renderer.scene_file());
@@ -649,104 +640,26 @@ impl Editor {
     /// Render the egui overlay onto the backbuffer.
     ///
     /// Call after the scene has been rendered (renderer.render_scene())
-    /// but before finish_frame(). This produces a wgpu command buffer that
-    /// draws egui's triangles on top of the scene.
-    pub fn render_overlay(&mut self, renderer: &mut Renderer<WgpuBackend>) {
+    /// but before finish_frame(). Delegates GPU rendering to the backend
+    /// via `GpuBackend::render_egui()`.
+    pub fn render_overlay(&mut self, renderer: &mut Renderer<B>) {
         let full_output = match self.pending_egui_output.take() {
             Some(output) => output,
-            None => return, // begin_frame() was not called
+            None => {
+                return; // begin_frame() was not called
+            }
         };
-        let backend = renderer.backend_mut();
 
         let clipped_primitives = self
             .egui_ctx
             .tessellate(full_output.shapes, full_output.pixels_per_point);
 
-        // Upload textures
-        for (id, image_delta) in &full_output.textures_delta.set {
-            self.egui_renderer
-                .update_texture(backend.device(), backend.queue(), *id, image_delta);
-        }
-
-        let (res_w, res_h) = backend.resolution();
-        let screen_descriptor = egui_wgpu::ScreenDescriptor {
-            size_in_pixels: [res_w, res_h],
-            pixels_per_point: full_output.pixels_per_point,
-        };
-
-        // Render egui via a helper to avoid self-referential borrow issues
-        // between `self.egui_renderer` and the wgpu encoder/render pass.
-        render_egui(
-            &mut self.egui_renderer,
-            backend.device(),
-            backend.queue(),
-            backend.backbuffer_view(),
+        renderer.backend_mut().render_egui(
+            &full_output.textures_delta,
             &clipped_primitives,
-            &screen_descriptor,
-        );
-
-        // Free textures that egui no longer needs
-        for id in &full_output.textures_delta.free {
-            self.egui_renderer.free_texture(id);
-        }
-    }
-}
-
-/// Helper function to render egui primitives.
-///
-/// Separated from `Editor::render_overlay` to avoid self-referential borrow
-/// issues: the `egui_renderer` borrow and the wgpu encoder borrow would
-/// conflict if done through `&mut self` in the same scope.
-fn render_egui(
-    egui_renderer: &mut egui_wgpu::Renderer,
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    backbuffer_view: &wgpu::TextureView,
-    clipped_primitives: &[egui::ClippedPrimitive],
-    screen_descriptor: &egui_wgpu::ScreenDescriptor,
-) {
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("egui_encoder"),
-    });
-
-    egui_renderer.update_buffers(
-        device,
-        queue,
-        &mut encoder,
-        clipped_primitives,
-        screen_descriptor,
-    );
-
-    {
-        let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("egui_render_pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: backbuffer_view,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-
-        // forget_lifetime() erases the compile-time borrow tie between the
-        // render pass and the encoder, replacing it with a runtime check.
-        // This is the standard pattern for egui-wgpu 0.31+ which requires
-        // RenderPass<'static>.
-        egui_renderer.render(
-            &mut render_pass.forget_lifetime(),
-            clipped_primitives,
-            screen_descriptor,
+            full_output.pixels_per_point,
         );
     }
-
-    queue.submit(std::iter::once(encoder.finish()));
 }
 
 /// Derive the .ron save path from the glTF scene file path.

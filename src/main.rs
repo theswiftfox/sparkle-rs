@@ -13,7 +13,7 @@ use std::io::{Read as _, Write as _};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
 use crate::{
-    engine::backend::GpuBackend as _,
+    engine::backend::GpuBackend,
     input::{
         first_person::FPSController,
         input_handler::{
@@ -48,7 +48,7 @@ fn run_vulkan() -> Result<(), Box<dyn std::error::Error>> {
     let fov = settings.camera_fov;
     let view_distance = settings.view_distance;
 
-    let vk_backend = engine::vulkan_backend::initialize(w, &settings)?;
+    let vk_backend = engine::vulkan_backend::initialize(w.clone(), &settings)?;
     let mut renderer = engine::renderer::Renderer::create(vk_backend, settings)?;
 
     let mut fps = FPSController::create(aspect, fov, 0.1, view_distance);
@@ -63,8 +63,14 @@ fn run_vulkan() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // let mut editor = editor::Editor::new(&w, renderer.backend(), aspect, fov, 0.1, view_distance);
-    // renderer.set_camera_projection(editor.orbit_camera());
+    let mut editor = editor::Editor::<engine::vulkan_backend::VulkanBackend>::new(
+        &w,
+        aspect,
+        fov,
+        0.1,
+        view_distance,
+    );
+    renderer.set_camera_projection(editor.orbit_camera());
 
     let scene_path = "assets/glTF/Sponza.gltf";
     match renderer.load_scene(scene_path) {
@@ -74,9 +80,8 @@ fn run_vulkan() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    let mut last_mode: Option<editor::EditorMode> = None;
     let mut last_cursor_pos: Option<(f64, f64)> = None;
-
-    renderer.set_camera_projection(&fps);
 
     window.run(event_loop, move |window, events| {
         if events.contains(&WindowEvent::CloseRequested) {
@@ -84,7 +89,7 @@ fn run_vulkan() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Error while waiting for GPU to idle: {e:?}");
             }
         }
-        handle_events_without_editor(events, &mut last_cursor_pos, &mut fps, window);
+        handle_events(events, &mut editor, &mut last_cursor_pos, &mut fps, window);
 
         let (ww, wh) = window.get_resolution();
         let (bw, bh) = renderer.backend().resolution();
@@ -92,16 +97,54 @@ fn run_vulkan() -> Result<(), Box<dyn std::error::Error>> {
             renderer.resize(ww, wh);
         }
 
-        fps.update(0.016, &mut renderer.settings_mut());
-        if let Err(e) = renderer.update(0.016, &mut fps) {
-            eprintln!("Render error: {}", e);
+        let current_mode = editor.mode();
+        if last_mode != Some(current_mode) {
+            match current_mode {
+                editor::EditorMode::Editor => {
+                    renderer.set_camera_projection(editor.orbit_camera());
+                    println!("Switched to Editor mode (orbit camera)");
+                }
+                editor::EditorMode::Play => {
+                    renderer.set_camera_projection(&fps);
+                    println!("Switched to Play mode (FPS camera)");
+                }
+            }
+            last_mode = Some(current_mode);
+        }
+
+        if let Err(e) = renderer.backend_mut().begin_frame() {
+            eprintln!("begin_frame error: {}", e);
             window.request_quit();
             return;
         }
 
-        // if let Err(e) = vk_backend.draw() {
-        //     println!("Draw failed: {e:?}");
-        // }
+        editor.begin_frame(window.winit_window(), &mut renderer);
+
+        if editor.pending_quit {
+            window.request_quit();
+            return;
+        }
+
+        if current_mode == editor::EditorMode::Play {
+            fps.update(0.016, &mut renderer.settings_mut());
+            renderer.update_state(0.016, &mut fps);
+            if let Err(e) = renderer.render_scene(&fps) {
+                eprintln!("Render error: {}", e);
+                window.request_quit();
+                return;
+            }
+        } else {
+            renderer.update_state(0.016, editor.orbit_camera());
+            if let Err(e) = renderer.render_scene(editor.orbit_camera()) {
+                eprintln!("Render error: {}", e);
+                window.request_quit();
+                return;
+            }
+        }
+        editor.render_overlay(&mut renderer);
+        if let Err(e) = renderer.finish_frame() {
+            eprintln!("Frame finish error: {}", e);
+        }
     })?;
 
     Ok(())
@@ -137,7 +180,13 @@ fn run_wgpu() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let mut editor = editor::Editor::new(&w, renderer.backend(), aspect, fov, 0.1, view_distance);
+    let mut editor = editor::Editor::<engine::wgpu_backend::WgpuBackend>::new(
+        &w,
+        aspect,
+        fov,
+        0.1,
+        view_distance,
+    );
     renderer.set_camera_projection(editor.orbit_camera());
 
     let scene_path = "assets/glTF/Sponza.gltf";
@@ -173,6 +222,12 @@ fn run_wgpu() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             last_mode = Some(current_mode);
+        }
+
+        if let Err(e) = renderer.backend_mut().begin_frame() {
+            eprintln!("begin_frame error: {}", e);
+            window.request_quit();
+            return;
         }
 
         editor.begin_frame(window.winit_window(), &mut renderer);
@@ -214,94 +269,9 @@ fn run_wgpu() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn handle_events_without_editor(
+fn handle_events<B: GpuBackend>(
     events: &[WindowEvent],
-    last_cursor_pos: &mut Option<(f64, f64)>,
-    fps: &mut FPSController,
-    window: &mut window::Window,
-) {
-    for event in events {
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            if let Some((lx, ly)) = last_cursor_pos {
-                let dx = position.x - *lx;
-                let dy = position.y - *ly;
-
-                fps.handle_mouse_move(dx as i32, dy as i32);
-            }
-            *last_cursor_pos = Some((position.x, position.y));
-        }
-
-        match event {
-            WindowEvent::KeyboardInput {
-                event: key_event, ..
-            } => {
-                let action = match key_event.state {
-                    ElementState::Pressed => Action::Down,
-                    ElementState::Released => Action::Up,
-                };
-                let key = match key_event.physical_key {
-                    winit::keyboard::PhysicalKey::Code(code) => translate_key(code),
-                    _ => input::input_handler::Key::None,
-                };
-                match fps.handle_key(key, action) {
-                    ApplicationRequest::Quit => window.request_quit(),
-                    _ => {}
-                }
-            }
-            WindowEvent::MouseInput { state, button, .. } => {
-                let action = match state {
-                    ElementState::Pressed => Action::Down,
-                    ElementState::Released => Action::Up,
-                };
-                let btn = match button {
-                    MouseButton::Left => Button::Left,
-                    MouseButton::Right => Button::Right,
-                    MouseButton::Middle => Button::Middle,
-                    _ => continue,
-                };
-                match fps.handle_mouse(btn, action) {
-                    ApplicationRequest::SnapMouse => {
-                        window.winit_window().set_cursor_visible(false);
-                        let size = window.winit_window().inner_size();
-                        let cx = size.width as f64 / 2.0;
-                        let cy = size.height as f64 / 2.0;
-                        let _ = window
-                            .winit_window()
-                            .set_cursor_position(winit::dpi::PhysicalPosition::new(cx, cy));
-                        *last_cursor_pos = Some((cx, cy));
-                    }
-                    ApplicationRequest::UnsnapMouse => {
-                        window.winit_window().set_cursor_visible(true);
-                    }
-                    _ => {}
-                }
-            }
-            WindowEvent::MouseWheel { delta, .. } => match delta {
-                MouseScrollDelta::LineDelta(x, y) => {
-                    if y.abs() > 0.0 {
-                        fps.handle_wheel(ScrollAxis::Vertical, y * 24.0);
-                    }
-                    if x.abs() > 0.0 {
-                        fps.handle_wheel(ScrollAxis::Horizontal, x * 24.0);
-                    }
-                }
-                MouseScrollDelta::PixelDelta(pos) => {
-                    if pos.y.abs() > 0.0 {
-                        fps.handle_wheel(ScrollAxis::Vertical, pos.y as f32);
-                    }
-                    if pos.x.abs() > 0.0 {
-                        fps.handle_wheel(ScrollAxis::Horizontal, pos.x as f32);
-                    }
-                }
-            },
-            _ => {}
-        }
-    }
-}
-
-fn handle_events(
-    events: &[WindowEvent],
-    editor: &mut editor::Editor,
+    editor: &mut editor::Editor<B>,
     last_cursor_pos: &mut Option<(f64, f64)>,
     fps: &mut FPSController,
     window: &mut window::Window,
@@ -331,7 +301,20 @@ fn handle_events(
                     fps.handle_mouse_move(dx as i32, dy as i32);
                 }
             }
-            *last_cursor_pos = Some((position.x, position.y));
+
+            let centre_on_move =
+                editor.mode() == editor::EditorMode::Play && fps.is_aiming();
+            if centre_on_move {
+                let size = window.winit_window().inner_size();
+                let cx = size.width as f64 / 2.0;
+                let cy = size.height as f64 / 2.0;
+                let _ = window
+                    .winit_window()
+                    .set_cursor_position(winit::dpi::PhysicalPosition::new(cx, cy));
+                *last_cursor_pos = Some((cx, cy));
+            } else {
+                *last_cursor_pos = Some((position.x, position.y));
+            }
         }
 
         let consumed = editor.handle_window_event(window.winit_window(), event);

@@ -109,6 +109,9 @@ impl InputHandler for FPSController {
 }
 
 impl FPSController {
+    pub fn is_aiming(&self) -> bool {
+        self.aiming
+    }
     pub fn create(aspect: f32, fov: f32, near: f32, far: f32) -> FPSController {
         let fov_rad = glm::radians(&glm::vec1(fov)).x;
         let proj = glm::perspective_zo(aspect, fov_rad, near, far);

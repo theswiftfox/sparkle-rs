@@ -13,6 +13,7 @@ use crate::engine::{
 };
 
 mod buffer;
+mod egui;
 mod gpu_backend_impl;
 mod renderpass;
 mod texture;
@@ -281,6 +282,7 @@ pub struct VulkanBackend {
     frame_idx: usize,
     current_frame: Option<CurrentFrame>,
     texture_registry: RefCell<TextureRegistry>,
+    egui_renderer: Option<egui::EguiRenderer>,
 }
 
 pub fn initialize(
@@ -373,6 +375,7 @@ pub fn initialize(
         frame_idx: 0,
         current_frame: None,
         texture_registry: RefCell::new(TextureRegistry::new()),
+        egui_renderer: None,
     })
 }
 

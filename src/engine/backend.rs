@@ -527,6 +527,18 @@ pub trait GpuBackend: Sized + 'static {
     /// resolution-dependent resources (depth buffer, etc.).
     fn resize(&mut self, width: u32, height: u32);
 
+    /// Render egui overlay on top of the scene.
+    ///
+    /// Called by the editor after the scene has been rendered.
+    /// The default implementation is a no-op (no overlay rendered).
+    fn render_egui(
+        &mut self,
+        _textures_delta: &egui::TexturesDelta,
+        _clipped_primitives: &[egui::ClippedPrimitive],
+        _pixels_per_point: f32,
+    ) {
+    }
+
     // --- Debug markers (default no-op implementations) ---
 
     /// Begin a named debug event region (e.g., for GPU profilers).
