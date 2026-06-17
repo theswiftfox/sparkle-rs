@@ -385,11 +385,10 @@ impl EguiRenderer {
             }
         }
 
-        // egui sends texture deltas every frame for reference counting.
-        // Skip if the texture is already uploaded.
-        if self.textures.contains_key(&id) {
-            return;
-        }
+        // egui may send a full texture recreation (pos: None) for an existing
+        // texture ID, e.g. when the font atlas is rebuilt after opening a menu.
+        // Destroy the old texture so the full upload below replaces it.
+        self.free_texture(&id);
 
         let (width, height, pixels) = match &delta.image {
             egui::ImageData::Color(image) => {
@@ -755,6 +754,10 @@ impl EguiRenderer {
 
     fn destroy_texture(device: &ash::Device, tex: &EguiTextureInfo) {
         unsafe {
+            // The sampler/image_view may still be referenced by a descriptor set
+            // from an in-flight frame. Wait for the GPU to finish before destroying.
+            let _ = device.device_wait_idle();
+
             if tex.sampler != ash::vk::Sampler::null() {
                 device.destroy_sampler(tex.sampler, None);
             }

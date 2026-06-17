@@ -219,6 +219,11 @@ fn run_event_loop<B: GpuBackend>(
     if let Err(e) = renderer.finish_frame() {
         eprintln!("Frame finish error: {}", e);
     }
+
+    w.pre_present_notify();
+    if let Err(e) = renderer.present() {
+        eprintln!("Frame present error: {e}")
+    }
 }
 
 fn create_vk_renderer(

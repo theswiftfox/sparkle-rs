@@ -729,7 +729,10 @@ impl<B: GpuBackend> Renderer<B> {
     /// Step 3: Submit GPU commands and present the frame.
     /// Call after render_scene() and any overlay rendering (e.g., egui).
     pub fn finish_frame(&mut self) -> Result<(), GpuError> {
-        self.backend.end_frame()?;
+        self.backend.end_frame()
+    }
+
+    pub fn present(&mut self) -> Result<(), GpuError> {
         self.backend.present()
     }
 

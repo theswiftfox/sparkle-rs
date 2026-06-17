@@ -105,7 +105,7 @@ impl std::default::Default for Settings {
             view_distance: 1000.0,
             gpu_validation: false,
             ssao: false,
-            sync_mode: SyncMode::VSync,
+            sync_mode: SyncMode::Mailbox,
             hdr_preferred: true,
         }
     }

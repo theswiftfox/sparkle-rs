@@ -26,6 +26,8 @@ impl Window {
         title: &str,
     ) -> Result<(Self, EventLoop<()>), Box<dyn std::error::Error>> {
         let event_loop = EventLoop::new()?;
+        event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+
         Ok((
             Self {
                 winit_window: None,
@@ -87,7 +89,7 @@ impl<'a, F: FnMut(&mut Window, &[WindowEvent]) + 'a> ApplicationHandler for Wind
             match event_loop.create_window(
                 winit::window::Window::default_attributes()
                     .with_title(&self.window.title)
-                    .with_inner_size(LogicalSize::new(self.window.width, self.window.height)),
+                    .with_inner_size(LogicalSize::new(self.window.width, self.window.height)), // .with_fullscreen(Some(winit::window::Fullscreen::Borderless(None))),
             ) {
                 Ok(w) => self.window.winit_window = Some(Arc::new(w)),
                 Err(e) => eprintln!("Failed to create window: {e}"),
@@ -110,7 +112,11 @@ impl<'a, F: FnMut(&mut Window, &[WindowEvent]) + 'a> ApplicationHandler for Wind
                 self.window.width = size.width;
                 self.window.height = size.height;
             }
-            WindowEvent::RedrawRequested => return,
+            WindowEvent::RedrawRequested => {
+                let events = std::mem::take(&mut self.events);
+                (self.frame_fn)(self.window, &events);
+                return;
+            }
             _ => {}
         }
         self.events.push(event);
@@ -121,8 +127,6 @@ impl<'a, F: FnMut(&mut Window, &[WindowEvent]) + 'a> ApplicationHandler for Wind
             event_loop.exit();
             return;
         }
-        let events = std::mem::take(&mut self.events);
-        (self.frame_fn)(self.window, &events);
         if let Some(w) = &self.window.winit_window {
             w.request_redraw();
         }
