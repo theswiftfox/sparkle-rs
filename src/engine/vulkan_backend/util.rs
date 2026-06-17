@@ -1,23 +1,23 @@
 use std::ffi::{CStr, c_void};
 
-use winit::raw_window_handle::{
-    HasDisplayHandle as _, HasWindowHandle as _, RawDisplayHandle, RawWindowHandle,
-};
+use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
-use crate::engine::{
-    backend::{CompareFunc, CullMode, GpuError, GpuErrorKind, LoadOp, VertexFormat, ViewportDesc},
-    settings::SyncMode,
-    vulkan_backend::{SurfaceFormat, Swapchain, VulkanBackend, create_swapchain_and_depth_buffer},
+use crate::{
+    app_handler::Window,
+    engine::{
+        backend::{
+            CompareFunc, CullMode, GpuError, GpuErrorKind, LoadOp, VertexFormat, ViewportDesc,
+        },
+        settings::SyncMode,
+        vulkan_backend::{
+            SurfaceFormat, Swapchain, VulkanBackend, create_swapchain_and_depth_buffer,
+        },
+    },
 };
 
 pub fn get_instance_extensions(
-    window: &winit::window::Window,
+    raw_handle: RawWindowHandle,
 ) -> Result<Vec<&'static CStr>, GpuError> {
-    let raw_handle: RawWindowHandle = window
-        .window_handle()
-        .map(|rwh| rwh.as_raw())
-        .map_err(|_| GpuError::new("Failed to create RawWindowHandle", GpuErrorKind::Other))?;
-
     match raw_handle {
         RawWindowHandle::AppKit(_) => Ok(vec![
             ash::vk::KHR_SURFACE_NAME,
@@ -84,12 +84,9 @@ pub unsafe extern "system" fn debug_callback(
 pub fn create_surface(
     context: &ash::Entry,
     instance: &ash::Instance,
-    window: &winit::window::Window,
+    window: &Window,
 ) -> Result<ash::vk::SurfaceKHR, GpuError> {
-    let raw_handle: RawWindowHandle = window
-        .window_handle()
-        .map(|rwh| rwh.as_raw())
-        .map_err(|_| GpuError::new("Failed to create RawWindowHandle", GpuErrorKind::Other))?;
+    let raw_handle: RawWindowHandle = window.h_wnd();
 
     match raw_handle {
         RawWindowHandle::Win32(handle) => {
@@ -115,11 +112,7 @@ pub fn create_surface(
             })
         }
         RawWindowHandle::Xlib(handle) => {
-            let RawDisplayHandle::Xlib(display_handle) =
-                window.display_handle().map(|dh| dh.as_raw()).map_err(|_| {
-                    GpuError::new("Failed to create RawDisplayHandle", GpuErrorKind::Other)
-                })?
-            else {
+            let RawDisplayHandle::Xlib(display_handle) = window.h_dsp() else {
                 return Err(GpuError::new(
                     "Got non xlib display handle for Xlib window",
                     GpuErrorKind::Other,
@@ -147,11 +140,7 @@ pub fn create_surface(
             })
         }
         RawWindowHandle::Xcb(handle) => {
-            let RawDisplayHandle::Xcb(xcb_display_handle) =
-                window.display_handle().map(|dh| dh.as_raw()).map_err(|_| {
-                    GpuError::new("Failed to create RawDisplayHandle", GpuErrorKind::Other)
-                })?
-            else {
+            let RawDisplayHandle::Xcb(xcb_display_handle) = window.h_dsp() else {
                 return Err(GpuError::new(
                     "Got non xcb display handle for Xcb window",
                     GpuErrorKind::Other,
@@ -179,11 +168,7 @@ pub fn create_surface(
             })
         }
         RawWindowHandle::Wayland(handle) => {
-            let RawDisplayHandle::Wayland(display_handle) =
-                window.display_handle().map(|dh| dh.as_raw()).map_err(|_| {
-                    GpuError::new("Failed to create RawDisplayHandle", GpuErrorKind::Other)
-                })?
-            else {
+            let RawDisplayHandle::Wayland(display_handle) = window.h_dsp() else {
                 return Err(GpuError::new(
                     "Got non Wayland display handle for Wayland window",
                     GpuErrorKind::Other,
@@ -718,7 +703,7 @@ impl VulkanBackend {
         let (mut new_swapchain, mut new_depth) = create_swapchain_and_depth_buffer(
             &self.context,
             &self.instance,
-            &self.window,
+            self.window.winit_window(),
             self.phys_device,
             &self.device,
             old.surface,

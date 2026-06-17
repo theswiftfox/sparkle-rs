@@ -6,11 +6,16 @@ use std::{
     sync::Arc,
 };
 
-use crate::engine::{
-    backend::{GpuError, GpuErrorKind, RenderTargetDesc, SamplerDesc, TextureFormat},
-    settings::{Settings, SyncMode},
-    vulkan_backend::texture::VulkanTexture,
+use crate::{
+    app_handler::Window,
+    engine::{
+        backend::{GpuError, GpuErrorKind, RenderTargetDesc, SamplerDesc, TextureFormat},
+        settings::{Settings, SyncMode},
+        vulkan_backend::texture::VulkanTexture,
+    },
 };
+
+use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 mod buffer;
 mod egui;
@@ -264,7 +269,7 @@ impl Default for SpecializationConstants {
 }
 
 pub struct VulkanBackend {
-    window: Arc<winit::window::Window>,
+    window: Arc<Window>,
     context: ash::Entry,
     instance: Instance,
     phys_device: ash::vk::PhysicalDevice,
@@ -285,17 +290,14 @@ pub struct VulkanBackend {
     egui_renderer: Option<egui::EguiRenderer>,
 }
 
-pub fn initialize(
-    window: Arc<winit::window::Window>,
-    settings: &Settings,
-) -> Result<VulkanBackend, GpuError> {
+pub fn initialize(window: Arc<Window>, settings: &Settings) -> Result<VulkanBackend, GpuError> {
     let enable_validation = settings.gpu_validation;
     let sync_mode = settings.sync_mode;
 
     let context = unsafe { ash::Entry::load() }
         .map_err(|_| GpuError::new("Failed to load Vulkan entry", GpuErrorKind::Other))?;
 
-    let mut instance = create_instance(&context, &window, enable_validation)?;
+    let mut instance = create_instance(&context, window.h_wnd(), enable_validation)?;
 
     if instance.validation_enabled {
         instance.debug_messenger = Some(setup_debug_messenger(&context, &instance)?);
@@ -312,7 +314,7 @@ pub fn initialize(
     let (swapchain, depth_targets) = create_swapchain_and_depth_buffer(
         &context,
         &instance,
-        &window,
+        window.winit_window(),
         physical_device,
         &logical_device,
         surface,
@@ -1317,7 +1319,7 @@ fn get_physical_device(instance: &ash::Instance) -> Result<ash::vk::PhysicalDevi
 
 fn create_instance(
     context: &ash::Entry,
-    window: &winit::window::Window,
+    hwnd: RawWindowHandle,
     enable_validation: bool,
 ) -> Result<Instance, GpuError> {
     let app_name = "Sparkle VK";
@@ -1338,7 +1340,7 @@ fn create_instance(
         ..Default::default()
     };
 
-    let mut instance_exts = util::get_instance_extensions(&window)?;
+    let mut instance_exts = util::get_instance_extensions(hwnd)?;
 
     let extension_properties = unsafe { context.enumerate_instance_extension_properties(None) }
         .map_err(|_| {
