@@ -988,11 +988,6 @@ impl EguiRenderer {
         };
 
         for (_i, batch) in batches.iter().enumerate() {
-            // eprintln!("[egui::cmd_draw] batch {}: texture_id={:?}, vert_offset={}, idx_offset={}, idx_count={}, clip=[{},{} - {},{}]",
-            //     i, batch.texture_id, batch.vertex_offset, batch.index_offset, batch.index_count,
-            //     batch.clip_min_x, batch.clip_min_y, batch.clip_max_x, batch.clip_max_y,
-            // );
-
             // Scissor
             let sc = ash::vk::Rect2D {
                 offset: ash::vk::Offset2D {
@@ -1016,7 +1011,11 @@ impl EguiRenderer {
             let tex = match self.textures.get(&batch.texture_id) {
                 Some(t) => t,
                 None => {
-                    eprintln!("[egui::cmd_draw]   texture not found, skipping batch");
+                    eprintln!(
+                        "[egui::cmd_draw]   texture {:?} not found, skipping batch (have {} textures)",
+                        batch.texture_id,
+                        self.textures.len()
+                    );
                     continue;
                 }
             };

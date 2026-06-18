@@ -441,7 +441,7 @@ pub trait GpuBackend: Sized + 'static {
         desc: &PipelineDesc<Self::ShaderSource>,
     ) -> Result<Self::Pipeline, GpuError>;
 
-    // --- Buffer operations ---
+    //  Buffer operations
 
     /// Upload new data to a uniform/dynamic buffer (CPU memcpy, immediate).
     fn update_buffer(&self, buffer: &Self::Buffer, data: &[u8]);
@@ -453,7 +453,7 @@ pub trait GpuBackend: Sized + 'static {
     /// Must be called outside a render pass.
     fn cmd_update_buffer(&mut self, buffer: &Self::Buffer, data: &[u8]);
 
-    // --- Frame lifecycle ---
+    //  Frame lifecycle
 
     /// Begin a new frame. Must be called before any render passes.
     fn begin_frame(&mut self) -> Result<(), GpuError>;
@@ -464,7 +464,7 @@ pub trait GpuBackend: Sized + 'static {
     /// Present the rendered frame to the display.
     fn present(&mut self) -> Result<(), GpuError>;
 
-    // --- Render pass management ---
+    //  Render pass management
 
     /// Begin a render pass with the specified attachments and load operations.
     fn begin_render_pass(&mut self, desc: &RenderPassDesc<Self>);
@@ -472,7 +472,7 @@ pub trait GpuBackend: Sized + 'static {
     /// End the current render pass.
     fn end_render_pass(&mut self);
 
-    // --- Draw commands (valid within a render pass) ---
+    //  Draw commands (valid within a render pass)
 
     /// Bind a render pipeline (shaders + state) for subsequent draw calls.
     fn set_pipeline(&mut self, pipeline: &Self::Pipeline);
@@ -509,7 +509,7 @@ pub trait GpuBackend: Sized + 'static {
 
     fn set_material_properties(&mut self, props: MaterialProperties);
 
-    // --- Accessors ---
+    //  Accessors
 
     /// Get the current frame's backbuffer render target.
     fn backbuffer(&self) -> Self::RenderTarget;
@@ -542,7 +542,7 @@ pub trait GpuBackend: Sized + 'static {
     ) {
     }
 
-    // --- Debug markers (default no-op implementations) ---
+    //  Debug markers (default no-op implementations)
 
     /// Begin a named debug event region (e.g., for GPU profilers).
     fn begin_event(&self, _name: &str) {}

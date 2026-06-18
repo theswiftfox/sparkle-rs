@@ -807,6 +807,9 @@ impl GpuBackend for VulkanBackend {
             Ok(res) => res,
             Err(e) => {
                 if e == ash::vk::Result::ERROR_OUT_OF_DATE_KHR {
+                    eprintln!(
+                        "[DEBUG] Recreate swapchain: acquire_next_image returned ERROR_OUT_OF_DATE_KHR"
+                    );
                     return self.recreate_swapchain();
                 }
                 return Err(GpuError::new(
@@ -1045,6 +1048,9 @@ impl GpuBackend for VulkanBackend {
         } {
             Ok(suboptimal) => {
                 if suboptimal {
+                    eprintln!(
+                        "[DEBUG] Recreate swapchain: queue_present returned Ok(suboptimal=true)"
+                    );
                     return self.recreate_swapchain();
                 }
             }
@@ -1052,6 +1058,10 @@ impl GpuBackend for VulkanBackend {
                 if e == ash::vk::Result::SUBOPTIMAL_KHR
                     || e == ash::vk::Result::ERROR_OUT_OF_DATE_KHR
                 {
+                    eprintln!(
+                        "[DEBUG] Recreate swapchain: queue_present returned Err({:?})",
+                        e
+                    );
                     return self.recreate_swapchain();
                 }
                 return Err(GpuError::new(

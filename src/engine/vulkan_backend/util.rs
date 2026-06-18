@@ -194,8 +194,35 @@ pub fn create_surface(
         RawWindowHandle::AndroidNdk(_) => {
             todo!()
         }
-        RawWindowHandle::AppKit(_) => {
-            todo!()
+        RawWindowHandle::AppKit(_appkit) => {
+            #[cfg(target_os = "macos")]
+            {
+                let layer_ptr = window.metal_layer();
+                assert!(!layer_ptr.is_null(), "CAMetalLayer not initialized on Window");
+                let create_info = ash::vk::MetalSurfaceCreateInfoEXT {
+                    p_layer: layer_ptr,
+                    ..Default::default()
+                };
+                let appkit_instance = ash::ext::metal_surface::Instance::new(context, instance);
+
+                unsafe {
+                    appkit_instance
+                        .create_metal_surface(&create_info, None)
+                        .map_err(|e| {
+                            GpuError::new(
+                                format!("Failed to create AppKit Metal surface: {e}"),
+                                GpuErrorKind::Other,
+                            )
+                        })
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Err(GpuError::new(
+                    "AppKit surfaces are only supported on macOS",
+                    GpuErrorKind::Other,
+                ))
+            }
         }
         _ => Err(GpuError::new(
             "Unsupported window handle type",
@@ -298,16 +325,29 @@ pub fn choose_present_mode(
 
 pub fn choose_swap_extent(
     capabilities: &ash::vk::SurfaceCapabilitiesKHR,
-    window: &winit::window::Window,
+    window_size: (u32, u32),
 ) -> ash::vk::Extent2D {
     if capabilities.current_extent.width != u32::MAX {
         // The surface has specified a fixed size, so we must use it
+        println!(
+            "Using current extent from surface capabilities: {}x{}",
+            capabilities.current_extent.width, capabilities.current_extent.height
+        );
         capabilities.current_extent
     } else {
         // The surface allows us to choose the extent, so we use the window size clamped to the allowed range
-        // let winit::dpi::LogicalSize::<u32> { width, height } =
-        //     window.inner_size().to_logical(window.scale_factor());
-        let winit::dpi::PhysicalSize::<u32> { width, height } = window.inner_size();
+        let (width, height) = window_size;
+        println!(
+            "Choosing swap extent based on window size: {}x{}",
+            width, height
+        );
+        println!(
+            "Surface capabilities - min: {}x{}, max: {}x{}",
+            capabilities.min_image_extent.width,
+            capabilities.min_image_extent.height,
+            capabilities.max_image_extent.width,
+            capabilities.max_image_extent.height
+        );
         ash::vk::Extent2D {
             width: width.clamp(
                 capabilities.min_image_extent.width,
@@ -682,6 +722,13 @@ impl VulkanBackend {
     }
 
     pub fn recreate_swapchain(&mut self) -> Result<(), GpuError> {
+        // Debug: Print current swapchain extent
+        let current_extent = self.swapchain.swapchain_extent;
+        eprintln!(
+            "[DEBUG] recreate_swapchain() called - current extent: {}x{}",
+            current_extent.width, current_extent.height
+        );
+
         unsafe { self.device.device_wait_idle() }.map_err(|e| {
             GpuError::new(
                 format!("Failed to wait for device idle during swapchain recreation: {e:?}"),
@@ -703,7 +750,9 @@ impl VulkanBackend {
         let (mut new_swapchain, mut new_depth) = create_swapchain_and_depth_buffer(
             &self.context,
             &self.instance,
-            self.window.winit_window(),
+            // Use old extent as fallback size hint — surface capabilities.current_extent
+            // is used on macOS (MoltenVK always provides it), so this is just a fallback.
+            (old.swapchain_extent.width, old.swapchain_extent.height),
             self.phys_device,
             &self.device,
             old.surface,

@@ -15,7 +15,7 @@ use crate::{
     },
 };
 
-use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
+use winit::raw_window_handle::RawWindowHandle;
 
 mod buffer;
 mod egui;
@@ -298,33 +298,44 @@ pub fn initialize(window: Arc<Window>, settings: &Settings) -> Result<VulkanBack
         .map_err(|_| GpuError::new("Failed to load Vulkan entry", GpuErrorKind::Other))?;
 
     let mut instance = create_instance(&context, window.h_wnd(), enable_validation)?;
+    println!("Vulkan instance created successfully");
 
     if instance.validation_enabled {
         instance.debug_messenger = Some(setup_debug_messenger(&context, &instance)?);
     }
 
     let physical_device = get_physical_device(&instance)?;
+    println!("Physical device selected successfully");
 
     let surface = util::create_surface(&context, &instance, &window)?;
+    println!("Surface created successfully");
 
     let logical_device = create_logical_device(&context, &instance, physical_device, surface)?;
+    println!("Logical device created successfully");
 
     let queue = logical_device.get_graphics_queue();
+    println!("Graphics queue retrieved successfully");
 
     let (swapchain, depth_targets) = create_swapchain_and_depth_buffer(
         &context,
         &instance,
-        window.winit_window(),
+        {
+            let size = window.inner_size();
+            (size.width, size.height)
+        },
         physical_device,
         &logical_device,
         surface,
         sync_mode,
         settings.hdr_preferred,
     )?;
+    println!("Swapchain and depth buffer created successfully");
 
     let pipeline = create_graphics_pipeline(&logical_device, &swapchain)?;
+    println!("Graphics pipeline created successfully");
 
     let command_pool = create_command_pool(&logical_device)?;
+    println!("Command pools created successfully");
 
     let command_buffers = create_command_buffers(&logical_device, command_pool.render_pool)?
         .try_into()
@@ -891,15 +902,17 @@ fn create_image_views(
 fn create_swapchain_and_depth_buffer(
     context: &ash::Entry,
     instance: &ash::Instance,
-    window: &winit::window::Window,
+    window_size: (u32, u32),
     physical_device: ash::vk::PhysicalDevice,
     logical_device: &LogicalDevice,
     surface: ash::vk::SurfaceKHR,
     sync_mode: SyncMode,
     hdr_preferred: bool,
 ) -> Result<(Swapchain, [VulkanTexture; FRAMES_IN_FLIGHT as usize]), GpuError> {
+    println!("Querying surface capabilities and formats...");
     let surface_khr = ash::khr::surface::Instance::new(context, instance);
 
+    println!("Retrieving surface capabilities...");
     let surface_capababilities = unsafe {
         surface_khr
             .get_physical_device_surface_capabilities(physical_device, surface)
@@ -910,6 +923,10 @@ fn create_swapchain_and_depth_buffer(
                 )
             })?
     };
+    println!(
+        "Surface capabilities retrieved successfully: {:?}",
+        surface_capababilities
+    );
     let surface_formats = unsafe {
         surface_khr
             .get_physical_device_surface_formats(physical_device, surface)
@@ -920,6 +937,10 @@ fn create_swapchain_and_depth_buffer(
                 )
             })?
     };
+    println!(
+        "Surface formats retrieved successfully, count: {}",
+        surface_formats.len()
+    );
     let present_modes = unsafe {
         surface_khr
             .get_physical_device_surface_present_modes(physical_device, surface)
@@ -930,10 +951,21 @@ fn create_swapchain_and_depth_buffer(
                 )
             })?
     };
-    let swap_extent = util::choose_swap_extent(&surface_capababilities, &window);
+    println!(
+        "Present modes retrieved successfully, count: {}",
+        present_modes.len()
+    );
+    let swap_extent = util::choose_swap_extent(&surface_capababilities, window_size);
+    println!("Chosen swap extent: {:?}", swap_extent);
     let swap_image_count = util::choose_swap_min_image_count(&surface_capababilities);
+    println!("Chosen swap image count: {}", swap_image_count);
     let swap_format = util::choose_swapchain_format(&surface_formats, hdr_preferred)?;
+    println!(
+        "Chosen swap format: {:?} colorspace: {:?}",
+        swap_format.format.format, swap_format.color_space
+    );
     let present_mode = util::choose_present_mode(&present_modes, sync_mode)?;
+    println!("Chosen present mode: {:?}", present_mode);
 
     let engine_fmt: TextureFormat = swap_format.format.format.try_into()?;
 
@@ -954,12 +986,14 @@ fn create_swapchain_and_depth_buffer(
     };
 
     let swapchain_khr = ash::khr::swapchain::Device::new(instance, logical_device);
+    println!("Creating swapchain...");
     let swapchain = unsafe { swapchain_khr.create_swapchain(&create_info, None) }.map_err(|e| {
         GpuError::new(
             format!("Failed to create swapchain: {:?}", e),
             GpuErrorKind::ResourceCreation,
         )
     })?;
+    println!("Swapchain created successfully");
     let swapchain_images =
         unsafe { swapchain_khr.get_swapchain_images(swapchain) }.map_err(|e| {
             GpuError::new(
@@ -967,9 +1001,14 @@ fn create_swapchain_and_depth_buffer(
                 GpuErrorKind::ResourceCreation,
             )
         })?;
+    println!(
+        "Swapchain images retrieved successfully, count: {}",
+        swapchain_images.len()
+    );
 
     let swapchain_image_views =
         create_image_views(logical_device, &swapchain_images, swap_format.format.format)?;
+    println!("Swapchain image views created successfully");
 
     let sampler_info = ash::vk::SamplerCreateInfo {
         mag_filter: ash::vk::Filter::LINEAR,
@@ -989,7 +1028,7 @@ fn create_swapchain_and_depth_buffer(
             GpuErrorKind::ResourceCreation,
         )
     })?;
-
+    println!("Swapchain sampler created successfully");
     let swapchain_images = swapchain_images
         .into_iter()
         .zip(swapchain_image_views.into_iter())
@@ -1011,6 +1050,7 @@ fn create_swapchain_and_depth_buffer(
             current_layout: Rc::new(Cell::new(ash::vk::ImageLayout::UNDEFINED)),
         })
         .collect::<Vec<_>>();
+    println!("Swapchain textures created successfully");
 
     // depth targets
     let depth_target_desc = RenderTargetDesc {
@@ -1036,6 +1076,7 @@ fn create_swapchain_and_depth_buffer(
                 GpuErrorKind::ResourceCreation,
             )
         })?;
+    println!("Depth targets created successfully");
 
     Ok((
         Swapchain {
@@ -1182,8 +1223,8 @@ fn get_physical_device(instance: &ash::Instance) -> Result<ash::vk::PhysicalDevi
         .iter()
         .filter_map(|device| {
             let features = unsafe { instance.get_physical_device_features(*device) };
-            let has_required_features = features.geometry_shader == ash::vk::TRUE
-                && features.sampler_anisotropy == ash::vk::TRUE;
+            let has_required_features = /*features.geometry_shader == ash::vk::TRUE
+                &&*/ features.sampler_anisotropy == ash::vk::TRUE;
 
             if !has_required_features {
                 println!(

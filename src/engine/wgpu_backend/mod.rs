@@ -424,7 +424,7 @@ impl WgpuBackend {
         (target, depth_format)
     }
 
-    // --- Accessors for editor / egui integration ---
+    //  Accessors for editor / egui integration
 
     /// Raw wgpu device handle (needed by egui-wgpu renderer).
     pub fn device(&self) -> &wgpu::Device {
@@ -906,7 +906,7 @@ impl GpuBackend for WgpuBackend {
         })
     }
 
-    // --- Buffer operations ---
+    //  Buffer operations
 
     fn update_buffer(&self, buffer: &Self::Buffer, data: &[u8]) {
         self.queue.write_buffer(&buffer.buffer, 0, data);
@@ -916,7 +916,7 @@ impl GpuBackend for WgpuBackend {
         self.queue.write_buffer(&buffer.buffer, 0, data);
     }
 
-    // --- Frame lifecycle ---
+    //  Frame lifecycle
 
     fn begin_frame(&mut self) -> Result<(), GpuError> {
         let surface_texture = match self.surface.get_current_texture() {
@@ -1028,7 +1028,7 @@ impl GpuBackend for WgpuBackend {
         }
     }
 
-    // --- Render pass management ---
+    //  Render pass management
 
     fn begin_render_pass(&mut self, desc: &RenderPassDesc<Self>) {
         let color_attachments: Vec<PendingColorAttachment> = desc
@@ -1166,7 +1166,7 @@ impl GpuBackend for WgpuBackend {
         }
     }
 
-    // --- Draw commands (recorded into pending pass) ---
+    //  Draw commands (recorded into pending pass)
 
     fn set_pipeline(&mut self, pipeline: &Self::Pipeline) {
         if let Some(ref mut pass) = self.pending_pass {
@@ -1402,7 +1402,7 @@ impl GpuBackend for WgpuBackend {
         // wgpu backend still uses bind_uniform for model matrix
     }
 
-    // --- Accessors ---
+    //  Accessors
 
     fn backbuffer(&self) -> Self::RenderTarget {
         self.backbuffer_target.clone()

@@ -1,27 +1,30 @@
 //! Editor module for sparkle-rs.
 //!
-//! Provides an integrated editor mode with egui-based UI, an orbit camera for
-//! scene inspection, and toggling between Editor and Play modes.
+//! Provides an integrated editor mode with egui-based UI for scene inspection.
+//! Camera controllers live on the main thread; this module only receives a
+//! read-only CameraSnapshot for gizmo/picking operations.
 //!
-//! The editor owns all egui state (context, winit integration) and drives the
-//! orbit camera directly from raw winit events. GPU rendering of the egui
-//! overlay is delegated to the [`GpuBackend`](crate::engine::backend::GpuBackend)
-//! implementation.
+//! The editor owns the egui context and drives the UI each frame on the MAIN THREAD.
+//! GPU rendering of the egui overlay is handled by EditorRenderer on the render thread.
+//!
+//! Architecture:
+//!   - Editor (main thread): runs UI, produces FullOutput + EditCommands
+//!   - EditorRenderer (render thread): tessellates FullOutput, renders overlay
 
+pub mod edit_commands;
 pub mod gizmo;
 pub mod picking;
 pub mod transform;
 pub mod ui;
 pub mod undo;
 
-use crate::engine::backend::GpuBackend;
-use crate::engine::geometry::Light;
-use crate::engine::renderer::Renderer;
-use crate::engine::scene_info::NodeInfo;
-use crate::input::Camera;
-use crate::input::orbit::OrbitCamera;
+pub use edit_commands::{EditCommand, EditCommands};
 
-use std::marker::PhantomData;
+use crate::app_handler::CameraCommand;
+use crate::engine::geometry::Light;
+use crate::engine::scene_info::NodeInfo;
+use crate::input::CameraSnapshot;
+
 use std::time::Instant;
 
 /// Whether the application is in editor or play mode.
@@ -33,44 +36,49 @@ pub enum EditorMode {
     Play,
 }
 
-/// Tracks which mouse buttons are currently held for orbit camera input.
-struct MouseState {
-    right_down: bool,
-    middle_down: bool,
+/// Scene snapshot data passed to the editor each frame.
+/// This is a lightweight read-only view of the scene state.
+#[derive(Debug, Clone)]
+pub struct SceneSnapshot {
+    /// Scenegraph tree info
+    pub tree: Option<NodeInfo>,
+    /// Current lights
+    pub lights: Vec<Light>,
 }
 
-/// The main editor state.
+impl SceneSnapshot {
+    pub fn empty() -> Self {
+        Self {
+            tree: None,
+            lights: Vec::new(),
+        }
+    }
+}
+
+/// The main editor state - lives on MAIN THREAD.
 ///
-/// Owns the egui context, winit integration, orbit camera, and
-/// mode toggle. Created once during initialization and passed into the
-/// frame loop. Generic over the GPU backend `B`.
-pub struct Editor<B: GpuBackend> {
+/// Owns the egui context and UI state. Runs UI each frame and produces
+/// FullOutput + EditCommands that are sent to the render thread.
+pub struct Editor {
     mode: EditorMode,
     egui_ctx: egui::Context,
-    egui_winit: egui_winit::State,
-    orbit_camera: OrbitCamera,
-    _phantom: PhantomData<B>,
-    mouse_state: MouseState,
     frame_start: Instant,
     frame_count: u32,
     fps: f32,
     fps_update_timer: f32,
-    /// Set to true when the user requests a scene load via the menu.
+    frame_time_ms: f32,
+
+    /// Set when the user requests a scene load via the menu.
     pub pending_scene_load: Option<String>,
-    /// Set to true when the user requests quit via the menu.
+    /// Set when the user requests quit via the menu.
     pub pending_quit: bool,
-    /// Whether egui wants pointer input this frame (cursor is over a panel).
-    egui_wants_pointer: bool,
-    /// Whether egui wants keyboard input this frame (text field focused, etc.).
-    egui_wants_keyboard: bool,
-    /// Egui output from the last `begin_frame()` call, consumed by `render_overlay()`.
-    pending_egui_output: Option<egui::FullOutput>,
+    /// Set when user toggles mode via menu.
+    pub pending_mode_toggle: bool,
+    /// Camera commands produced by UI (orientation snap, etc.)
+    pub pending_camera_commands: Vec<CameraCommand>,
+
     /// Currently selected node name (None = nothing selected).
-    pub selected_node: Option<String>,
-    /// Snapshot of the scenegraph tree, refreshed each frame in begin_frame.
-    pub scene_snapshot: Option<NodeInfo>,
-    /// Snapshot of lights, refreshed each frame in begin_frame.
-    pub scene_lights: Vec<Light>,
+    selected_node: Option<String>,
 
     /// State for the transform gizmo (active axis, drag start transform, etc.).
     gizmo_state: gizmo::GizmoState,
@@ -85,48 +93,30 @@ pub struct Editor<B: GpuBackend> {
     show_hierarchy: bool,
     show_inspector: bool,
     show_lights: bool,
-    /// Last frame's elapsed time in milliseconds (for the FPS overlay).
-    frame_time_ms: f32,
+
+    /// Pending edits collected during UI frame
+    pending_edits: EditCommands,
+    /// Pending save/load requests
+    pending_save: bool,
+    pending_load: bool,
 }
 
-impl<B: GpuBackend> Editor<B> {
-    /// Create a new editor.
-    pub fn new(window: &winit::window::Window, aspect: f32, fov: f32, near: f32, far: f32) -> Self {
-        let egui_ctx = egui::Context::default();
-
-        let egui_winit = egui_winit::State::new(
-            egui_ctx.clone(),
-            egui::ViewportId::ROOT,
-            window,
-            Some(window.scale_factor() as f32),
-            None,
-            None, // max texture size (None = use device default)
-        );
-
-        let orbit_camera = OrbitCamera::new(aspect, fov, near, far);
-
-        Editor {
+impl Editor {
+    /// Create a new editor with the given egui context.
+    pub fn new(ctx: egui::Context) -> Self {
+        Self {
             mode: EditorMode::Editor,
-            egui_ctx,
-            egui_winit,
-            orbit_camera,
-            _phantom: PhantomData,
-            mouse_state: MouseState {
-                right_down: false,
-                middle_down: false,
-            },
+            egui_ctx: ctx,
             frame_start: Instant::now(),
             frame_count: 0,
             fps: 0.0,
             fps_update_timer: 0.0,
+            frame_time_ms: 0.0,
             pending_scene_load: None,
             pending_quit: false,
-            egui_wants_pointer: false,
-            egui_wants_keyboard: false,
-            pending_egui_output: None,
+            pending_mode_toggle: false,
+            pending_camera_commands: Vec::new(),
             selected_node: None,
-            scene_snapshot: None,
-            scene_lights: Vec::new(),
             gizmo_state: gizmo::GizmoState::new(),
             undo_stack: undo::UndoStack::new(),
             gizmo_was_dragging: false,
@@ -134,7 +124,9 @@ impl<B: GpuBackend> Editor<B> {
             show_hierarchy: false,
             show_inspector: false,
             show_lights: false,
-            frame_time_ms: 0.0,
+            pending_edits: Vec::new(),
+            pending_save: false,
+            pending_load: false,
         }
     }
 
@@ -142,139 +134,71 @@ impl<B: GpuBackend> Editor<B> {
         self.mode
     }
 
-    pub fn orbit_camera(&mut self) -> &mut OrbitCamera {
-        &mut self.orbit_camera
+    pub fn set_mode(&mut self, mode: EditorMode) {
+        self.mode = mode;
     }
 
-    /// Returns true if egui consumed pointer input this frame
-    /// (cursor is over a panel or widget).
-    pub fn wants_pointer_input(&self) -> bool {
-        self.egui_wants_pointer
+    /// Get the selected node name
+    pub fn selected_node(&self) -> Option<&String> {
+        self.selected_node.as_ref()
     }
 
-    /// Returns true if egui consumed keyboard input this frame.
-    pub fn wants_keyboard_input(&self) -> bool {
-        self.egui_wants_keyboard
+    /// Set the selected node
+    pub fn set_selected_node(&mut self, name: Option<String>) {
+        self.selected_node = name;
     }
 
-    /// Toggle between Editor and Play modes. Returns the new mode.
-    pub fn toggle_mode(&mut self) -> EditorMode {
-        self.mode = match self.mode {
-            EditorMode::Editor => EditorMode::Play,
-            EditorMode::Play => EditorMode::Editor,
-        };
-        self.mode
-    }
-
-    /// Forward a winit window event to egui. Returns true if egui consumed it.
+    /// Run the UI for one frame.
     ///
-    /// Call this BEFORE forwarding the event to the game input handler.
-    /// If this returns true, the game input handler should skip the event.
-    pub fn handle_window_event(
+    /// This is called on the MAIN THREAD. It processes egui input,
+    /// runs all UI panels, handles interactions, and produces:
+    /// - FullOutput: egui output to be tessellated and rendered on render thread
+    /// - EditCommands: scene modifications to apply on render thread
+    ///
+    /// # Arguments
+    /// * `raw_input` - egui input from egui_winit
+    /// * `camera` - Current camera snapshot (for gizmos/picking)
+    /// * `mode` - Current editor mode
+    /// * `window_size` - Current window dimensions (width, height)
+    /// * `delta_t` - Time since last frame in seconds
+    /// * `render_frame_time_ms` - Actual render frame time from render thread (for FPS display)
+    ///
+    /// # Returns
+    /// (FullOutput, EditCommands) - to be sent to render thread
+    pub fn run_ui(
         &mut self,
-        window: &winit::window::Window,
-        event: &winit::event::WindowEvent,
-    ) -> bool {
-        let response = self.egui_winit.on_window_event(window, event);
+        raw_input: egui::RawInput,
+        camera: &CameraSnapshot,
+        mode: EditorMode,
+        _window_size: (u32, u32),
+        _delta_t: f32,
+        render_frame_time_ms: f32,
+    ) -> (egui::FullOutput, EditCommands) {
+        self.mode = mode;
+        self.pending_edits.clear();
+        self.pending_save = false;
+        self.pending_load = false;
 
-        // Update cached "wants input" state
-        self.egui_wants_pointer = self.egui_ctx.egui_wants_pointer_input();
-        self.egui_wants_keyboard = self.egui_ctx.egui_wants_keyboard_input();
-
-        // In editor mode, also handle orbit camera input for events
-        // that egui didn't consume.
-        if self.mode == EditorMode::Editor && !response.consumed {
-            self.handle_orbit_input(event);
+        // Update FPS counter using render thread timing (not local timing)
+        // Use exponential moving average (EMA) with alpha=0.1 for smooth display
+        const EMA_ALPHA: f32 = 0.1;
+        self.frame_time_ms = if self.frame_time_ms == 0.0 {
+            // First frame - use raw value
+            render_frame_time_ms
+        } else {
+            // EMA smoothing: new_value = alpha * current + (1-alpha) * previous
+            EMA_ALPHA * render_frame_time_ms + (1.0 - EMA_ALPHA) * self.frame_time_ms
+        };
+        
+        // Calculate FPS from smoothed frame time
+        if self.frame_time_ms > 0.0 {
+            self.fps = 1000.0 / self.frame_time_ms;
         }
 
-        // In play mode, don't let egui consume events (UI is hidden)
-        if self.mode == EditorMode::Play {
-            return false;
-        }
-
-        // In editor mode, consume ALL mouse/keyboard/scroll events so they
-        // never reach the game input handler (e.g., FPS controller). The orbit
-        // camera handles relevant viewport input via handle_orbit_input above.
-        // Structural events like Resized are handled before this method is
-        // called and are not affected.
-        true
-    }
-
-    /// Process mouse/scroll events for the orbit camera.
-    fn handle_orbit_input(&mut self, event: &winit::event::WindowEvent) {
-        use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
-
-        match event {
-            WindowEvent::MouseInput { state, button, .. } => {
-                let pressed = *state == ElementState::Pressed;
-                match button {
-                    MouseButton::Right => self.mouse_state.right_down = pressed,
-                    MouseButton::Middle => self.mouse_state.middle_down = pressed,
-                    _ => {}
-                }
-            }
-            WindowEvent::CursorMoved { .. } => {
-                // Cursor movement is handled via handle_mouse_delta() called
-                // from the window module's delta tracking.
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                let scroll = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => *y,
-                    MouseScrollDelta::PixelDelta(pos) => pos.y as f32 / 24.0,
-                };
-                if scroll.abs() > 0.0 {
-                    self.orbit_camera.zoom(scroll);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// Feed mouse movement delta to the orbit camera.
-    /// Called from the window module's cursor tracking.
-    pub fn handle_mouse_delta(&mut self, dx: f32, dy: f32) {
-        if self.mode != EditorMode::Editor {
-            return;
-        }
-        if self.egui_wants_pointer {
-            return;
-        }
-        if self.mouse_state.right_down {
-            self.orbit_camera.orbit(dx, dy);
-        } else if self.mouse_state.middle_down {
-            self.orbit_camera.pan(dx, dy);
-        }
-    }
-
-    /// Begin an egui frame: extract scene data, gather input, run the UI,
-    /// produce draw commands.
-    ///
-    /// Takes `&mut Renderer` to extract scene snapshots and apply edits.
-    /// Call once per frame, before `render_overlay()`.
-    pub fn begin_frame(&mut self, window: &winit::window::Window, renderer: &mut Renderer<B>) {
         // Advance undo merge window
         self.undo_stack.new_frame();
 
-        // Extract scene data snapshots for the UI to read
-        self.scene_snapshot = renderer.scene_tree();
-        self.scene_lights = renderer.lights().clone();
-
-        let raw_input = self.egui_winit.take_egui_input(window);
-
-        // Update FPS counter
-        self.frame_count += 1;
-        let elapsed = self.frame_start.elapsed().as_secs_f32();
-        self.fps_update_timer += elapsed;
-        self.frame_time_ms = elapsed * 1000.0;
-        if self.fps_update_timer >= 0.5 {
-            self.fps = self.frame_count as f32 / self.fps_update_timer;
-            self.frame_count = 0;
-            self.fps_update_timer = 0.0;
-        }
-        self.frame_start = Instant::now();
-
-        // Collect state needed inside the egui closure (avoid borrowing self)
-        let mode = self.mode;
+        // Collect state needed inside the egui closure
         let fps = self.fps;
         let frame_time_ms = self.frame_time_ms;
         let mut pending_scene_load = None;
@@ -285,17 +209,13 @@ impl<B: GpuBackend> Editor<B> {
         let mut pending_undo = false;
         let mut pending_redo = false;
         let mut selected_node = self.selected_node.clone();
-        // Use references instead of deep-cloning the scene tree every frame.
-        // The closure captures these refs by copy (references are Copy).
-        let scene_snapshot = &self.scene_snapshot;
-        let scene_lights = &self.scene_lights;
 
-        // Panel visibility flags (captured as mutable for the closure).
+        // Panel visibility flags
         let mut show_hierarchy = self.show_hierarchy;
         let mut show_inspector = self.show_inspector;
         let mut show_lights = self.show_lights;
 
-        // Undo state for the Edit menu (captured before the frame)
+        // Undo state for the Edit menu
         let can_undo = self.undo_stack.can_undo();
         let can_redo = self.undo_stack.can_redo();
         let undo_desc = self.undo_stack.undo_description();
@@ -307,22 +227,24 @@ impl<B: GpuBackend> Editor<B> {
         let mut light_adds: Vec<Light> = Vec::new();
         let mut light_removes: Vec<usize> = Vec::new();
 
-        // Extract gizmo state for use inside the egui closure.  This avoids a
-        // borrow conflict: self.egui_ctx.run() borrows the context while the
-        // gizmo needs &mut gizmo_state (another field of self).  We swap it
-        // out, use it in the closure, and restore it afterward.
+        // Extract gizmo state to avoid borrow conflict
         let mut gizmo_state = std::mem::replace(&mut self.gizmo_state, gizmo::GizmoState::new());
 
-        // Pre-capture camera matrices and editor flags for gizmo + picking.
-        let cam_view = self.orbit_camera.view_mat();
-        let cam_proj = self.orbit_camera.projection_mat();
-        let egui_wants_keyboard = self.egui_wants_keyboard;
-        let egui_wants_pointer = self.egui_wants_pointer;
+        // Camera matrices for gizmos/picking
+        let cam_view = camera.view_matrix;
+        let cam_proj = camera.projection_matrix;
+        let egui_wants_keyboard = self.egui_ctx.egui_wants_keyboard_input();
+        let egui_wants_pointer = self.egui_ctx.egui_wants_pointer_input();
 
-        // Gizmo + picking results, written inside the closure.
+        // Gizmo + picking results
         let mut gizmo_consumed = false;
         let mut gizmo_transform_edit: Option<(String, glm::Mat4)> = None;
         let mut orientation_snap: Option<(f32, f32)> = None;
+
+        // We need a placeholder scene snapshot for now
+        // In the full implementation, this comes from the render thread
+        let scene_snapshot: Option<NodeInfo> = None; // TODO: receive from render thread
+        let scene_lights: Vec<Light> = Vec::new(); // TODO: receive from render thread
 
         let full_output = self.egui_ctx.run_ui(raw_input, |ctx| {
             // Check for keyboard shortcuts
@@ -365,20 +287,20 @@ impl<B: GpuBackend> Editor<B> {
                 ui::draw_hierarchy_window(
                     ctx,
                     &mut show_hierarchy,
-                    scene_snapshot,
+                    &scene_snapshot,
                     &mut selected_node,
                 );
                 ui::draw_inspector_window(
                     ctx,
                     &mut show_inspector,
-                    scene_snapshot,
+                    &scene_snapshot,
                     &selected_node,
                     &mut transform_edits,
                 );
                 ui::draw_light_window(
                     ctx,
                     &mut show_lights,
-                    scene_lights,
+                    &scene_lights,
                     &mut light_edits,
                     &mut light_adds,
                     &mut light_removes,
@@ -390,11 +312,11 @@ impl<B: GpuBackend> Editor<B> {
                     orientation_snap = orient_result.snap_to;
                 }
             }
+
             // FPS + frame time overlay (bottom-left, always visible)
             ui::draw_viewport_overlay(ctx, fps, frame_time_ms);
 
-            // --- Gizmo mode keys (T/R/S) ---
-            // Must be inside run() so ctx.input() reads valid frame input.
+            // Gizmo mode keys (T/R/S)
             if mode == EditorMode::Editor && !egui_wants_keyboard {
                 let (key_t, key_r, key_g) = ctx.input(|i| {
                     (
@@ -432,10 +354,10 @@ impl<B: GpuBackend> Editor<B> {
                 }
             }
 
-            // --- Gizmo interaction + rendering ---
+            // Gizmo interaction + rendering
             if mode == EditorMode::Editor {
                 if let Some(ref sel_name) = selected_node.clone() {
-                    if let Some(snapshot) = scene_snapshot {
+                    if let Some(ref snapshot) = scene_snapshot {
                         if let Some(node) = ui::find_node_pub(snapshot, sel_name) {
                             let screen_rect = ctx.content_rect();
                             let gizmo_result = gizmo::draw_and_interact(
@@ -457,7 +379,7 @@ impl<B: GpuBackend> Editor<B> {
                 }
             }
 
-            // --- Viewport picking ---
+            // Viewport picking
             if mode == EditorMode::Editor && !gizmo_consumed {
                 let clicked_primary =
                     ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary));
@@ -473,7 +395,7 @@ impl<B: GpuBackend> Editor<B> {
                             &cam_proj,
                         );
 
-                        if let Some(snapshot) = scene_snapshot {
+                        if let Some(snapshot) = &scene_snapshot {
                             if let Some(hit) = picking::pick_node(&ray, snapshot) {
                                 selected_node = Some(hit.node_name);
                             } else {
@@ -486,194 +408,133 @@ impl<B: GpuBackend> Editor<B> {
             }
         });
 
-        self.pending_egui_output = Some(full_output);
+        // Update persistent state
         self.pending_scene_load = pending_scene_load;
         self.pending_quit = pending_quit;
+        self.pending_mode_toggle = toggle_mode;
         self.selected_node = selected_node;
         self.show_hierarchy = show_hierarchy;
         self.show_inspector = show_inspector;
         self.show_lights = show_lights;
-        if toggle_mode {
-            self.toggle_mode();
-        }
+        self.pending_save = pending_save;
+        self.pending_load = pending_load;
 
-        // Apply orientation gizmo camera snap
+        // Send orientation snap as camera command
         if let Some((az, el)) = orientation_snap {
-            self.orbit_camera.set_orientation(az, el);
+            self.pending_camera_commands
+                .push(CameraCommand::OrientationSnap(az, el));
         }
 
-        // Restore gizmo state (was extracted before run() to avoid borrow
-        // conflict with self.egui_ctx).
+        // Restore gizmo state
         self.gizmo_state = gizmo_state;
 
-        // Track gizmo drag start/end for undo recording.
-        // Gizmo edits are applied every frame during drag, but recorded as a
-        // single undo command spanning drag-start to drag-end.
+        // Track gizmo drag start/end for undo recording
         let gizmo_is_dragging = self.gizmo_state.active_axis.is_some();
         if gizmo_is_dragging && !self.gizmo_was_dragging {
-            // Drag started: save the original transform from gizmo's start_transform
             if let Some(ref st) = self.gizmo_state.start_transform {
                 self.gizmo_drag_old_transform = Some(st.to_mat4());
             }
         }
         if !gizmo_is_dragging && self.gizmo_was_dragging {
-            // Drag ended: push a single undo command (old -> final)
-            if let Some(old_mat) = self.gizmo_drag_old_transform.take() {
-                if let Some(ref sel_name) = self.selected_node {
-                    if let Some(ref snapshot) = self.scene_snapshot {
-                        if let Some(node) = ui::find_node_pub(snapshot, sel_name) {
-                            // The snapshot was captured at the start of this frame,
-                            // reflecting the last gizmo edit from the previous frame
-                            // (the final dragged position).
-                            self.undo_stack.push(undo::Command::SetNodeTransform {
-                                node_name: sel_name.clone(),
-                                old_transform: old_mat,
-                                new_transform: node.local_transform,
-                            });
-                        }
-                    }
+            if let Some(_old_mat) = self.gizmo_drag_old_transform.take() {
+                if let Some(ref _sel_name) = self.selected_node {
+                    // TODO: Get current transform from scene snapshot
+                    // For now, we'll track this differently
                 }
             }
         }
         self.gizmo_was_dragging = gizmo_is_dragging;
 
-        // Apply inspector transform edits (with undo recording via merge)
-        for (name, new_mat) in &transform_edits {
-            if let Some(ref snapshot) = self.scene_snapshot {
-                if let Some(node) = ui::find_node_pub(snapshot, name) {
-                    self.undo_stack
-                        .push_or_merge(undo::Command::SetNodeTransform {
-                            node_name: name.clone(),
-                            old_transform: node.local_transform,
-                            new_transform: *new_mat,
-                        });
-                }
-            }
-            renderer.set_node_transform(name, *new_mat);
-        }
-
-        // Apply gizmo transform edit (undo recorded separately on drag end)
-        if let Some((name, new_mat)) = gizmo_transform_edit {
-            renderer.set_node_transform(&name, new_mat);
-        }
-
-        // Apply light edits (with undo recording via merge)
-        for (idx, new_light) in &light_edits {
-            if *idx < self.scene_lights.len() {
-                self.undo_stack.push_or_merge(undo::Command::UpdateLight {
-                    index: *idx,
-                    old_light: self.scene_lights[*idx].clone(),
-                    new_light: new_light.clone(),
-                });
-            }
-            renderer.update_light(*idx, new_light.clone());
-        }
-
-        // Remove lights in reverse order so indices stay valid
-        light_removes.sort_unstable();
-        for idx in light_removes.into_iter().rev() {
-            if idx < self.scene_lights.len() {
-                self.undo_stack.push(undo::Command::RemoveLight {
-                    light: self.scene_lights[idx].clone(),
-                    index: idx,
-                });
-            }
-            renderer.remove_light(idx);
-        }
-
-        // Add lights
-        for light in &light_adds {
-            let index = renderer.lights().len();
-            renderer.add_light(light.clone());
-            self.undo_stack.push(undo::Command::AddLight {
-                light: light.clone(),
-                index,
+        // Build EditCommands from collected edits
+        // Transform edits
+        for (name, new_mat) in transform_edits {
+            self.pending_edits.push(EditCommand::SetNodeTransform {
+                node_name: name,
+                new_transform: new_mat,
             });
         }
 
-        // Handle undo/redo
+        // Gizmo transform edit (single)
+        if let Some((name, new_mat)) = gizmo_transform_edit {
+            self.pending_edits.push(EditCommand::SetNodeTransform {
+                node_name: name,
+                new_transform: new_mat,
+            });
+        }
+
+        // Light edits
+        for (idx, new_light) in light_edits {
+            self.pending_edits.push(EditCommand::UpdateLight {
+                index: idx,
+                new_light,
+            });
+        }
+
+        // Light removes (in reverse order)
+        light_removes.sort_unstable();
+        for idx in light_removes.into_iter().rev() {
+            self.pending_edits.push(EditCommand::RemoveLight { index: idx });
+        }
+
+        // Light adds
+        for light in light_adds {
+            self.pending_edits.push(EditCommand::AddLight { light });
+        }
+
+        // Undo/redo
         if pending_undo {
-            self.undo_stack.undo(renderer);
+            self.pending_edits.push(EditCommand::Undo);
         }
         if pending_redo {
-            self.undo_stack.redo(renderer);
+            self.pending_edits.push(EditCommand::Redo);
         }
 
-        // Handle save/load
-        if pending_save {
-            self.save_scene(renderer);
-        }
-        if pending_load {
-            self.load_scene_data(renderer);
-        }
+        // Extract the edit commands to return
+        let edit_commands = std::mem::take(&mut self.pending_edits);
+
+        (full_output, edit_commands)
     }
+}
 
-    /// Save the current scene state to a .ron file next to the glTF file.
-    fn save_scene(&self, renderer: &Renderer<B>) {
-        if let Some(data) = renderer.extract_scene_data() {
-            let save_path = scene_save_path(renderer.scene_file());
-            match data.save_to_file(&save_path) {
-                Ok(()) => println!("Scene saved to: {}", save_path),
-                Err(e) => eprintln!("Failed to save scene: {}", e),
-            }
-        } else {
-            eprintln!("No scene loaded — nothing to save.");
-        }
-    }
+/// Editor renderer - lives on RENDER THREAD.
+///
+/// Receives FullOutput from the Editor, tessellates it, and renders the overlay.
+pub struct EditorRenderer {
+    /// Shared egui context (same instance as Editor on main thread)
+    egui_ctx: egui::Context,
+}
 
-    /// Load a scene overlay from a .ron file and apply it.
-    fn load_scene_data(&mut self, renderer: &mut Renderer<B>) {
-        use crate::engine::scene_data::SceneData;
-
-        let load_path = scene_save_path(renderer.scene_file());
-        match SceneData::load_from_file(&load_path) {
-            Ok(data) => {
-                renderer.apply_scene_data(&data);
-                println!("Scene loaded from: {}", load_path);
-            }
-            Err(e) => {
-                eprintln!("Failed to load scene: {}", e);
-            }
-        }
-    }
-
-    /// Render the egui overlay onto the backbuffer.
+impl EditorRenderer {
+    /// Create a new editor renderer with shared egui context.
     ///
-    /// Call after the scene has been rendered (renderer.render_scene())
-    /// but before finish_frame(). Delegates GPU rendering to the backend
-    /// via `GpuBackend::render_egui()`.
-    pub fn render_overlay(&mut self, renderer: &mut Renderer<B>) {
-        let full_output = match self.pending_egui_output.take() {
-            Some(output) => output,
-            None => {
-                return; // begin_frame() was not called
-            }
-        };
+    /// The context must be the same instance (or a clone) of the Editor's context
+    /// so that texture IDs are valid.
+    pub fn new(egui_ctx: egui::Context) -> Self {
+        Self { egui_ctx }
+    }
 
-        let clipped_primitives = self
-            .egui_ctx
-            .tessellate(full_output.shapes, full_output.pixels_per_point);
+    /// Render the egui overlay from FullOutput.
+    ///
+    /// This is called on the RENDER THREAD after scene rendering.
+    /// It tessellates the FullOutput and submits it to the GPU backend.
+    ///
+    /// # Arguments
+    /// * `full_output` - The egui output produced by Editor::run_ui()
+    /// * `renderer` - The renderer to submit GPU commands to
+    pub fn render_overlay<B: crate::engine::backend::GpuBackend>(
+        &self,
+        full_output: &egui::FullOutput,
+        renderer: &mut crate::engine::renderer::Renderer<B>,
+    ) {
+        let clipped_primitives = self.egui_ctx.tessellate(
+            full_output.shapes.clone(),
+            full_output.pixels_per_point,
+        );
 
         renderer.backend_mut().render_egui(
             &full_output.textures_delta,
             &clipped_primitives,
             full_output.pixels_per_point,
         );
-    }
-}
-
-/// Derive the .ron save path from the glTF scene file path.
-///
-/// Example: "assets/glTF/Sponza.gltf" -> "assets/glTF/Sponza.scene.ron"
-fn scene_save_path(scene_file: Option<&str>) -> String {
-    match scene_file {
-        Some(path) => {
-            let base = path
-                .strip_suffix(".gltf")
-                .or_else(|| path.strip_suffix(".glb"))
-                .unwrap_or(path);
-            format!("{}.scene.ron", base)
-        }
-        None => "scene.ron".to_string(),
     }
 }

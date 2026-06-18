@@ -171,7 +171,7 @@ impl<B: GpuBackend> Renderer<B> {
         &mut self.settings
     }
 
-    // ---- Scene data accessors for editor ----
+    // - Scene data accessors for editor-
 
     /// Extract a lightweight snapshot of the entire scenegraph tree.
     ///
@@ -475,7 +475,7 @@ impl<B: GpuBackend> Renderer<B> {
 
         println!("Loading test scene (unit cube at origin)...");
 
-        // --- Create test textures (1x1 solid colors) ---
+        //  Create test textures (1x1 solid colors)
 
         // Albedo: bright red (sRGB)
         let albedo_tex = Rc::new(self.backend.create_texture(
@@ -529,7 +529,7 @@ impl<B: GpuBackend> Renderer<B> {
             &[128, 128, 255, 255],
         )?);
 
-        // --- Build cube geometry ---
+        //  Build cube geometry
         // 24 vertices (4 per face), 36 indices (6 per face)
         // CCW winding when viewed from outside (matches FrontFace::Ccw)
 
@@ -646,13 +646,13 @@ impl<B: GpuBackend> Renderer<B> {
             indices.push(base + 3);
         }
 
-        // --- Create drawable ---
+        //  Create drawable
         let drawable = Drawable::from_verts(&self.backend, &vertices, &indices, ObjType::Opaque)?;
         drawable.borrow_mut().add_texture(0, albedo_tex);
         drawable.borrow_mut().add_texture(1, mr_tex);
         drawable.borrow_mut().add_texture(2, normal_tex);
 
-        // --- Build scenegraph ---
+        //  Build scenegraph
         let node = Node::create(
             Some("test_cube"),
             glm::identity(), // cube at origin

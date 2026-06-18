@@ -46,7 +46,7 @@ pub fn draw_hamburger_menu(
                             .size(20.0)
                             .color(egui::Color32::WHITE),
                         |ui| {
-                            // --- File ---
+                            // File
                             ui.label(egui::RichText::new("File").strong());
                             if ui.button("  Open glTF Scene...").clicked() {
                                 *pending_scene_load = Some("assets/glTF/Sponza.gltf".to_string());
@@ -62,7 +62,7 @@ pub fn draw_hamburger_menu(
                             }
                             ui.separator();
 
-                            // --- Edit ---
+                            //  Edit
                             ui.label(egui::RichText::new("Edit").strong());
                             let undo_label = match undo_desc {
                                 Some(d) => format!("  Undo: {}  (Ctrl+Z)", d),
@@ -88,7 +88,7 @@ pub fn draw_hamburger_menu(
                             }
                             ui.separator();
 
-                            // --- View ---
+                            //  View
                             ui.label(egui::RichText::new("View").strong());
                             ui.checkbox(show_hierarchy, "  Hierarchy  (H)");
                             ui.checkbox(show_inspector, "  Inspector  (I)");
@@ -110,7 +110,7 @@ pub fn draw_hamburger_menu(
                             }
                             ui.separator();
 
-                            // --- Shortcuts ---
+                            //  Shortcuts
                             ui.label(egui::RichText::new("Shortcuts").strong());
                             let grey = egui::Color32::from_white_alpha(140);
                             for line in [
