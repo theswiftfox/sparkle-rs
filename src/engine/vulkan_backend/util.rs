@@ -198,7 +198,10 @@ pub fn create_surface(
             #[cfg(target_os = "macos")]
             {
                 let layer_ptr = window.metal_layer();
-                assert!(!layer_ptr.is_null(), "CAMetalLayer not initialized on Window");
+                assert!(
+                    !layer_ptr.is_null(),
+                    "CAMetalLayer not initialized on Window"
+                );
                 let create_info = ash::vk::MetalSurfaceCreateInfoEXT {
                     p_layer: layer_ptr,
                     ..Default::default()
@@ -758,27 +761,18 @@ impl VulkanBackend {
             old.surface,
             old.sync_mode,
             old.surface_format.is_hdr,
+            self.vulkan_handle_tracker.clone(),
         )?;
 
         std::mem::swap(&mut self.swapchain, &mut new_swapchain);
         std::mem::swap(&mut self.depth_targets, &mut new_depth);
 
-        let Swapchain {
-            fn_ptr,
-            swapchain,
-            swapchain_images,
-            ..
-        } = new_swapchain;
-
-        // cleanup the old data
-        unsafe {
-            fn_ptr.destroy_swapchain(swapchain, None);
-        }
-        for image in swapchain_images {
-            image.destroy();
-        }
         for depth in new_depth {
             depth.destroy();
+        }
+
+        unsafe {
+            self.swapchain.fn_ptr.destroy_swapchain(old.swapchain, None);
         }
 
         Ok(())

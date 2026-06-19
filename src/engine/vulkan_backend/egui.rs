@@ -1,6 +1,9 @@
 use std::{collections::HashMap, ffi::c_void};
 
-use crate::engine::backend::{GpuError, GpuErrorKind};
+use crate::engine::{
+    backend::{GpuError, GpuErrorKind},
+    vulkan_backend::VulkanHandleTracker,
+};
 
 use super::{FRAMES_IN_FLIGHT, SHADER_ENTRY_POINT, buffer::VulkanBuffer, create_shader_module};
 use crate::engine::vulkan_backend::VulkanBackend;
@@ -53,6 +56,8 @@ pub(crate) struct EguiRenderer {
     index_buffers: Vec<Option<VulkanBuffer>>,
     vertex_caps: Vec<usize>,
     index_caps: Vec<usize>,
+
+    vk_handle_tracker: VulkanHandleTracker,
 }
 
 impl EguiRenderer {
@@ -63,6 +68,7 @@ impl EguiRenderer {
         queue: ash::vk::Queue,
         queue_family: u32,
         swapchain_format: ash::vk::Format,
+        vk_handle_tracker: VulkanHandleTracker,
     ) -> Result<Self, GpuError> {
         let device = device.clone();
         let instance = instance.clone();
@@ -88,6 +94,7 @@ impl EguiRenderer {
             index_buffers: (0..FRAMES_IN_FLIGHT).map(|_| None).collect(),
             vertex_caps: vec![0; FRAMES_IN_FLIGHT as usize],
             index_caps: vec![0; FRAMES_IN_FLIGHT as usize],
+            vk_handle_tracker,
         })
     }
 
@@ -110,7 +117,7 @@ impl EguiRenderer {
             }
         }
         for (_, tex) in &self.textures {
-            Self::destroy_texture(&self.device, tex);
+            Self::destroy_texture(&self.device, tex, &self.vk_handle_tracker);
         }
         for buf in &self.vertex_buffers {
             if let Some(b) = buf {
@@ -748,26 +755,34 @@ impl EguiRenderer {
 
     pub fn free_texture(&mut self, id: &egui::TextureId) {
         if let Some(tex) = self.textures.remove(id) {
-            Self::destroy_texture(&self.device, &tex);
+            Self::destroy_texture(&self.device, &tex, &self.vk_handle_tracker);
         }
     }
 
-    fn destroy_texture(device: &ash::Device, tex: &EguiTextureInfo) {
+    fn destroy_texture(
+        device: &ash::Device,
+        tex: &EguiTextureInfo,
+        vk_handle_tracker: &VulkanHandleTracker,
+    ) {
         unsafe {
             // The sampler/image_view may still be referenced by a descriptor set
             // from an in-flight frame. Wait for the GPU to finish before destroying.
             let _ = device.device_wait_idle();
 
             if tex.sampler != ash::vk::Sampler::null() {
+                vk_handle_tracker.unregister_sampler(tex.sampler);
                 device.destroy_sampler(tex.sampler, None);
             }
             if tex.image_view != ash::vk::ImageView::null() {
+                vk_handle_tracker.unregister_image_view(tex.image_view);
                 device.destroy_image_view(tex.image_view, None);
             }
             if tex.image != ash::vk::Image::null() {
+                vk_handle_tracker.unregister_image(tex.image);
                 device.destroy_image(tex.image, None);
             }
             if tex.memory != ash::vk::DeviceMemory::null() {
+                vk_handle_tracker.unregister_device_memory(tex.memory);
                 device.free_memory(tex.memory, None);
             }
         }
@@ -830,6 +845,7 @@ impl EguiRenderer {
             size,
             device_handle: self.device.clone(),
             per_frame_copies: None,
+            vulkan_handle_tracker: self.vk_handle_tracker.clone(),
         });
         self.vertex_caps[buf_idx] = new_cap;
     }
@@ -875,6 +891,7 @@ impl EguiRenderer {
             size,
             device_handle: self.device.clone(),
             per_frame_copies: None,
+            vulkan_handle_tracker: self.vk_handle_tracker.clone(),
         });
         self.index_caps[buf_idx] = new_cap;
     }

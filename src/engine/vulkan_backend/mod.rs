@@ -1,9 +1,10 @@
 use std::{
     cell::{Cell, RefCell},
+    collections::HashSet,
     ffi::{CStr, c_void},
     ops::Deref,
     rc::Rc,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use crate::{
@@ -13,6 +14,7 @@ use crate::{
         settings::{Settings, SyncMode},
         vulkan_backend::texture::VulkanTexture,
     },
+    util as crate_utils,
 };
 
 use winit::raw_window_handle::RawWindowHandle;
@@ -268,6 +270,101 @@ impl Default for SpecializationConstants {
     }
 }
 
+#[derive(Clone)]
+pub struct VulkanHandleTracker {
+    device: Arc<Mutex<ash::Device>>,
+    active_samplers: Arc<Mutex<HashSet<ash::vk::Sampler>>>,
+    active_image_views: Arc<Mutex<HashSet<ash::vk::ImageView>>>,
+    active_images: Arc<Mutex<HashSet<ash::vk::Image>>>,
+    active_device_memory: Arc<Mutex<HashSet<ash::vk::DeviceMemory>>>,
+    active_buffers: Arc<Mutex<HashSet<ash::vk::Buffer>>>,
+    active_pipelines: Arc<Mutex<HashSet<ash::vk::Pipeline>>>,
+}
+
+impl VulkanHandleTracker {
+    pub fn new(device: ash::Device) -> Self {
+        VulkanHandleTracker {
+            device: Arc::new(Mutex::new(device)),
+            active_samplers: Arc::new(Mutex::new(HashSet::new())),
+            active_image_views: Arc::new(Mutex::new(HashSet::new())),
+            active_images: Arc::new(Mutex::new(HashSet::new())),
+            active_device_memory: Arc::new(Mutex::new(HashSet::new())),
+            active_buffers: Arc::new(Mutex::new(HashSet::new())),
+            active_pipelines: Arc::new(Mutex::new(HashSet::new())),
+        }
+    }
+
+    pub fn register_sampler(&self, sampler: ash::vk::Sampler) {
+        crate_utils::mtx_lock(&self.active_samplers).insert(sampler);
+    }
+
+    pub fn unregister_sampler(&self, sampler: ash::vk::Sampler) {
+        crate_utils::mtx_lock(&self.active_samplers).remove(&sampler);
+    }
+
+    pub fn register_image_view(&self, view: ash::vk::ImageView) {
+        crate_utils::mtx_lock(&self.active_image_views).insert(view);
+    }
+
+    pub fn unregister_image_view(&self, view: ash::vk::ImageView) {
+        crate_utils::mtx_lock(&self.active_image_views).remove(&view);
+    }
+
+    pub fn register_image(&self, image: ash::vk::Image) {
+        crate_utils::mtx_lock(&self.active_images).insert(image);
+    }
+
+    pub fn unregister_image(&self, image: ash::vk::Image) {
+        crate_utils::mtx_lock(&self.active_images).remove(&image);
+    }
+
+    pub fn register_device_memory(&self, mem: ash::vk::DeviceMemory) {
+        crate_utils::mtx_lock(&self.active_device_memory).insert(mem);
+    }
+
+    pub fn unregister_device_memory(&self, mem: ash::vk::DeviceMemory) {
+        crate_utils::mtx_lock(&self.active_device_memory).remove(&mem);
+    }
+
+    pub fn register_buffer(&self, buffer: ash::vk::Buffer) {
+        crate_utils::mtx_lock(&self.active_buffers).insert(buffer);
+    }
+
+    pub fn unregister_buffer(&self, buffer: ash::vk::Buffer) {
+        crate_utils::mtx_lock(&self.active_buffers).remove(&buffer);
+    }
+
+    pub fn register_pipeline(&self, pipeline: ash::vk::Pipeline) {
+        crate_utils::mtx_lock(&self.active_pipelines).insert(pipeline);
+    }
+
+    pub fn unregister_pipeline(&self, pipeline: ash::vk::Pipeline) {
+        crate_utils::mtx_lock(&self.active_pipelines).remove(&pipeline);
+    }
+
+    pub fn cleanup_leftover(&self) {
+        for pipeline in crate_utils::mtx_lock(&self.active_pipelines).drain() {
+            unsafe { crate_utils::mtx_lock(&self.device).destroy_pipeline(pipeline, None) };
+        }
+        for sampler in crate_utils::mtx_lock(&self.active_samplers).drain() {
+            // SAFETY: Caller must ensure no concurrent use of Vulkan device while this is called
+            unsafe { crate_utils::mtx_lock(&self.device).destroy_sampler(sampler, None) };
+        }
+        for view in crate_utils::mtx_lock(&self.active_image_views).drain() {
+            unsafe { crate_utils::mtx_lock(&self.device).destroy_image_view(view, None) };
+        }
+        for image in crate_utils::mtx_lock(&self.active_images).drain() {
+            unsafe { crate_utils::mtx_lock(&self.device).destroy_image(image, None) };
+        }
+        for buffer in crate_utils::mtx_lock(&self.active_buffers).drain() {
+            unsafe { crate_utils::mtx_lock(&self.device).destroy_buffer(buffer, None) };
+        }
+        for mem in crate_utils::mtx_lock(&self.active_device_memory).drain() {
+            unsafe { crate_utils::mtx_lock(&self.device).free_memory(mem, None) };
+        }
+    }
+}
+
 pub struct VulkanBackend {
     window: Arc<Window>,
     context: ash::Entry,
@@ -288,6 +385,113 @@ pub struct VulkanBackend {
     current_frame: Option<CurrentFrame>,
     texture_registry: RefCell<TextureRegistry>,
     egui_renderer: Option<egui::EguiRenderer>,
+    vulkan_handle_tracker: VulkanHandleTracker,
+}
+
+impl Drop for VulkanBackend {
+    fn drop(&mut self) {
+        unsafe {
+            // Wait for GPU idle
+            let _ = self.device.device_wait_idle();
+
+            // Destroy egui_renderer first (Option)
+            if let Some(egui) = self.egui_renderer.take() {
+                egui.destroy();
+            }
+
+            // Clear texture registry
+            self.texture_registry.borrow_mut().free_2d.clear();
+            self.texture_registry.borrow_mut().free_cube.clear();
+            self.texture_registry.borrow_mut().free_shadow.clear();
+
+            // Take current_frame
+            self.current_frame = None;
+
+            // Destroy sync objects
+            for fence in &self.sync_objects.draw_fences {
+                self.device.destroy_fence(*fence, None);
+            }
+            for sem in &self.sync_objects.present_completed_sems {
+                self.device.destroy_semaphore(*sem, None);
+            }
+            for sem in &self.sync_objects.render_completed_sems {
+                self.device.destroy_semaphore(*sem, None);
+            }
+
+            // Destroy descriptors
+            self.device
+                .destroy_descriptor_pool(self.descriptors.pool, None);
+            self.device
+                .destroy_descriptor_set_layout(self.descriptors.layout, None);
+
+            // Destroy command pools
+            self.device
+                .destroy_command_pool(self.command_pool.render_pool, None);
+            self.device
+                .destroy_command_pool(self.command_pool.short_lived, None);
+
+            // Destroy pipeline
+            self.device.destroy_pipeline(self.graphics_pipeline, None);
+            self.device
+                .destroy_pipeline_layout(self.pipeline_layout, None);
+
+            let emtpy_target =
+                VulkanTexture::null(self.device.clone(), self.vulkan_handle_tracker.clone());
+            // Destroy depth targets (take ownership to call destroy)
+            for depth_target in std::mem::replace(
+                &mut self.depth_targets,
+                [emtpy_target.clone(), emtpy_target],
+            ) {
+                depth_target.destroy();
+            }
+
+            // Destroy swapchain image views and shared sampler
+            // (swapchain images themselves are owned by the swapchain, don't destroy them)
+            let mut sampler_destroyed = false;
+            for tex in &self.swapchain.swapchain_images {
+                if tex.image_view != ash::vk::ImageView::null() {
+                    self.vulkan_handle_tracker
+                        .unregister_image_view(tex.image_view);
+                    self.device.destroy_image_view(tex.image_view, None);
+                }
+                if !sampler_destroyed && tex.sampler != ash::vk::Sampler::null() {
+                    self.vulkan_handle_tracker.unregister_sampler(tex.sampler);
+                    self.device.destroy_sampler(tex.sampler, None);
+                    sampler_destroyed = true;
+                }
+            }
+
+            self.swapchain
+                .fn_ptr
+                .destroy_swapchain(self.swapchain.swapchain, None);
+            self.swapchain.swapchain = ash::vk::SwapchainKHR::null();
+
+            // Save surface handle for later destruction (after device)
+            let surface_handle = self.swapchain.surface;
+            self.swapchain.surface = ash::vk::SurfaceKHR::null();
+
+            // Destroy debug messenger before instance (using original entry)
+            if let Some(messenger) = self.instance.debug_messenger {
+                let debug_utils =
+                    ash::ext::debug_utils::Instance::new(&self.context, &self.instance);
+                debug_utils.destroy_debug_utils_messenger(messenger, None);
+                self.instance.debug_messenger = None;
+            }
+
+            // Destroy remaining tracked resources
+            self.vulkan_handle_tracker.cleanup_leftover();
+
+            // Destroy device before surface (Vulkan spec: all device resources must be freed first)
+            self.device.destroy_device(None);
+
+            // Destroy surface after device, before instance
+            let surface_ext = ash::khr::surface::Instance::new(&self.context, &self.instance);
+            surface_ext.destroy_surface(surface_handle, None);
+
+            // Instance dropped by its own Drop impl
+            self.instance.destroy_instance(None);
+        }
+    }
 }
 
 pub fn initialize(window: Arc<Window>, settings: &Settings) -> Result<VulkanBackend, GpuError> {
@@ -316,6 +520,8 @@ pub fn initialize(window: Arc<Window>, settings: &Settings) -> Result<VulkanBack
     let queue = logical_device.get_graphics_queue();
     println!("Graphics queue retrieved successfully");
 
+    let vk_handle_tracker = VulkanHandleTracker::new(logical_device.device.clone());
+
     let (swapchain, depth_targets) = create_swapchain_and_depth_buffer(
         &context,
         &instance,
@@ -328,6 +534,7 @@ pub fn initialize(window: Arc<Window>, settings: &Settings) -> Result<VulkanBack
         surface,
         sync_mode,
         settings.hdr_preferred,
+        vk_handle_tracker.clone(),
     )?;
     println!("Swapchain and depth buffer created successfully");
 
@@ -389,6 +596,7 @@ pub fn initialize(window: Arc<Window>, settings: &Settings) -> Result<VulkanBack
         current_frame: None,
         texture_registry: RefCell::new(TextureRegistry::new()),
         egui_renderer: None,
+        vulkan_handle_tracker: vk_handle_tracker,
     })
 }
 
@@ -840,6 +1048,13 @@ fn create_graphics_pipeline(
         )
     })?;
 
+    // Shader modules can be destroyed after pipeline creation
+    unsafe {
+        device.destroy_shader_module(shader_module_vert, None);
+        device.destroy_shader_module(shader_module_pxl, None);
+        device.destroy_pipeline_layout(pipeline_layout, None);
+    }
+
     pipeline.into_iter().next().ok_or_else(|| {
         GpuError::new(
             "Create pipeline returned empty response",
@@ -908,6 +1123,7 @@ fn create_swapchain_and_depth_buffer(
     surface: ash::vk::SurfaceKHR,
     sync_mode: SyncMode,
     hdr_preferred: bool,
+    vk_handle_tracker: VulkanHandleTracker,
 ) -> Result<(Swapchain, [VulkanTexture; FRAMES_IN_FLIGHT as usize]), GpuError> {
     println!("Querying surface capabilities and formats...");
     let surface_khr = ash::khr::surface::Instance::new(context, instance);
@@ -1048,6 +1264,7 @@ fn create_swapchain_and_depth_buffer(
             descriptor_index: u32::MAX,
             device_handle: logical_device.device.clone(),
             current_layout: Rc::new(Cell::new(ash::vk::ImageLayout::UNDEFINED)),
+            vullkan_handle_tracker: vk_handle_tracker.clone(),
         })
         .collect::<Vec<_>>();
     println!("Swapchain textures created successfully");
@@ -1066,6 +1283,7 @@ fn create_swapchain_and_depth_buffer(
                 logical_device,
                 physical_device,
                 &depth_target_desc,
+                vk_handle_tracker.clone(),
             )
         })
         .collect::<Result<Vec<_>, GpuError>>()?;

@@ -242,6 +242,10 @@ impl GpuBackend for VulkanBackend {
                         } else {
                             std::ptr::null_mut()
                         };
+                        // Register with tracker so cleanup_leftover catches unfreed copies
+                        self.vulkan_handle_tracker.register_buffer(buf);
+                        self.vulkan_handle_tracker.register_device_memory(mem);
+
                         Ok(crate::engine::vulkan_backend::buffer::PerFrameCopy {
                             buffer: buf,
                             memory: mem,
@@ -284,6 +288,7 @@ impl GpuBackend for VulkanBackend {
                     &self.device,
                     self.phys_device,
                     desc,
+                    self.vulkan_handle_tracker.clone(),
                 )?;
 
                 // Link physical texture to the shared slot
@@ -609,6 +614,14 @@ impl GpuBackend for VulkanBackend {
                 GpuErrorKind::ResourceCreation,
             )
         })?;
+
+        // Shader modules can be destroyed after pipeline creation
+        for stage in &shader_modules {
+            unsafe { self.device.destroy_shader_module(stage.module, None) };
+        }
+
+        // Register pipeline handle for cleanup on shutdown
+        self.vulkan_handle_tracker.register_pipeline(pipeline[0]);
 
         Ok(VulkanPipeline {
             label: desc.label.to_owned(),
@@ -1667,6 +1680,7 @@ impl GpuBackend for VulkanBackend {
                 self.queue,
                 self.device.graphics_queue_index,
                 self.swapchain.surface_format.format.format,
+                self.vulkan_handle_tracker.clone(),
             ) {
                 Ok(r) => {
                     self.egui_renderer = Some(r);

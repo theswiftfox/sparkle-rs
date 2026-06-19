@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{cell::Cell, rc::Rc};
 
+use crate::engine::vulkan_backend::VulkanHandleTracker;
 use crate::engine::{
     backend::{
         AddressMode, CompareFunc, FilterMode, GpuError, GpuErrorKind, GpuRenderTarget, GpuTexture,
@@ -30,6 +31,8 @@ pub struct VulkanTexture {
     pub descriptor_index: u32,
     pub device_handle: ash::Device,
     pub current_layout: Rc<Cell<ash::vk::ImageLayout>>,
+
+    pub vullkan_handle_tracker: VulkanHandleTracker,
 }
 
 impl GpuTexture for VulkanTexture {
@@ -51,27 +54,52 @@ impl GpuTexture for VulkanTexture {
 }
 
 impl VulkanTexture {
+    pub fn null(device: ash::Device, vulkan_handle_tracker: VulkanHandleTracker) -> Self {
+        Self {
+            image: ash::vk::Image::null(),
+            mem: ash::vk::DeviceMemory::null(),
+            image_view: ash::vk::ImageView::null(),
+            sampler: ash::vk::Sampler::null(),
+            width: 0,
+            height: 0,
+            format: TextureFormat::Rgba8Unorm,
+            aspect: ash::vk::ImageAspectFlags::empty(),
+            mip_levels: 1,
+            view_type: ash::vk::ImageViewType::TYPE_2D,
+            compare_enabled: false,
+            id: TEXTURE_ID.fetch_add(1, Ordering::SeqCst),
+            descriptor_index: u32::MAX,
+            device_handle: device,
+            current_layout: Rc::new(Cell::new(ash::vk::ImageLayout::UNDEFINED)),
+            vullkan_handle_tracker: vulkan_handle_tracker,
+        }
+    }
     pub fn destroy(self) {
         let VulkanTexture {
             image,
             mem,
             image_view,
             sampler,
+            vullkan_handle_tracker,
             device_handle,
             ..
         } = self;
 
         unsafe {
             if sampler != ash::vk::Sampler::null() {
+                vullkan_handle_tracker.unregister_sampler(sampler);
                 device_handle.destroy_sampler(sampler, None);
             }
             if image_view != ash::vk::ImageView::null() {
+                vullkan_handle_tracker.unregister_image_view(image_view);
                 device_handle.destroy_image_view(image_view, None);
             }
             if image != ash::vk::Image::null() {
+                vullkan_handle_tracker.unregister_image(image);
                 device_handle.destroy_image(image, None);
             }
             if mem != ash::vk::DeviceMemory::null() {
+                vullkan_handle_tracker.unregister_device_memory(mem);
                 device_handle.free_memory(mem, None);
             }
         }
@@ -172,6 +200,7 @@ impl VulkanBackend {
         device: &ash::Device,
         phys_device: ash::vk::PhysicalDevice,
         info: &RenderTargetDesc,
+        vulkan_handle_tracker: VulkanHandleTracker,
     ) -> Result<VulkanTexture, GpuError> {
         let format: ash::vk::Format = info.format.into();
 
@@ -236,6 +265,12 @@ impl VulkanBackend {
             )
         })?;
 
+        // Register all resources with handle tracker so cleanup_leftover catches them
+        vulkan_handle_tracker.register_image(rt);
+        vulkan_handle_tracker.register_device_memory(rt_mem);
+        vulkan_handle_tracker.register_image_view(image_view);
+        vulkan_handle_tracker.register_sampler(sampler);
+
         Ok(VulkanTexture {
             image: rt,
             mem: rt_mem,
@@ -252,6 +287,7 @@ impl VulkanBackend {
             descriptor_index: u32::MAX,
             device_handle: device.clone(),
             current_layout: Rc::new(Cell::new(ash::vk::ImageLayout::UNDEFINED)),
+            vullkan_handle_tracker: vulkan_handle_tracker,
         })
     }
 
@@ -323,6 +359,12 @@ impl VulkanBackend {
 
         self.end_single_time_commands(command_buff)?;
 
+        // Free staging buffer after upload is complete
+        unsafe {
+            self.device.destroy_buffer(staging_buff, None);
+            self.device.free_memory(staging_mem, None);
+        }
+
         let view_create_info = ash::vk::ImageViewCreateInfo {
             image: tex_image,
             view_type: ash::vk::ImageViewType::TYPE_2D,
@@ -356,6 +398,12 @@ impl VulkanBackend {
             )
         })?;
 
+        // Register handles for tracking
+        self.vulkan_handle_tracker.register_image(tex_image);
+        self.vulkan_handle_tracker.register_device_memory(tex_mem);
+        self.vulkan_handle_tracker.register_image_view(image_view);
+        self.vulkan_handle_tracker.register_sampler(sampler);
+
         Ok(VulkanTexture {
             image: tex_image,
             mem: tex_mem,
@@ -372,6 +420,7 @@ impl VulkanBackend {
             descriptor_index: u32::MAX,
             device_handle: self.device.device.clone(),
             current_layout: Rc::new(Cell::new(ash::vk::ImageLayout::UNDEFINED)),
+            vullkan_handle_tracker: self.vulkan_handle_tracker.clone(),
         })
     }
 
@@ -494,6 +543,12 @@ impl VulkanBackend {
         )?;
         self.end_single_time_commands(cmd)?;
 
+        // Free staging buffer after upload is complete
+        unsafe {
+            self.device.destroy_buffer(staging, None);
+            self.device.free_memory(staging_mem, None);
+        }
+
         let view_create_info = ash::vk::ImageViewCreateInfo {
             image: cubemap,
             view_type: ash::vk::ImageViewType::CUBE,
@@ -524,6 +579,13 @@ impl VulkanBackend {
             )
         })?;
 
+        // Register handles for tracking
+        self.vulkan_handle_tracker.register_image(cubemap);
+        self.vulkan_handle_tracker
+            .register_device_memory(cubemap_mem);
+        self.vulkan_handle_tracker.register_image_view(image_view);
+        self.vulkan_handle_tracker.register_sampler(sampler);
+
         Ok(VulkanTexture {
             image: cubemap,
             mem: cubemap_mem,
@@ -540,6 +602,7 @@ impl VulkanBackend {
             descriptor_index: u32::MAX,
             device_handle: self.device.device.clone(),
             current_layout: Rc::new(Cell::new(ash::vk::ImageLayout::UNDEFINED)),
+            vullkan_handle_tracker: self.vulkan_handle_tracker.clone(),
         })
     }
 
@@ -613,6 +676,14 @@ impl VulkanBackend {
             (ash::vk::Sampler::null(), false)
         };
 
+        // Register handles for tracking
+        self.vulkan_handle_tracker.register_image(depth_img);
+        self.vulkan_handle_tracker.register_device_memory(mem);
+        self.vulkan_handle_tracker.register_image_view(image_view);
+        if sampler != ash::vk::Sampler::null() {
+            self.vulkan_handle_tracker.register_sampler(sampler);
+        }
+
         Ok(VulkanTexture {
             image: depth_img,
             mem,
@@ -629,6 +700,7 @@ impl VulkanBackend {
             descriptor_index: u32::MAX,
             device_handle: self.device.device.clone(),
             current_layout: Rc::new(Cell::new(ash::vk::ImageLayout::UNDEFINED)),
+            vullkan_handle_tracker: self.vulkan_handle_tracker.clone(),
         })
     }
 

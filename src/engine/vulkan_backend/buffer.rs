@@ -2,7 +2,7 @@ use std::os::raw::c_void;
 
 use crate::engine::{
     backend::{BufferUsage, GpuBuffer, GpuError, GpuErrorKind},
-    vulkan_backend::VulkanBackend,
+    vulkan_backend::{VulkanBackend, VulkanHandleTracker},
 };
 
 pub struct PerFrameCopy {
@@ -19,6 +19,7 @@ pub struct VulkanBuffer {
     pub size: ash::vk::DeviceSize,
     pub(crate) device_handle: ash::Device,
     pub per_frame_copies: Option<Vec<PerFrameCopy>>,
+    pub vulkan_handle_tracker: VulkanHandleTracker,
 }
 
 impl VulkanBuffer {
@@ -26,15 +27,18 @@ impl VulkanBuffer {
         let VulkanBuffer {
             buffer,
             memory,
+            vulkan_handle_tracker,
             device_handle,
             ..
         } = self;
 
         unsafe {
             if *buffer != ash::vk::Buffer::null() {
+                vulkan_handle_tracker.unregister_buffer(*buffer);
                 device_handle.destroy_buffer(*buffer, None);
             }
             if *memory != ash::vk::DeviceMemory::null() {
+                vulkan_handle_tracker.unregister_device_memory(*memory);
                 device_handle.free_memory(*memory, None);
             }
         }
@@ -43,9 +47,11 @@ impl VulkanBuffer {
             for copy in copies {
                 unsafe {
                     if copy.buffer != ash::vk::Buffer::null() {
+                        vulkan_handle_tracker.unregister_buffer(copy.buffer);
                         device_handle.destroy_buffer(copy.buffer, None);
                     }
                     if copy.memory != ash::vk::DeviceMemory::null() {
+                        vulkan_handle_tracker.unregister_device_memory(copy.memory);
                         device_handle.free_memory(copy.memory, None);
                     }
                 }
@@ -123,6 +129,10 @@ impl VulkanBackend {
             std::ptr::null_mut()
         };
 
+        // Register handles for tracking
+        self.vulkan_handle_tracker.register_buffer(buffer);
+        self.vulkan_handle_tracker.register_device_memory(memory);
+
         Ok(VulkanBuffer {
             buffer,
             memory,
@@ -131,6 +141,7 @@ impl VulkanBackend {
             size,
             device_handle: self.device.device.clone(),
             per_frame_copies: None,
+            vulkan_handle_tracker: self.vulkan_handle_tracker.clone(),
         })
     }
 }
