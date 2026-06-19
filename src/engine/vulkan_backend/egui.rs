@@ -17,12 +17,14 @@ use crate::engine::vulkan_backend::VulkanBackend;
 
 const EGUI_VERTEX_STRIDE: u32 = 20;
 const EGUI_PUSH_CONSTANTS_SIZE: u32 = 16; // vec2 scale + vec2 translate
+const EGUI_MAX_TEXTURES: u32 = 64;
 
 struct EguiTextureInfo {
     image: ash::vk::Image,
     memory: ash::vk::DeviceMemory,
     image_view: ash::vk::ImageView,
     sampler: ash::vk::Sampler,
+    descriptor_set: ash::vk::DescriptorSet,
 }
 
 pub(crate) struct EguiBatch {
@@ -47,8 +49,6 @@ pub(crate) struct EguiRenderer {
     pipeline_layout: ash::vk::PipelineLayout,
     descriptor_set_layout: ash::vk::DescriptorSetLayout,
     descriptor_pool: ash::vk::DescriptorPool,
-    /// One descriptor set per in-flight frame (single CIS at binding 0).
-    descriptor_sets: Vec<ash::vk::DescriptorSet>,
 
     textures: HashMap<egui::TextureId, EguiTextureInfo>,
 
@@ -76,7 +76,7 @@ impl EguiRenderer {
         let desc_set_layout = Self::create_descriptor_set_layout(&device)?;
         let pipeline_layout = Self::create_pipeline_layout(&device, desc_set_layout)?;
         let pipeline = Self::create_pipeline(&device, pipeline_layout, swapchain_format)?;
-        let (pool, sets) = Self::create_descriptor_pool_and_sets(&device, desc_set_layout)?;
+        let pool = Self::create_descriptor_pool(&device)?;
 
         Ok(EguiRenderer {
             device,
@@ -88,7 +88,6 @@ impl EguiRenderer {
             pipeline_layout,
             descriptor_set_layout: desc_set_layout,
             descriptor_pool: pool,
-            descriptor_sets: sets,
             textures: HashMap::new(),
             vertex_buffers: (0..FRAMES_IN_FLIGHT).map(|_| None).collect(),
             index_buffers: (0..FRAMES_IN_FLIGHT).map(|_| None).collect(),
@@ -99,6 +98,14 @@ impl EguiRenderer {
     }
 
     pub fn destroy(&self) {
+        for (_, tex) in &self.textures {
+            Self::destroy_texture(
+                &self.device,
+                tex,
+                self.descriptor_pool,
+                &self.vk_handle_tracker,
+            );
+        }
         unsafe {
             if self.pipeline != ash::vk::Pipeline::null() {
                 self.device.destroy_pipeline(self.pipeline, None);
@@ -107,17 +114,14 @@ impl EguiRenderer {
                 self.device
                     .destroy_pipeline_layout(self.pipeline_layout, None);
             }
-            if self.descriptor_set_layout != ash::vk::DescriptorSetLayout::null() {
-                self.device
-                    .destroy_descriptor_set_layout(self.descriptor_set_layout, None);
-            }
             if self.descriptor_pool != ash::vk::DescriptorPool::null() {
                 self.device
                     .destroy_descriptor_pool(self.descriptor_pool, None);
             }
-        }
-        for (_, tex) in &self.textures {
-            Self::destroy_texture(&self.device, tex, &self.vk_handle_tracker);
+            if self.descriptor_set_layout != ash::vk::DescriptorSetLayout::null() {
+                self.device
+                    .destroy_descriptor_set_layout(self.descriptor_set_layout, None);
+            }
         }
         for buf in &self.vertex_buffers {
             if let Some(b) = buf {
@@ -154,42 +158,24 @@ impl EguiRenderer {
         })
     }
 
-    fn create_descriptor_pool_and_sets(
-        device: &ash::Device,
-        layout: ash::vk::DescriptorSetLayout,
-    ) -> Result<(ash::vk::DescriptorPool, Vec<ash::vk::DescriptorSet>), GpuError> {
+    fn create_descriptor_pool(device: &ash::Device) -> Result<ash::vk::DescriptorPool, GpuError> {
         let pool_size = ash::vk::DescriptorPoolSize {
             ty: ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-            descriptor_count: FRAMES_IN_FLIGHT,
+            descriptor_count: EGUI_MAX_TEXTURES,
         };
         let pool_info = ash::vk::DescriptorPoolCreateInfo {
-            max_sets: FRAMES_IN_FLIGHT,
+            flags: ash::vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET,
+            max_sets: EGUI_MAX_TEXTURES,
             pool_size_count: 1,
             p_pool_sizes: &pool_size,
             ..Default::default()
         };
-        let pool = unsafe { device.create_descriptor_pool(&pool_info, None) }.map_err(|e| {
+        unsafe { device.create_descriptor_pool(&pool_info, None) }.map_err(|e| {
             GpuError::new(
                 format!("Failed to create egui descriptor pool: {e:?}"),
                 GpuErrorKind::ResourceCreation,
             )
-        })?;
-
-        let layouts = vec![layout; FRAMES_IN_FLIGHT as usize];
-        let alloc_info = ash::vk::DescriptorSetAllocateInfo {
-            descriptor_pool: pool,
-            descriptor_set_count: layouts.len() as u32,
-            p_set_layouts: layouts.as_ptr(),
-            ..Default::default()
-        };
-        let sets = unsafe { device.allocate_descriptor_sets(&alloc_info) }.map_err(|e| {
-            GpuError::new(
-                format!("Failed to allocate egui descriptor sets: {e:?}"),
-                GpuErrorKind::ResourceCreation,
-            )
-        })?;
-
-        Ok((pool, sets))
+        })
     }
 
     fn create_pipeline_layout(
@@ -553,11 +539,14 @@ impl EguiRenderer {
             )
         })?;
 
+        let descriptor_set = self.allocate_and_write_descriptor_set(image_view, sampler)?;
+
         Ok(EguiTextureInfo {
             image,
             memory,
             image_view,
             sampler,
+            descriptor_set,
         })
     }
 
@@ -753,21 +742,70 @@ impl EguiRenderer {
         Ok(())
     }
 
+    fn allocate_and_write_descriptor_set(
+        &self,
+        image_view: ash::vk::ImageView,
+        sampler: ash::vk::Sampler,
+    ) -> Result<ash::vk::DescriptorSet, GpuError> {
+        let alloc_info = ash::vk::DescriptorSetAllocateInfo {
+            descriptor_pool: self.descriptor_pool,
+            descriptor_set_count: 1,
+            p_set_layouts: &self.descriptor_set_layout,
+            ..Default::default()
+        };
+        let sets = unsafe { self.device.allocate_descriptor_sets(&alloc_info) }.map_err(|e| {
+            GpuError::new(
+                format!("Failed to allocate egui texture descriptor set: {e:?}"),
+                GpuErrorKind::ResourceCreation,
+            )
+        })?;
+        let descriptor_set = sets[0];
+
+        let img_info = ash::vk::DescriptorImageInfo {
+            image_view,
+            image_layout: ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            sampler,
+        };
+        let write = ash::vk::WriteDescriptorSet {
+            dst_set: descriptor_set,
+            dst_binding: 0,
+            descriptor_count: 1,
+            descriptor_type: ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            p_image_info: &img_info,
+            ..Default::default()
+        };
+        unsafe {
+            self.device.update_descriptor_sets(&[write], &[]);
+        }
+
+        Ok(descriptor_set)
+    }
+
     pub fn free_texture(&mut self, id: &egui::TextureId) {
         if let Some(tex) = self.textures.remove(id) {
-            Self::destroy_texture(&self.device, &tex, &self.vk_handle_tracker);
+            Self::destroy_texture(
+                &self.device,
+                &tex,
+                self.descriptor_pool,
+                &self.vk_handle_tracker,
+            );
         }
     }
 
     fn destroy_texture(
         device: &ash::Device,
         tex: &EguiTextureInfo,
+        descriptor_pool: ash::vk::DescriptorPool,
         vk_handle_tracker: &VulkanHandleTracker,
     ) {
         unsafe {
             // The sampler/image_view may still be referenced by a descriptor set
             // from an in-flight frame. Wait for the GPU to finish before destroying.
             let _ = device.device_wait_idle();
+
+            if tex.descriptor_set != ash::vk::DescriptorSet::null() {
+                let _ = device.free_descriptor_sets(descriptor_pool, &[tex.descriptor_set]);
+            }
 
             if tex.sampler != ash::vk::Sampler::null() {
                 vk_handle_tracker.unregister_sampler(tex.sampler);
@@ -995,15 +1033,6 @@ impl EguiRenderer {
             );
         }
 
-        let frame_set = self.descriptor_sets.get(buf_idx).copied();
-        let frame_set = match frame_set {
-            Some(s) => s,
-            None => {
-                eprintln!("[egui::cmd_draw] no descriptor set, returning");
-                return;
-            }
-        };
-
         for (_i, batch) in batches.iter().enumerate() {
             // Scissor
             let sc = ash::vk::Rect2D {
@@ -1024,7 +1053,7 @@ impl EguiRenderer {
                 self.device.cmd_set_scissor(cmd, 0, &[sc]);
             }
 
-            // Find texture and update descriptor
+            // Find texture and bind its pre-written descriptor set
             let tex = match self.textures.get(&batch.texture_id) {
                 Some(t) => t,
                 None => {
@@ -1037,31 +1066,14 @@ impl EguiRenderer {
                 }
             };
 
-            let img_info = ash::vk::DescriptorImageInfo {
-                image_view: tex.image_view,
-                image_layout: ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                sampler: tex.sampler,
-            };
-            let write = ash::vk::WriteDescriptorSet {
-                dst_set: frame_set,
-                dst_binding: 0,
-                descriptor_count: 1,
-                descriptor_type: ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                p_image_info: &img_info,
-                ..Default::default()
-            };
-            unsafe {
-                self.device.update_descriptor_sets(&[write], &[]);
-            }
-
-            // Bind descriptor set
+            // Bind the texture's own descriptor set (written at texture creation time)
             unsafe {
                 self.device.cmd_bind_descriptor_sets(
                     cmd,
                     ash::vk::PipelineBindPoint::GRAPHICS,
                     self.pipeline_layout,
                     0,
-                    &[frame_set],
+                    &[tex.descriptor_set],
                     &[],
                 );
             }

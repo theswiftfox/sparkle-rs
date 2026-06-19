@@ -173,6 +173,7 @@ impl Editor {
         _window_size: (u32, u32),
         _delta_t: f32,
         render_frame_time_ms: f32,
+        scene: &SceneSnapshot,
     ) -> (egui::FullOutput, EditCommands) {
         self.mode = mode;
         self.pending_edits.clear();
@@ -241,10 +242,8 @@ impl Editor {
         let mut gizmo_transform_edit: Option<(String, glm::Mat4)> = None;
         let mut orientation_snap: Option<(f32, f32)> = None;
 
-        // We need a placeholder scene snapshot for now
-        // In the full implementation, this comes from the render thread
-        let scene_snapshot: Option<NodeInfo> = None; // TODO: receive from render thread
-        let scene_lights: Vec<Light> = Vec::new(); // TODO: receive from render thread
+        let scene_snapshot: &Option<NodeInfo> = &scene.tree;
+        let scene_lights: &Vec<Light> = &scene.lights;
 
         let full_output = self.egui_ctx.run_ui(raw_input, |ctx| {
             // Check for keyboard shortcuts
@@ -287,20 +286,20 @@ impl Editor {
                 ui::draw_hierarchy_window(
                     ctx,
                     &mut show_hierarchy,
-                    &scene_snapshot,
+                    scene_snapshot,
                     &mut selected_node,
                 );
                 ui::draw_inspector_window(
                     ctx,
                     &mut show_inspector,
-                    &scene_snapshot,
+                    scene_snapshot,
                     &selected_node,
                     &mut transform_edits,
                 );
                 ui::draw_light_window(
                     ctx,
                     &mut show_lights,
-                    &scene_lights,
+                    scene_lights,
                     &mut light_edits,
                     &mut light_adds,
                     &mut light_removes,
@@ -357,7 +356,7 @@ impl Editor {
             // Gizmo interaction + rendering
             if mode == EditorMode::Editor {
                 if let Some(ref sel_name) = selected_node.clone() {
-                    if let Some(ref snapshot) = scene_snapshot {
+                    if let Some(ref snapshot) = scene_snapshot.as_ref() {
                         if let Some(node) = ui::find_node_pub(snapshot, sel_name) {
                             let screen_rect = ctx.content_rect();
                             let gizmo_result = gizmo::draw_and_interact(
@@ -395,7 +394,7 @@ impl Editor {
                             &cam_proj,
                         );
 
-                        if let Some(snapshot) = &scene_snapshot {
+                        if let Some(snapshot) = scene_snapshot.as_ref() {
                             if let Some(hit) = picking::pick_node(&ray, snapshot) {
                                 selected_node = Some(hit.node_name);
                             } else {

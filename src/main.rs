@@ -239,6 +239,8 @@ fn vk_render_loop(channels: RenderChannels, settings: Settings) {
         let render_info = RenderFrameInfo {
             frame_time_ms,
             gpu_time_ms: None, // TODO: Add GPU timestamp queries
+            scene_tree: renderer.scene_tree(),
+            scene_lights: renderer.lights().clone(),
         };
         // Use try_send - if channel is full (main thread hasn't consumed), it will overwrite
         // This matches our "latest only" semantics
