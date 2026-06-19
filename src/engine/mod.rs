@@ -8,4 +8,3 @@ pub(crate) mod scenegraph;
 pub(crate) mod settings;
 pub(crate) mod skybox;
 pub mod vulkan_backend;
-pub mod wgpu_backend;

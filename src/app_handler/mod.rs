@@ -17,7 +17,9 @@ use winit::{
     raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle},
 };
 
-use crate::editor::{EditCommands, Editor, EditorMode};
+use crate::editor::{EditCommands, Editor, EditorMode, SceneSnapshot};
+use crate::engine::geometry::Light;
+use crate::engine::scene_info::NodeInfo;
 use crate::engine::settings::Settings;
 use crate::input::first_person::FPSController;
 use crate::input::input_handler::{
@@ -69,12 +71,16 @@ pub enum CameraCommand {
 ///
 /// TODO: Enrich with GPU timestamps via Vulkan timestamp queries for more precise
 /// GPU-side timing breakdown (vertex shader, fragment shader, present wait, etc.)
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct RenderFrameInfo {
     /// Wall-clock time for the entire render frame (from frame start to present complete) in milliseconds
     pub frame_time_ms: f32,
     /// Optional: GPU time via timestamp queries (when implemented)
     pub gpu_time_ms: Option<f32>,
+    /// Scenegraph tree snapshot (None if no scene loaded)
+    pub scene_tree: Option<NodeInfo>,
+    /// Current lights in the scene
+    pub scene_lights: Vec<Light>,
 }
 
 // Mouse state tracking
@@ -121,6 +127,9 @@ pub struct App {
     last_frame_time: Instant,
     /// Latest render frame timing info (updated each frame from render thread)
     latest_render_info: Option<RenderFrameInfo>,
+
+    /// Cached scene snapshot from render thread (updated each frame)
+    scene_snapshot: SceneSnapshot,
 
     // Camera creation params (used when window is created)
     camera_aspect: f32,
@@ -192,6 +201,7 @@ impl App {
             render_info_receiver: render_info_rcv,
             last_frame_time: Instant::now(),
             latest_render_info: None,
+            scene_snapshot: SceneSnapshot::empty(),
             camera_aspect: aspect,
             camera_fov,
             camera_near,
@@ -675,6 +685,10 @@ impl ApplicationHandler for App {
         // The channel has capacity 1, so the render thread overwrites if we haven't consumed yet
         let mut got_render_info = false;
         while let Ok(info) = self.render_info_receiver.try_recv() {
+            self.scene_snapshot = SceneSnapshot {
+                tree: info.scene_tree.clone(),
+                lights: info.scene_lights.clone(),
+            };
             self.latest_render_info = Some(info);
             got_render_info = true;
         }
@@ -691,6 +705,7 @@ impl ApplicationHandler for App {
 
         let render_frame_time_ms = self
             .latest_render_info
+            .as_ref()
             .map(|i| i.frame_time_ms)
             .unwrap_or(0.0);
 
@@ -721,6 +736,7 @@ impl ApplicationHandler for App {
             (ww, wh),
             delta_t,
             render_frame_time_ms,
+            &self.scene_snapshot,
         );
 
         // Check for quit from editor

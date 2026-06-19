@@ -10,17 +10,15 @@ build = "build.rs"
 
 [dependencies]
 ash = "0.38.0"
-nalgebra-glm = "0.20.0"
+nalgebra-glm = "0.21.0"
 image = "0.25.2"
 gltf = { version = "1.4.1", features = ["extras"] }
 rust-ini = "0.21.3"
 rand = "0.10.1"
 winit = "0.30"
-wgpu = "29.0.3"
 pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
 egui = "0.34.2"
-egui-wgpu = "0.34.2"
 egui-winit = "0.34.2"
 serde = { version = "1", features = ["derive"] }
 ron = "0.12.1"
