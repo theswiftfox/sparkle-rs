@@ -25,15 +25,9 @@ pub enum Command {
         new_light: Light,
     },
     /// Light added (stores the light and its index after insertion).
-    AddLight {
-        light: Light,
-        index: usize,
-    },
+    AddLight { light: Light, index: usize },
     /// Light removed (stores the light and its former index for re-insertion).
-    RemoveLight {
-        light: Light,
-        index: usize,
-    },
+    RemoveLight { light: Light, index: usize },
 }
 
 impl Command {
@@ -114,10 +108,9 @@ impl Command {
                 Command::SetNodeTransform { node_name: a, .. },
                 Command::SetNodeTransform { node_name: b, .. },
             ) => a == b,
-            (
-                Command::UpdateLight { index: a, .. },
-                Command::UpdateLight { index: b, .. },
-            ) => a == b,
+            (Command::UpdateLight { index: a, .. }, Command::UpdateLight { index: b, .. }) => {
+                a == b
+            }
             _ => false,
         }
     }

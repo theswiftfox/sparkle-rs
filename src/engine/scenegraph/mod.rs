@@ -119,10 +119,7 @@ impl<B: GpuBackend> Scenegraph<B> {
         }
     }
 
-    pub fn get_drawables_named(
-        &self,
-        name: &str,
-    ) -> Option<Vec<Rc<RefCell<Drawable<B>>>>> {
+    pub fn get_drawables_named(&self, name: &str) -> Option<Vec<Rc<RefCell<Drawable<B>>>>> {
         match self.get_node_named(name) {
             Ok(n) => Some(n.borrow().get_drawables()),
             Err(_) => None,

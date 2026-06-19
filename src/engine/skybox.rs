@@ -30,21 +30,45 @@ impl<B: GpuBackend> Skybox<B> {
         // Build unit cube geometry (8 vertices, 36 indices)
         let vertices = [
             // 0: (+1, +1, +1)
-            Vertex { position: glm::vec3(1.0, 1.0, 1.0), ..Vertex::default() },
+            Vertex {
+                position: glm::vec3(1.0, 1.0, 1.0),
+                ..Vertex::default()
+            },
             // 1: (+1, -1, +1)
-            Vertex { position: glm::vec3(1.0, -1.0, 1.0), ..Vertex::default() },
+            Vertex {
+                position: glm::vec3(1.0, -1.0, 1.0),
+                ..Vertex::default()
+            },
             // 2: (-1, +1, +1)
-            Vertex { position: glm::vec3(-1.0, 1.0, 1.0), ..Vertex::default() },
+            Vertex {
+                position: glm::vec3(-1.0, 1.0, 1.0),
+                ..Vertex::default()
+            },
             // 3: (-1, -1, +1)
-            Vertex { position: glm::vec3(-1.0, -1.0, 1.0), ..Vertex::default() },
+            Vertex {
+                position: glm::vec3(-1.0, -1.0, 1.0),
+                ..Vertex::default()
+            },
             // 4: (+1, +1, -1)
-            Vertex { position: glm::vec3(1.0, 1.0, -1.0), ..Vertex::default() },
+            Vertex {
+                position: glm::vec3(1.0, 1.0, -1.0),
+                ..Vertex::default()
+            },
             // 5: (+1, -1, -1)
-            Vertex { position: glm::vec3(1.0, -1.0, -1.0), ..Vertex::default() },
+            Vertex {
+                position: glm::vec3(1.0, -1.0, -1.0),
+                ..Vertex::default()
+            },
             // 6: (-1, +1, -1)
-            Vertex { position: glm::vec3(-1.0, 1.0, -1.0), ..Vertex::default() },
+            Vertex {
+                position: glm::vec3(-1.0, 1.0, -1.0),
+                ..Vertex::default()
+            },
             // 7: (-1, -1, -1)
-            Vertex { position: glm::vec3(-1.0, -1.0, -1.0), ..Vertex::default() },
+            Vertex {
+                position: glm::vec3(-1.0, -1.0, -1.0),
+                ..Vertex::default()
+            },
         ];
 
         #[rustfmt::skip]
@@ -88,8 +112,7 @@ impl<B: GpuBackend> Skybox<B> {
             .collect::<Result<Vec<_>, _>>()?;
 
         // Convert all faces to RGBA and validate dimensions
-        let rgba_images: Vec<image::RgbaImage> =
-            images.iter().map(|img| img.to_rgba8()).collect();
+        let rgba_images: Vec<image::RgbaImage> = images.iter().map(|img| img.to_rgba8()).collect();
         let face_width = rgba_images[0].width();
         let face_height = rgba_images[0].height();
 
@@ -109,7 +132,10 @@ impl<B: GpuBackend> Skybox<B> {
             }
         }
 
-        let face_data: Vec<&[u8]> = rgba_images.iter().map(|img| img.as_ref() as &[u8]).collect();
+        let face_data: Vec<&[u8]> = rgba_images
+            .iter()
+            .map(|img| img.as_ref() as &[u8])
+            .collect();
         let faces: [&[u8]; 6] = [
             face_data[0],
             face_data[1],
@@ -132,9 +158,7 @@ impl<B: GpuBackend> Skybox<B> {
             },
         )?;
 
-        drawable
-            .borrow_mut()
-            .add_texture(0, Rc::new(cubemap));
+        drawable.borrow_mut().add_texture(0, Rc::new(cubemap));
 
         // Apply initial rotation to match skybox face orientation
         let rot = glm::rotate(&glm::identity(), 4.78, &glm::vec3(0.0, 1.0, 0.0));

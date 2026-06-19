@@ -15,18 +15,11 @@ pub enum EditCommand {
         new_transform: glm::Mat4,
     },
     /// Update a light at specific index
-    UpdateLight {
-        index: usize,
-        new_light: Light,
-    },
+    UpdateLight { index: usize, new_light: Light },
     /// Add a new light
-    AddLight {
-        light: Light,
-    },
+    AddLight { light: Light },
     /// Remove light at index
-    RemoveLight {
-        index: usize,
-    },
+    RemoveLight { index: usize },
     /// Undo last operation
     Undo,
     /// Redo last undone operation

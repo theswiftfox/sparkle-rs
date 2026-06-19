@@ -2,9 +2,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use super::{ErrorCause, SceneGraphError};
 use crate::engine::backend::{Drawable, GpuBackend, ObjType};
 use crate::engine::geometry::AABB;
-use super::{ErrorCause, SceneGraphError};
 
 pub struct Node<B: GpuBackend> {
     uuid: u64,

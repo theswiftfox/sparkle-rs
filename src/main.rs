@@ -23,10 +23,7 @@ use crate::{
     app_handler::{FrameData, RenderChannels, RenderFrameInfo, Window},
     editor::{EditCommand, EditCommands, EditorMode, EditorRenderer},
     engine::{
-        backend::GpuBackend,
-        renderer::Renderer,
-        settings::Settings,
-        vulkan_backend::VulkanBackend,
+        backend::GpuBackend, renderer::Renderer, settings::Settings, vulkan_backend::VulkanBackend,
     },
 };
 
@@ -48,14 +45,14 @@ fn drain_latest(receiver: &Receiver<FrameData>) -> Result<FrameData, ()> {
         Ok(f) => f,
         Err(_) => return Err(()), // channel closed
     };
-    
+
     // Then drain any additional queued frames (keep latest state)
     loop {
         match receiver.try_recv() {
             Ok(mut newer) => {
                 // Merge edit commands from older frame into newer
                 newer.edit_commands.extend(latest.edit_commands);
-                
+
                 // Merge texture deltas carefully:
                 // If newer has a full update (pos=None) for a texture, it replaces older updates
                 // If newer has partial updates, we need older updates too (for the base texture)
@@ -66,17 +63,21 @@ fn drain_latest(receiver: &Receiver<FrameData>) -> Result<FrameData, ()> {
                         textures_to_skip.insert(*id);
                     }
                 }
-                
+
                 // Add older textures that aren't being fully replaced
                 for (id, delta) in latest.full_output.textures_delta.set {
                     if !textures_to_skip.contains(&id) {
                         newer.full_output.textures_delta.set.push((id, delta));
                     }
                 }
-                
+
                 // Merge free list (textures to delete)
-                newer.full_output.textures_delta.free.extend(latest.full_output.textures_delta.free);
-                
+                newer
+                    .full_output
+                    .textures_delta
+                    .free
+                    .extend(latest.full_output.textures_delta.free);
+
                 latest = newer;
             }
             Err(TryRecvError::Empty) => break,
@@ -87,13 +88,13 @@ fn drain_latest(receiver: &Receiver<FrameData>) -> Result<FrameData, ()> {
 }
 
 /// Apply edit commands to the scene through the renderer.
-fn apply_edit_commands<B: GpuBackend>(
-    commands: EditCommands,
-    renderer: &mut Renderer<B>,
-) {
+fn apply_edit_commands<B: GpuBackend>(commands: EditCommands, renderer: &mut Renderer<B>) {
     for cmd in commands {
         match cmd {
-            EditCommand::SetNodeTransform { node_name, new_transform } => {
+            EditCommand::SetNodeTransform {
+                node_name,
+                new_transform,
+            } => {
                 renderer.set_node_transform(&node_name, new_transform);
             }
             EditCommand::UpdateLight { index, new_light } => {
@@ -145,14 +146,15 @@ fn vk_render_loop(channels: RenderChannels, settings: Settings) {
 
     // Create renderer + editor renderer
     // Note: egui::Context is cheap to clone (it's Arc-based)
-    let (mut renderer, editor_renderer) = match create_vk_renderer(&window, egui_ctx.clone(), &settings) {
-        Ok((r, er)) => (r, er),
-        Err(e) => {
-            eprintln!("Failed to create VK renderer: {}", e);
-            quit_flag.store(true, Ordering::SeqCst);
-            return;
-        }
-    };
+    let (mut renderer, editor_renderer) =
+        match create_vk_renderer(&window, egui_ctx.clone(), &settings) {
+            Ok((r, er)) => (r, er),
+            Err(e) => {
+                eprintln!("Failed to create VK renderer: {}", e);
+                quit_flag.store(true, Ordering::SeqCst);
+                return;
+            }
+        };
 
     let mut last_mode = EditorMode::Editor;
     let mut first_frame = true;
@@ -222,10 +224,7 @@ fn vk_render_loop(channels: RenderChannels, settings: Settings) {
         }
 
         // Render egui overlay using FullOutput from main thread
-        editor_renderer.render_overlay(
-            &frame.full_output,
-            &mut renderer,
-        );
+        editor_renderer.render_overlay(&frame.full_output, &mut renderer);
 
         // Finish + present
         if let Err(e) = renderer.finish_frame() {

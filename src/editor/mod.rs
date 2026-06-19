@@ -189,7 +189,7 @@ impl Editor {
             // EMA smoothing: new_value = alpha * current + (1-alpha) * previous
             EMA_ALPHA * render_frame_time_ms + (1.0 - EMA_ALPHA) * self.frame_time_ms
         };
-        
+
         // Calculate FPS from smoothed frame time
         if self.frame_time_ms > 0.0 {
             self.fps = 1000.0 / self.frame_time_ms;
@@ -473,7 +473,8 @@ impl Editor {
         // Light removes (in reverse order)
         light_removes.sort_unstable();
         for idx in light_removes.into_iter().rev() {
-            self.pending_edits.push(EditCommand::RemoveLight { index: idx });
+            self.pending_edits
+                .push(EditCommand::RemoveLight { index: idx });
         }
 
         // Light adds
@@ -526,10 +527,9 @@ impl EditorRenderer {
         full_output: &egui::FullOutput,
         renderer: &mut crate::engine::renderer::Renderer<B>,
     ) {
-        let clipped_primitives = self.egui_ctx.tessellate(
-            full_output.shapes.clone(),
-            full_output.pixels_per_point,
-        );
+        let clipped_primitives = self
+            .egui_ctx
+            .tessellate(full_output.shapes.clone(), full_output.pixels_per_point);
 
         renderer.backend_mut().render_egui(
             &full_output.textures_delta,

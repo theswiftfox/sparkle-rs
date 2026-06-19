@@ -1,6 +1,6 @@
 use crate::input::{
-    input_handler::{Action, ApplicationRequest, Button, InputHandler, Key, ScrollAxis},
     AppSettings, Camera,
+    input_handler::{Action, ApplicationRequest, Button, InputHandler, Key, ScrollAxis},
 };
 
 use std::collections::HashMap;

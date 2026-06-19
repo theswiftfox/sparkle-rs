@@ -4,8 +4,8 @@
 //! Supports click+drag interaction for axis-constrained translation,
 //! rotation (Euler angle adjustment), and uniform scaling.
 
-use crate::engine::scene_info::NodeInfo;
 use super::transform::DecomposedTransform;
+use crate::engine::scene_info::NodeInfo;
 
 /// Which transform operation the gizmo performs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -166,7 +166,13 @@ pub fn draw_and_interact(
     let mut axis_endpoints: Vec<(Axis, egui::Pos2, egui::Color32)> = Vec::new();
     for (axis, dir, color) in &axes {
         let tip = axis_screen_endpoint(
-            &world_pos, dir, &origin_screen, view, proj, screen_w, screen_h,
+            &world_pos,
+            dir,
+            &origin_screen,
+            view,
+            proj,
+            screen_w,
+            screen_h,
         );
         axis_endpoints.push((*axis, tip, *color));
     }
@@ -187,12 +193,8 @@ pub fn draw_and_interact(
 
     // Handle drag interaction
     let primary_down = ctx.input(|i| i.pointer.button_down(egui::PointerButton::Primary));
-    let primary_pressed = ctx.input(|i| {
-        i.pointer.button_pressed(egui::PointerButton::Primary)
-    });
-    let primary_released = ctx.input(|i| {
-        i.pointer.button_released(egui::PointerButton::Primary)
-    });
+    let primary_pressed = ctx.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
+    let primary_released = ctx.input(|i| i.pointer.button_released(egui::PointerButton::Primary));
 
     if primary_pressed && hovered_axis.is_some() && state.active_axis.is_none() {
         // Start drag
@@ -234,8 +236,7 @@ pub fn draw_and_interact(
                         }
                         GizmoMode::Rotate => {
                             // 1 pixel = 0.5 degrees
-                            new_t.rotation[axis_idx] =
-                                start_t.rotation[axis_idx] + projected * 0.5;
+                            new_t.rotation[axis_idx] = start_t.rotation[axis_idx] + projected * 0.5;
                         }
                         GizmoMode::Scale => {
                             // Multiplicative: drag right = scale up
@@ -347,10 +348,7 @@ pub struct OrientationGizmoResult {
 /// Shows the three world axes (X/Y/Z) projected through the current camera
 /// rotation, with colored lines and labeled endpoints.  Clicking an axis
 /// endpoint snaps the orbit camera to face along that axis.
-pub fn draw_orientation_gizmo(
-    ctx: &egui::Context,
-    view: &glm::Mat4,
-) -> OrientationGizmoResult {
+pub fn draw_orientation_gizmo(ctx: &egui::Context, view: &glm::Mat4) -> OrientationGizmoResult {
     let mut result = OrientationGizmoResult { snap_to: None };
 
     let screen_rect = ctx.content_rect();
@@ -368,11 +366,7 @@ pub fn draw_orientation_gizmo(
     ));
 
     // Semi-transparent background circle
-    painter.circle_filled(
-        center,
-        gizmo_radius,
-        egui::Color32::from_black_alpha(80),
-    );
+    painter.circle_filled(center, gizmo_radius, egui::Color32::from_black_alpha(80));
     painter.circle_stroke(
         center,
         gizmo_radius,
@@ -445,7 +439,11 @@ pub fn draw_orientation_gizmo(
     }
 
     // Sort back-to-front (most negative depth drawn first).
-    endpoints.sort_by(|a, b| a.depth.partial_cmp(&b.depth).unwrap_or(std::cmp::Ordering::Equal));
+    endpoints.sort_by(|a, b| {
+        a.depth
+            .partial_cmp(&b.depth)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     // Input state for click detection.
     let pointer_pos = ctx.input(|i| i.pointer.hover_pos());
@@ -454,12 +452,8 @@ pub fn draw_orientation_gizmo(
     for ep in &endpoints {
         // Draw line from center to endpoint
         let alpha = ((ep.depth * 0.5 + 0.5).clamp(0.2, 1.0) * 255.0) as u8;
-        let line_color = egui::Color32::from_rgba_unmultiplied(
-            ep.color.r(),
-            ep.color.g(),
-            ep.color.b(),
-            alpha,
-        );
+        let line_color =
+            egui::Color32::from_rgba_unmultiplied(ep.color.r(), ep.color.g(), ep.color.b(), alpha);
         painter.line_segment([center, ep.screen], egui::Stroke::new(2.0, line_color));
 
         if ep.is_positive {

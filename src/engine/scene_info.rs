@@ -33,10 +33,7 @@ impl NodeInfo {
     /// Recursively extract a `NodeInfo` tree from a scenegraph `Node`.
     pub fn from_node<B: GpuBackend>(node: &Rc<RefCell<Node<B>>>) -> NodeInfo {
         let n = node.borrow();
-        let name = n
-            .name
-            .clone()
-            .unwrap_or_else(|| "<unnamed>".to_string());
+        let name = n.name.clone().unwrap_or_else(|| "<unnamed>".to_string());
 
         let children_nodes = n.children_list();
         let children: Vec<NodeInfo> = children_nodes
