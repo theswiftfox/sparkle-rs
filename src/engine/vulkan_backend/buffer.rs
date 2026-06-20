@@ -20,6 +20,7 @@ pub struct VulkanBuffer {
     pub(crate) device_handle: ash::Device,
     pub per_frame_copies: Option<Vec<PerFrameCopy>>,
     pub vulkan_handle_tracker: VulkanHandleTracker,
+    pub is_storage_buffer: bool,
 }
 
 impl VulkanBuffer {
@@ -133,6 +134,8 @@ impl VulkanBackend {
         self.vulkan_handle_tracker.register_buffer(buffer);
         self.vulkan_handle_tracker.register_device_memory(memory);
 
+        let is_storage_buffer = usage.contains(ash::vk::BufferUsageFlags::STORAGE_BUFFER);
+
         Ok(VulkanBuffer {
             buffer,
             memory,
@@ -142,6 +145,7 @@ impl VulkanBackend {
             device_handle: self.device.device.clone(),
             per_frame_copies: None,
             vulkan_handle_tracker: self.vulkan_handle_tracker.clone(),
+            is_storage_buffer,
         })
     }
 }

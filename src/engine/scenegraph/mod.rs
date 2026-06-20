@@ -2,7 +2,9 @@ pub mod node;
 
 use node::Node;
 
-use super::backend::{Drawable, GpuBackend, ObjType};
+use crate::engine::backend::RenderItem;
+
+use super::backend::{GpuBackend, ObjType};
 use super::geometry::Light;
 
 pub struct Scenegraph<B: GpuBackend> {
@@ -108,7 +110,7 @@ impl<B: GpuBackend> Scenegraph<B> {
         todo!()
     }
 
-    pub fn traverse(&self) -> Result<Vec<&Drawable<B>>, SceneGraphError> {
+    pub fn traverse(&self) -> Result<Vec<RenderItem<'_, B>>, SceneGraphError> {
         let Some(root) = &self.root else {
             return Err(SceneGraphError::new("", &ErrorCause::Empty));
         };
@@ -125,7 +127,7 @@ impl<B: GpuBackend> Scenegraph<B> {
         }
     }
 
-    pub fn get_drawables_named(&self, name: &str) -> Option<Vec<&Drawable<B>>> {
+    pub fn get_drawables_named(&self, name: &str) -> Option<Vec<RenderItem<'_, B>>> {
         match self.get_node_named(name) {
             Ok(n) => Some(n.get_drawables()),
             Err(_) => None,

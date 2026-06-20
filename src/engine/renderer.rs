@@ -99,12 +99,12 @@ impl<B: GpuBackend> Renderer<B> {
             None,
         )?;
 
-        backend.bind_ubo_to_descriptor(0, &ubo_view_proj);
-        backend.bind_ubo_to_descriptor(1, &ubo_camera_pixel);
-        backend.bind_ubo_to_descriptor(2, &ubo_light_data);
-        backend.bind_ubo_to_descriptor(3, &ubo_shadow_light_space);
-        backend.bind_ubo_to_descriptor(4, &ubo_skybox_view_proj);
-        backend.bind_ubo_to_descriptor(5, &ubo_near_far);
+        backend.bind_buffer_to_descriptor(0, &ubo_view_proj);
+        backend.bind_buffer_to_descriptor(1, &ubo_camera_pixel);
+        backend.bind_buffer_to_descriptor(2, &ubo_light_data);
+        backend.bind_buffer_to_descriptor(3, &ubo_shadow_light_space);
+        backend.bind_buffer_to_descriptor(4, &ubo_skybox_view_proj);
+        backend.bind_buffer_to_descriptor(5, &ubo_near_far);
 
         let identity = glm::Mat4::identity();
         let view_proj_cpu = ViewProjUniforms {
@@ -653,12 +653,12 @@ impl<B: GpuBackend> Renderer<B> {
         drawable.add_texture(2, normal_tex);
 
         //  Build scenegraph
-        let node = Node::create(
+        let node = Node::create_standard_mesh(
             Some("test_cube"),
             glm::identity(), // cube at origin
             Some(vec![drawable]),
         );
-        let mut root = Node::create(None, glm::identity(), None);
+        let mut root = Node::create_standard_mesh(None, glm::identity(), None);
         root.add_child(node).expect("Unable to add test cube node");
 
         self.scene.set_root(root);

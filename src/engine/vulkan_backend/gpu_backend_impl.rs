@@ -1394,7 +1394,13 @@ impl GpuBackend for VulkanBackend {
         // Model matrix goes through push constants via set_model_matrix().
     }
 
-    fn bind_ubo_to_descriptor(&self, binding: u32, buffer: &Self::Buffer) {
+    fn bind_buffer_to_descriptor(&self, binding: u32, buffer: &Self::Buffer) {
+        let descriptor_type = if buffer.is_storage_buffer {
+            ash::vk::DescriptorType::STORAGE_BUFFER
+        } else {
+            ash::vk::DescriptorType::UNIFORM_BUFFER
+        };
+
         if let Some(copies) = &buffer.per_frame_copies {
             // Per-frame buffer: write each copy to its corresponding set.
             // Primary buffer is set 0, additional copies are sets 1..N.
@@ -1407,7 +1413,7 @@ impl GpuBackend for VulkanBackend {
                 dst_set: self.descriptors.sets[0],
                 dst_binding: binding,
                 dst_array_element: 0,
-                descriptor_type: ash::vk::DescriptorType::UNIFORM_BUFFER,
+                descriptor_type,
                 descriptor_count: 1,
                 p_buffer_info: &info0,
                 ..Default::default()
@@ -1431,7 +1437,7 @@ impl GpuBackend for VulkanBackend {
                     dst_set: self.descriptors.sets[set_idx],
                     dst_binding: binding,
                     dst_array_element: 0,
-                    descriptor_type: ash::vk::DescriptorType::UNIFORM_BUFFER,
+                    descriptor_type,
                     descriptor_count: 1,
                     p_buffer_info: &info,
                     ..Default::default()
@@ -1450,7 +1456,7 @@ impl GpuBackend for VulkanBackend {
                     dst_set: *set,
                     dst_binding: binding,
                     dst_array_element: 0,
-                    descriptor_type: ash::vk::DescriptorType::UNIFORM_BUFFER,
+                    descriptor_type,
                     descriptor_count: 1,
                     p_buffer_info: &info,
                     ..Default::default()
@@ -1511,6 +1517,44 @@ impl GpuBackend for VulkanBackend {
                 first_index,
                 base_vertex,
                 0,
+            );
+        }
+        // Only reset the model matrix; keep texture indices as they are often
+        // pass-wide or will be overwritten by the next material bind.
+        pending_push.model = PushConstants::default().model;
+        pending_push.has_parallax = 0;
+    }
+
+    fn draw_indexed_indirect(
+        &mut self,
+        indirect_commands_buffer: &Self::Buffer,
+        offset: u64,
+        draw_count: u32,
+    ) {
+        let Some(CurrentFrame { command_buffer, .. }) = self.current_frame else {
+            return;
+        };
+        let Some(CurrentFrame { pending_push, .. }) = &mut self.current_frame else {
+            return;
+        };
+
+        unsafe {
+            self.device.cmd_push_constants(
+                command_buffer,
+                self.pipeline_layout,
+                ash::vk::ShaderStageFlags::VERTEX | ash::vk::ShaderStageFlags::FRAGMENT,
+                0,
+                std::slice::from_raw_parts(
+                    pending_push as *const PushConstants as *const u8,
+                    std::mem::size_of::<PushConstants>(),
+                ),
+            );
+            self.device.cmd_draw_indexed_indirect(
+                command_buffer,
+                indirect_commands_buffer.buffer,
+                offset,
+                draw_count,
+                0, // When stride is 0, Vulkan automatically assumes the commands are tightly packed
             );
         }
         // Only reset the model matrix; keep texture indices as they are often

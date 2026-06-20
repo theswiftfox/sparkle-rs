@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use super::{ErrorCause, SceneGraphError};
-use crate::engine::backend::{Drawable, GpuBackend, ObjType};
+use crate::engine::backend::{Drawable, GpuBackend, IndirectDrawable, RenderItem};
 use crate::engine::geometry::AABB;
 
 pub struct Node<B: GpuBackend> {
@@ -11,7 +11,56 @@ pub struct Node<B: GpuBackend> {
     model_orig: glm::Mat4,
     children: HashMap<String, Node<B>>,
 
-    drawables: Vec<Drawable<B>>,
+    data: NodeData<B>,
+}
+
+pub enum NodeData<B: GpuBackend> {
+    StandardMesh(Vec<Drawable<B>>),
+    ProceduralWorld {
+        terrain: Drawable<B>,
+        instanced_assets: Vec<IndirectDrawable<B>>,
+    },
+}
+
+impl<B: GpuBackend> NodeData<B> {
+    pub fn clear(&mut self) {
+        match self {
+            NodeData::StandardMesh(drawables) => drawables.clear(),
+            NodeData::ProceduralWorld {
+                terrain: _,
+                instanced_assets: _,
+            } => (),
+        }
+    }
+
+    fn update_model(&mut self, backend: &B, model: &glm::Mat4) {
+        match self {
+            NodeData::StandardMesh(drawables) => drawables
+                .iter_mut()
+                .for_each(|d| d.update_model(backend, model)),
+            NodeData::ProceduralWorld {
+                terrain: _,
+                instanced_assets: _,
+            } => {
+                () // no op for procedural terrain i think
+            }
+        }
+    }
+}
+
+impl<B: GpuBackend> Clone for NodeData<B> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::StandardMesh(arg0) => Self::StandardMesh(arg0.clone()),
+            Self::ProceduralWorld {
+                terrain,
+                instanced_assets,
+            } => Self::ProceduralWorld {
+                terrain: terrain.clone(),
+                instanced_assets: instanced_assets.clone(),
+            },
+        }
+    }
 }
 
 // Manual Clone: derive would add unnecessary B: Clone bound.
@@ -24,13 +73,13 @@ impl<B: GpuBackend> Clone for Node<B> {
             model: self.model,
             model_orig: self.model_orig,
             children: self.children.clone(),
-            drawables: self.drawables.clone(),
+            data: self.data.clone(),
         }
     }
 }
 
 impl<B: GpuBackend> Node<B> {
-    pub fn create(
+    pub fn create_standard_mesh(
         name: Option<&str>,
         model: glm::Mat4,
         drawable: Option<Vec<Drawable<B>>>,
@@ -43,17 +92,17 @@ impl<B: GpuBackend> Node<B> {
             },
             model,
             model_orig: model,
-            drawables: Vec::new(),
+            data: NodeData::StandardMesh(Vec::new()),
             children: HashMap::new(),
         };
         if let Some(d) = drawable {
-            n.drawables = d;
+            n.data = NodeData::StandardMesh(d);
         }
         n
     }
 
     pub fn destroy(&mut self) {
-        self.drawables.clear();
+        self.data.clear();
         for (_, mut c) in self.children.drain() {
             c.destroy();
         }
@@ -92,8 +141,23 @@ impl<B: GpuBackend> Node<B> {
         Err(SceneGraphError::new(name, &ErrorCause::NotFound))
     }
 
-    pub fn get_drawables(&self) -> Vec<&Drawable<B>> {
-        self.drawables.iter().collect()
+    pub fn get_drawables(&self) -> Vec<RenderItem<'_, B>> {
+        match &self.data {
+            NodeData::StandardMesh(drawables) => drawables
+                .iter()
+                .map(|it| RenderItem::Standard(it))
+                .collect(),
+            NodeData::ProceduralWorld {
+                terrain,
+                instanced_assets,
+            } => {
+                let mut drawables = vec![RenderItem::Standard(terrain)];
+                for d in instanced_assets {
+                    drawables.push(RenderItem::Indirect(d))
+                }
+                drawables
+            }
+        }
     }
 
     pub fn traverse(&self) -> Vec<&Node<B>> {
@@ -162,7 +226,11 @@ impl<B: GpuBackend> Node<B> {
     }
 
     pub fn add_drawable(&mut self, drawable: Drawable<B>) {
-        self.drawables.push(drawable)
+        if let NodeData::StandardMesh(drawables) = &mut self.data {
+            drawables.push(drawable)
+        } else {
+            eprintln!("Add Drawable called on procedural data! Not adding..")
+        }
     }
 
     pub fn translate(&mut self, t: glm::Vec3) {
@@ -204,7 +272,13 @@ impl<B: GpuBackend> Node<B> {
 
     /// Returns the number of drawables on this node.
     pub fn num_drawables(&self) -> usize {
-        self.drawables.len()
+        match &self.data {
+            NodeData::StandardMesh(drawables) => drawables.len(),
+            NodeData::ProceduralWorld {
+                terrain: _,
+                instanced_assets,
+            } => 1 + instanced_assets.len(),
+        }
     }
 
     pub fn get_bounding_volume(&self) {}
@@ -214,8 +288,17 @@ impl<B: GpuBackend> Node<B> {
     /// Returns `AABB::empty()` if the node has no drawables.
     pub fn local_aabb(&self) -> AABB {
         let mut aabb = AABB::empty();
-        for drawable in &self.drawables {
-            aabb.merge(drawable.aabb());
+        match &self.data {
+            NodeData::StandardMesh(drawables) => {
+                drawables.iter().for_each(|d| aabb.merge(d.aabb()))
+            }
+            NodeData::ProceduralWorld {
+                terrain: _,
+                instanced_assets: _,
+            } => {
+                // procedural terrain has no bounding box.
+                ()
+            }
         }
         aabb
     }
@@ -227,23 +310,12 @@ impl<B: GpuBackend> Node<B> {
 
     pub fn build_model(&mut self, backend: &B, model: &glm::Mat4) {
         self.model = model * self.model_orig;
-        for drawable in &mut self.drawables {
-            drawable.update_model(backend, &self.model);
-        }
+        // for drawable in &mut self.drawables {
+        //     drawable.update_model(backend, &self.model);
+        // }
+        self.data.update_model(backend, &self.model);
         for (_, c) in &mut self.children {
             c.build_model(backend, &self.model);
-        }
-    }
-
-    pub fn draw(&self, backend: &mut B, object_type: ObjType) {
-        for drawable in &self.drawables {
-            if drawable.object_type() != object_type {
-                continue;
-            }
-            drawable.draw(backend, true);
-        }
-        for (_, c) in &self.children {
-            c.draw(backend, object_type);
         }
     }
 }

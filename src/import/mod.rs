@@ -102,7 +102,7 @@ pub fn load_gltf<B: GpuBackend>(path: &str, backend: &B) -> Result<Node<B>, Impo
         flat_normal_tex,
     };
 
-    let mut root = Node::create(None, glm::identity(), None);
+    let mut root = Node::create_standard_mesh(None, glm::identity(), None);
     for scene in gltf.scenes() {
         for node in scene.nodes() {
             importer.process_node(node, &mut root)?;
@@ -376,7 +376,7 @@ impl<'a, B: GpuBackend> GltfImporter<'a, B> {
                     }
                     drawables.push(drawable);
                 }
-                let mut n = Node::create(node.name(), transform, Some(drawables));
+                let mut n = Node::create_standard_mesh(node.name(), transform, Some(drawables));
                 parent
                     .add_child(n.clone())
                     .expect("Unable to add child node to parent..");

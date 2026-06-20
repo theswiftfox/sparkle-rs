@@ -491,7 +491,7 @@ pub trait GpuBackend: Sized + 'static {
     /// Permanently bind a UBO to a descriptor set binding slot.
     /// On Vulkan this writes the descriptor to all per-frame sets.
     /// On wgpu this is a no-op.
-    fn bind_ubo_to_descriptor(&self, binding: u32, buffer: &Self::Buffer);
+    fn bind_buffer_to_descriptor(&self, binding: u32, buffer: &Self::Buffer);
 
     /// Set the vertex buffer for subsequent draw calls.
     fn set_vertex_buffer(&mut self, buffer: &Self::Buffer);
@@ -501,6 +501,14 @@ pub trait GpuBackend: Sized + 'static {
 
     /// Issue an indexed draw call.
     fn draw_indexed(&mut self, index_count: u32, first_index: u32, base_vertex: i32);
+
+    // Issue an indirect indexed draw call.
+    fn draw_indexed_indirect(
+        &mut self,
+        indirect_commands_buffer: &Self::Buffer,
+        offset: u64,
+        draw_count: u32,
+    );
 
     /// Set the per-draw model matrix. On Vulkan this stages push constant data;
     /// on wgpu this updates the model UBO bind group.
@@ -747,14 +755,6 @@ impl<B: GpuBackend> Drawable<B> {
         backend.draw_indexed(self.index_count, 0, 0);
     }
 
-    pub fn material(&self) -> &Material<B> {
-        &self.material
-    }
-
-    pub fn object_type(&self) -> ObjType {
-        self.object_type
-    }
-
     pub fn is_double_sided(&self) -> bool {
         self.double_sided
     }
@@ -796,6 +796,120 @@ impl<B: GpuBackend> PartialOrd for Drawable<B> {
             return Some(std::cmp::Ordering::Less);
         }
         Some(std::cmp::Ordering::Greater)
+    }
+}
+
+pub struct IndirectDrawable<B: GpuBackend> {
+    id: usize,
+    pub(crate) vertex_buffer: Rc<B::Buffer>,
+    pub(crate) index_buffer: Rc<B::Buffer>,
+    index_count: u32,
+
+    /// The SSBO filled by the compute shader containing `Vec<glm::Mat4>`
+    pub(crate) instance_matrix_buffer: Rc<B::Buffer>,
+    /// The buffer matching `VkDrawIndexedIndirectCommand` filled by the compute shader
+    pub(crate) indirect_command_buffer: Rc<B::Buffer>,
+
+    material: Material<B>,
+    object_type: ObjType,
+    double_sided: bool,
+    // Global bounding box for the entire zone containing these assets (for coarse frustum culling)
+    aabb: AABB,
+}
+
+impl<B: GpuBackend> Clone for IndirectDrawable<B> {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            vertex_buffer: self.vertex_buffer.clone(),
+            index_buffer: self.index_buffer.clone(),
+            index_count: self.index_count.clone(),
+            instance_matrix_buffer: self.instance_matrix_buffer.clone(),
+            indirect_command_buffer: self.indirect_command_buffer.clone(),
+            material: self.material.clone(),
+            object_type: self.object_type.clone(),
+            double_sided: self.double_sided.clone(),
+            aabb: self.aabb.clone(),
+        }
+    }
+}
+
+impl<B: GpuBackend> IndirectDrawable<B> {
+    pub fn draw_indirect(&self, backend: &mut B, bind_material: bool) {
+        backend.set_vertex_buffer(&self.vertex_buffer);
+        backend.set_index_buffer(&self.index_buffer);
+
+        // 1. Instead of binding a single uniform matrix, bind the matrix array SSBO.
+        // Your instanced vertex shader will use gl_InstanceIndex to index into this array.
+        backend.bind_buffer_to_descriptor(0, &self.instance_matrix_buffer);
+
+        if bind_material {
+            self.material.bind(backend);
+        }
+        backend.set_material_properties(MaterialProperties {
+            has_parallax: self.material.has_parallax,
+        });
+
+        // 2. Execute via the new backend method
+        backend.draw_indexed_indirect(&self.indirect_command_buffer, 0, 1);
+    }
+}
+
+pub enum RenderItem<'a, B: GpuBackend> {
+    Standard(&'a Drawable<B>),
+    Indirect(&'a IndirectDrawable<B>),
+}
+
+// Implement partial_cmp directly on the enum wrapper so your sorting doesn't change
+impl<'a, B: GpuBackend> PartialEq for RenderItem<'a, B> {
+    fn eq(&self, other: &Self) -> bool {
+        self.key() == other.key()
+    }
+}
+
+impl<'a, B: GpuBackend> PartialOrd for RenderItem<'a, B> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.key().partial_cmp(&other.key())
+    }
+}
+
+impl<'a, B: GpuBackend> RenderItem<'a, B> {
+    // Helper function to extract sorting keys (e.g., sort by material ID to minimize PBR state shifts)
+    fn key(&self) -> usize {
+        match self {
+            RenderItem::Standard(d) => d.id, // mapping your drawable ID or material ID
+            RenderItem::Indirect(id) => id.id, // Assuming IndirectDrawable also has an ID
+        }
+    }
+
+    pub fn object_type(&self) -> ObjType {
+        match self {
+            RenderItem::Standard(drawable) => drawable.object_type,
+            RenderItem::Indirect(indirect_drawable) => indirect_drawable.object_type,
+        }
+    }
+
+    pub fn material(&self) -> &Material<B> {
+        match self {
+            RenderItem::Standard(drawable) => &drawable.material,
+            RenderItem::Indirect(indirect_drawable) => &indirect_drawable.material,
+        }
+    }
+
+    pub fn is_double_sided(&self) -> bool {
+        match self {
+            RenderItem::Standard(drawable) => drawable.double_sided,
+            RenderItem::Indirect(indirect_drawable) => indirect_drawable.double_sided,
+        }
+    }
+
+    pub fn draw(&self, backend: &mut B, rebind_material: bool) {
+        match self {
+            RenderItem::Standard(drawable) => drawable.draw(backend, rebind_material),
+            RenderItem::Indirect(indirect_drawable) => {
+                indirect_drawable.draw_indirect(backend, rebind_material)
+            }
+        }
     }
 }
 

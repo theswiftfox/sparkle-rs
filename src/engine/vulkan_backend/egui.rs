@@ -884,6 +884,7 @@ impl EguiRenderer {
             device_handle: self.device.clone(),
             per_frame_copies: None,
             vulkan_handle_tracker: self.vk_handle_tracker.clone(),
+            is_storage_buffer: false,
         });
         self.vertex_caps[buf_idx] = new_cap;
     }
@@ -930,6 +931,7 @@ impl EguiRenderer {
             device_handle: self.device.clone(),
             per_frame_copies: None,
             vulkan_handle_tracker: self.vk_handle_tracker.clone(),
+            is_storage_buffer: false,
         });
         self.index_caps[buf_idx] = new_cap;
     }
