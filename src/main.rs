@@ -317,6 +317,9 @@ fn run_vulkan() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("Window Event Loop failure: {e}");
     }
 
+    // drop app so channels are closed
+    drop(app);
+
     quit_flag.store(true, Ordering::SeqCst);
 
     if let Err(e) = render_thread.join() {
