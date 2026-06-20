@@ -3,7 +3,6 @@
 // Loads glTF scenes into the engine's scenegraph, creating backend-agnostic
 // GPU resources (textures, vertex/index buffers, drawables) via the GpuBackend trait.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -41,10 +40,7 @@ struct GltfImporter<'a, B: GpuBackend> {
     flat_normal_tex: Rc<B::Texture>,
 }
 
-pub fn load_gltf<B: GpuBackend>(
-    path: &str,
-    backend: &B,
-) -> Result<Rc<RefCell<Node<B>>>, ImportError> {
+pub fn load_gltf<B: GpuBackend>(path: &str, backend: &B) -> Result<Node<B>, ImportError> {
     let (gltf, buffers, images) = match gltf::import(path) {
         Ok(g) => g,
         Err(e) => return Err(ImportError::from("GLTF Import Error", &format!("{}", e))),
@@ -106,10 +102,10 @@ pub fn load_gltf<B: GpuBackend>(
         flat_normal_tex,
     };
 
-    let root = Node::create(None, glm::identity(), None);
+    let mut root = Node::create(None, glm::identity(), None);
     for scene in gltf.scenes() {
         for node in scene.nodes() {
-            importer.process_node(node, &root)?;
+            importer.process_node(node, &mut root)?;
         }
     }
     Ok(root)
@@ -146,13 +142,12 @@ impl<'a, B: GpuBackend> GltfImporter<'a, B> {
     fn process_node(
         &mut self,
         node: gltf::scene::Node<'_>,
-        parent: &Rc<RefCell<Node<B>>>,
+        parent: &mut Node<B>,
     ) -> Result<(), ImportError> {
-        let mut parent = parent.clone();
         if !node.camera().is_some() {
             let transform: glm::Mat4 = glm::make_mat4(&(node.transform().matrix().concat()));
             if let Some(mesh) = node.mesh() {
-                let mut drawables: Vec<Rc<RefCell<Drawable<B>>>> = Vec::new();
+                let mut drawables: Vec<Drawable<B>> = Vec::new();
                 for primitive in mesh.primitives() {
                     let mat = primitive.material();
                     let pbr = mat.pbr_metallic_roughness();
@@ -360,7 +355,7 @@ impl<'a, B: GpuBackend> GltfImporter<'a, B> {
                     }
 
                     // Create drawable with backend-agnostic resources
-                    let drawable = Drawable::from_verts(
+                    let mut drawable = Drawable::from_verts(
                         self.backend,
                         &vertices,
                         &indices,
@@ -372,26 +367,26 @@ impl<'a, B: GpuBackend> GltfImporter<'a, B> {
                     )
                     .map_err(|e| ImportError::from("Drawable Creation", &e.message))?;
 
-                    drawable.borrow_mut().add_texture(0, tex_color);
-                    drawable.borrow_mut().add_texture(1, tex_mr);
-                    drawable.borrow_mut().add_texture(2, tex_norm);
-                    drawable
-                        .borrow_mut()
-                        .set_parallax(classification.parallax_enabled);
+                    drawable.add_texture(0, tex_color);
+                    drawable.add_texture(1, tex_mr);
+                    drawable.add_texture(2, tex_norm);
+                    drawable.set_parallax(classification.parallax_enabled);
                     if mat.double_sided() {
-                        drawable.borrow_mut().set_double_sided(true);
+                        drawable.set_double_sided(true);
                     }
                     drawables.push(drawable);
                 }
-                let n = Node::create(node.name(), transform, Some(drawables));
+                let mut n = Node::create(node.name(), transform, Some(drawables));
                 parent
-                    .borrow_mut()
                     .add_child(n.clone())
                     .expect("Unable to add child node to parent..");
-                parent = n;
-            }
-            for c in node.children() {
-                self.process_node(c, &parent)?
+                for c in node.children() {
+                    self.process_node(c, &mut n)?
+                }
+            } else {
+                for c in node.children() {
+                    self.process_node(c, parent)?
+                }
             }
         }
         Ok(())

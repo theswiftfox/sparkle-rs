@@ -1,8 +1,6 @@
 pub mod node;
 
 use node::Node;
-use std::cell::RefCell;
-use std::rc::Rc;
 
 use super::backend::{Drawable, GpuBackend, ObjType};
 use super::geometry::Light;
@@ -10,7 +8,7 @@ use super::geometry::Light;
 pub struct Scenegraph<B: GpuBackend> {
     transform: glm::Mat4,
     lights: Vec<Light>,
-    root: Option<Rc<RefCell<Node<B>>>>,
+    root: Option<Node<B>>,
 }
 
 impl<B: GpuBackend> Scenegraph<B> {
@@ -22,7 +20,7 @@ impl<B: GpuBackend> Scenegraph<B> {
         }
     }
 
-    pub fn set_root(&mut self, node: Rc<RefCell<Node<B>>>) {
+    pub fn set_root(&mut self, node: Node<B>) {
         self.root = Some(node)
     }
 
@@ -60,13 +58,13 @@ impl<B: GpuBackend> Scenegraph<B> {
         Ok(())
     }
 
-    pub fn root(&self) -> &Option<Rc<RefCell<Node<B>>>> {
-        &self.root
+    pub fn root(&self) -> Option<&Node<B>> {
+        self.root.as_ref()
     }
 
     pub fn build_matrices(&mut self, backend: &B) {
         if let Some(root) = &mut self.root {
-            root.borrow_mut().build_model(backend, &self.transform);
+            root.build_model(backend, &self.transform);
         }
     }
 
@@ -74,13 +72,12 @@ impl<B: GpuBackend> Scenegraph<B> {
         if let Ok(drawables) = self.traverse() {
             for i in 0..drawables.len() {
                 let drawable = &drawables[i];
-                if drawable.borrow().object_type() != object_type {
+                if drawable.object_type() != object_type {
                     continue;
                 }
-                let drawable = drawable.borrow();
                 let mat = drawable.material();
                 let mut rebind_material = false;
-                if i == 0 || !drawables[i - 1].borrow().material().eq(mat) {
+                if i == 0 || !drawables[i - 1].material().eq(mat) {
                     rebind_material = true;
                 }
                 drawable.draw(backend, rebind_material);
@@ -88,65 +85,68 @@ impl<B: GpuBackend> Scenegraph<B> {
         }
     }
 
-    pub fn get_node_named(&self, name: &str) -> Result<Rc<RefCell<Node<B>>>, SceneGraphError> {
-        if self.root.is_none() {
-            Err(SceneGraphError::err_empty("Root node is empty"))
+    pub fn get_node_named(&self, name: &str) -> Result<&Node<B>, SceneGraphError> {
+        let Some(root) = &self.root else {
+            return Err(SceneGraphError::err_empty("Root node is empty"));
+        };
+
+        if root.name.as_ref().map(|n| n == name) == Some(true) {
+            return Ok(self.root.as_ref().unwrap());
+        }
+
+        root.get_named(name)
+    }
+    pub fn get_node_named_mut(&mut self, name: &str) -> Result<&mut Node<B>, SceneGraphError> {
+        let Some(root) = &mut self.root else {
+            return Err(SceneGraphError::err_empty("Root node is empty"));
+        };
+
+        if root.name.as_ref().map(|n| n == name) == Some(true) {
+            return Ok(root);
+        }
+
+        todo!()
+    }
+
+    pub fn traverse(&self) -> Result<Vec<&Drawable<B>>, SceneGraphError> {
+        let Some(root) = &self.root else {
+            return Err(SceneGraphError::new("", &ErrorCause::Empty));
+        };
+        let nodes = root.traverse();
+        if nodes.is_empty() {
+            Err(SceneGraphError::err_empty("Root has no children"))
         } else {
-            if let Some(n) = &self.root.as_ref().unwrap().borrow().name {
-                if n.as_str() == name {
-                    return Ok(self.root.as_ref().unwrap().clone());
-                }
+            let mut drawables = Vec::new();
+            for node in &nodes {
+                drawables.append(&mut node.get_drawables())
             }
-            self.root.as_ref().unwrap().borrow().get_named(name)
+            drawables.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            Ok(drawables)
         }
     }
 
-    pub fn traverse(&self) -> Result<Vec<Rc<RefCell<Drawable<B>>>>, SceneGraphError> {
-        if self.root.is_none() {
-            Err(SceneGraphError::new("", &ErrorCause::Empty))
-        } else {
-            let nodes = self.root.as_ref().unwrap().borrow().traverse();
-            if nodes.is_empty() {
-                Err(SceneGraphError::err_empty("Root has no children"))
-            } else {
-                let mut drawables: Vec<Rc<RefCell<Drawable<B>>>> = Vec::new();
-                for node in &nodes {
-                    drawables.append(&mut node.borrow().get_drawables())
-                }
-                drawables.sort_by(|a, b| a.partial_cmp(b).unwrap());
-                Ok(drawables)
-            }
-        }
-    }
-
-    pub fn get_drawables_named(&self, name: &str) -> Option<Vec<Rc<RefCell<Drawable<B>>>>> {
+    pub fn get_drawables_named(&self, name: &str) -> Option<Vec<&Drawable<B>>> {
         match self.get_node_named(name) {
-            Ok(n) => Some(n.borrow().get_drawables()),
+            Ok(n) => Some(n.get_drawables()),
             Err(_) => None,
         }
     }
 
     pub fn remove_node_named(&mut self, name: &str) -> Result<(), SceneGraphError> {
-        if self.root.is_none() {
+        let Some(root) = &mut self.root else {
             return Err(SceneGraphError::err_empty("No root"));
-        }
-        match self
-            .root
-            .as_ref()
-            .unwrap()
-            .borrow_mut()
-            .remove_node_named(name)
-        {
+        };
+        match root.remove_node_named(name) {
             true => Ok(()),
             false => Err(SceneGraphError::new(name, &ErrorCause::NotFound)),
         }
     }
 
     pub fn clear(&mut self) -> Result<(), SceneGraphError> {
-        if self.root.is_none() {
+        let Some(root) = &mut self.root else {
             return Ok(());
-        }
-        self.root.as_ref().unwrap().borrow_mut().destroy();
+        };
+        root.destroy();
         self.root = None;
         Ok(())
     }

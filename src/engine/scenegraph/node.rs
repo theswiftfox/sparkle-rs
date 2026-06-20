@@ -1,6 +1,4 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 
 use super::{ErrorCause, SceneGraphError};
 use crate::engine::backend::{Drawable, GpuBackend, ObjType};
@@ -11,9 +9,9 @@ pub struct Node<B: GpuBackend> {
     pub name: Option<String>,
     model: glm::Mat4,
     model_orig: glm::Mat4,
-    children: HashMap<String, Rc<RefCell<Node<B>>>>,
+    children: HashMap<String, Node<B>>,
 
-    drawables: Vec<Rc<RefCell<Drawable<B>>>>,
+    drawables: Vec<Drawable<B>>,
 }
 
 // Manual Clone: derive would add unnecessary B: Clone bound.
@@ -35,9 +33,9 @@ impl<B: GpuBackend> Node<B> {
     pub fn create(
         name: Option<&str>,
         model: glm::Mat4,
-        drawable: Option<Vec<Rc<RefCell<Drawable<B>>>>>,
-    ) -> Rc<RefCell<Node<B>>> {
-        let n = Rc::new(RefCell::new(Node {
+        drawable: Option<Vec<Drawable<B>>>,
+    ) -> Node<B> {
+        let mut n = Node {
             uuid: 0, // TODO
             name: match name {
                 Some(n) => Some(n.to_string()),
@@ -47,30 +45,30 @@ impl<B: GpuBackend> Node<B> {
             model_orig: model,
             drawables: Vec::new(),
             children: HashMap::new(),
-        }));
+        };
         if let Some(d) = drawable {
-            n.borrow_mut().drawables = d;
+            n.drawables = d;
         }
         n
     }
 
     pub fn destroy(&mut self) {
         self.drawables.clear();
-        for (_, c) in &self.children {
-            c.borrow_mut().destroy();
+        for (_, mut c) in self.children.drain() {
+            c.destroy();
         }
         self.children.clear();
     }
 
-    pub fn get_named(&self, name: &str) -> Result<Rc<RefCell<Node<B>>>, SceneGraphError> {
+    pub fn get_named(&self, name: &str) -> Result<&Node<B>, SceneGraphError> {
         if self.children.is_empty() {
             return Err(SceneGraphError::new(name, &ErrorCause::NotFound));
         }
         if let Some(c) = self.children.get(name) {
-            return Ok(c.clone());
+            return Ok(c);
         }
         for (_, node) in &self.children {
-            match node.borrow().get_named(name) {
+            match node.get_named(name) {
                 Ok(c) => return Ok(c),
                 Err(e) => return Err(e),
             }
@@ -78,25 +76,40 @@ impl<B: GpuBackend> Node<B> {
         Err(SceneGraphError::new(name, &ErrorCause::NotFound))
     }
 
-    pub fn get_drawables(&self) -> Vec<Rc<RefCell<Drawable<B>>>> {
-        self.drawables.clone()
+    pub fn get_named_mut(&mut self, name: &str) -> Result<&mut Node<B>, SceneGraphError> {
+        if self.children.is_empty() {
+            return Err(SceneGraphError::new(name, &ErrorCause::NotFound));
+        }
+        if self.children.contains_key(name) {
+            return Ok(self.children.get_mut(name).unwrap());
+        }
+        for (_, node) in &mut self.children {
+            match node.get_named_mut(name) {
+                Ok(c) => return Ok(c),
+                Err(e) => return Err(e),
+            }
+        }
+        Err(SceneGraphError::new(name, &ErrorCause::NotFound))
     }
 
-    pub fn traverse(&self) -> Vec<Rc<RefCell<Node<B>>>> {
-        let mut nodes: Vec<Rc<RefCell<Node<B>>>> = Vec::new();
+    pub fn get_drawables(&self) -> Vec<&Drawable<B>> {
+        self.drawables.iter().collect()
+    }
+
+    pub fn traverse(&self) -> Vec<&Node<B>> {
+        let mut nodes: Vec<&Node<B>> = Vec::new();
         for (_, c) in &self.children {
-            nodes.push(c.clone());
-            let mut others = c.borrow().traverse();
+            nodes.push(c);
+            let mut others = c.traverse();
             nodes.append(&mut others);
         }
         nodes
     }
 
-    pub fn add_child(&mut self, node: Rc<RefCell<Node<B>>>) -> Result<(), SceneGraphError> {
-        let n = node.borrow();
-        let key = match &n.name {
+    pub fn add_child(&mut self, node: Node<B>) -> Result<(), SceneGraphError> {
+        let key = match &node.name {
             Some(n) => n.clone(),
-            None => n.uuid.to_string(),
+            None => node.uuid.to_string(),
         };
         if self.children.contains_key(&key) {
             return Err(SceneGraphError::new(
@@ -104,7 +117,6 @@ impl<B: GpuBackend> Node<B> {
                 &ErrorCause::InvalidState,
             ));
         }
-        drop(n); // unborrow node so we can move it into children
         self.children.insert(key, node);
         Ok(())
     }
@@ -113,12 +125,12 @@ impl<B: GpuBackend> Node<B> {
         if self.children.is_empty() {
             return false;
         }
-        if let Some(v) = self.children.remove(name) {
-            v.borrow_mut().destroy();
+        if let Some(mut v) = self.children.remove(name) {
+            v.destroy();
             return true;
         }
-        for (_, c) in &self.children {
-            if c.borrow_mut().remove_node_named(name) {
+        for (_, c) in &mut self.children {
+            if c.remove_node_named(name) {
                 return true;
             }
         }
@@ -131,25 +143,25 @@ impl<B: GpuBackend> Node<B> {
         }
         let mut key = String::default();
         for (k, c) in &self.children {
-            if c.borrow().uuid == uuid {
+            if c.uuid == uuid {
                 key = k.clone();
                 break;
             }
         }
         if !key.is_empty() {
-            let n = self.children.remove(&key).unwrap();
-            n.borrow_mut().destroy();
+            let mut n = self.children.remove(&key).unwrap();
+            n.destroy();
             return true;
         }
-        for (_, c) in &self.children {
-            if c.borrow_mut().remove_node_uuid(uuid) {
+        for (_, c) in &mut self.children {
+            if c.remove_node_uuid(uuid) {
                 return true;
             }
         }
         false
     }
 
-    pub fn add_drawable(&mut self, drawable: Rc<RefCell<Drawable<B>>>) {
+    pub fn add_drawable(&mut self, drawable: Drawable<B>) {
         self.drawables.push(drawable)
     }
 
@@ -186,8 +198,8 @@ impl<B: GpuBackend> Node<B> {
     /// Returns a list of direct children as `Rc<RefCell<Node<B>>>`.
     ///
     /// Order is not guaranteed (HashMap iteration order).
-    pub fn children_list(&self) -> Vec<Rc<RefCell<Node<B>>>> {
-        self.children.values().cloned().collect()
+    pub fn children_list(&self) -> Vec<&Node<B>> {
+        self.children.values().collect()
     }
 
     /// Returns the number of drawables on this node.
@@ -203,7 +215,7 @@ impl<B: GpuBackend> Node<B> {
     pub fn local_aabb(&self) -> AABB {
         let mut aabb = AABB::empty();
         for drawable in &self.drawables {
-            aabb.merge(drawable.borrow().aabb());
+            aabb.merge(drawable.aabb());
         }
         aabb
     }
@@ -215,23 +227,23 @@ impl<B: GpuBackend> Node<B> {
 
     pub fn build_model(&mut self, backend: &B, model: &glm::Mat4) {
         self.model = model * self.model_orig;
-        for drawable in &self.drawables {
-            drawable.borrow_mut().update_model(backend, &self.model);
+        for drawable in &mut self.drawables {
+            drawable.update_model(backend, &self.model);
         }
-        for (_, c) in &self.children {
-            c.borrow_mut().build_model(backend, &self.model);
+        for (_, c) in &mut self.children {
+            c.build_model(backend, &self.model);
         }
     }
 
     pub fn draw(&self, backend: &mut B, object_type: ObjType) {
         for drawable in &self.drawables {
-            if drawable.borrow().object_type() != object_type {
+            if drawable.object_type() != object_type {
                 continue;
             }
-            drawable.borrow().draw(backend, true);
+            drawable.draw(backend, true);
         }
         for (_, c) in &self.children {
-            c.borrow().draw(backend, object_type);
+            c.draw(backend, object_type);
         }
     }
 }

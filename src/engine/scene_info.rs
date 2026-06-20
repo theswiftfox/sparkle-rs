@@ -7,8 +7,6 @@
 use crate::engine::backend::GpuBackend;
 use crate::engine::geometry::AABB;
 use crate::engine::scenegraph::node::Node;
-use std::cell::RefCell;
-use std::rc::Rc;
 
 /// Lightweight snapshot of a single scenegraph node.
 #[derive(Clone, Debug)]
@@ -31,11 +29,10 @@ pub struct NodeInfo {
 
 impl NodeInfo {
     /// Recursively extract a `NodeInfo` tree from a scenegraph `Node`.
-    pub fn from_node<B: GpuBackend>(node: &Rc<RefCell<Node<B>>>) -> NodeInfo {
-        let n = node.borrow();
-        let name = n.name.clone().unwrap_or_else(|| "<unnamed>".to_string());
+    pub fn from_node<B: GpuBackend>(node: &Node<B>) -> NodeInfo {
+        let name = node.name.clone().unwrap_or_else(|| "<unnamed>".to_string());
 
-        let children_nodes = n.children_list();
+        let children_nodes = node.children_list();
         let children: Vec<NodeInfo> = children_nodes
             .iter()
             .map(|child| NodeInfo::from_node(child))
@@ -43,10 +40,10 @@ impl NodeInfo {
 
         NodeInfo {
             name,
-            local_transform: n.local_transform(),
-            world_transform: n.world_transform(),
-            world_aabb: n.world_aabb(),
-            num_drawables: n.num_drawables(),
+            local_transform: node.local_transform(),
+            world_transform: node.world_transform(),
+            world_aabb: node.world_aabb(),
+            num_drawables: node.num_drawables(),
             num_children: children.len(),
             children,
         }

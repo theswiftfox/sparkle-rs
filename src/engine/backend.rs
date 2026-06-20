@@ -6,7 +6,6 @@
 
 use super::geometry::{AABB, Vertex};
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -577,6 +576,16 @@ pub struct Material<B: GpuBackend> {
     id: usize,
 }
 
+impl<B: GpuBackend> Clone for Material<B> {
+    fn clone(&self) -> Self {
+        Self {
+            textures: self.textures.clone(),
+            has_parallax: self.has_parallax.clone(),
+            id: self.id.clone(),
+        }
+    }
+}
+
 impl<B: GpuBackend> Material<B> {
     pub fn new() -> Self {
         Material {
@@ -631,16 +640,33 @@ static DRAWABLE_ID: AtomicUsize = AtomicUsize::new(0);
 /// a material, and a transparency classification.
 pub struct Drawable<B: GpuBackend> {
     id: usize,
-    pub(crate) vertex_buffer: B::Buffer,
-    pub(crate) index_buffer: B::Buffer,
+    pub(crate) vertex_buffer: Rc<B::Buffer>,
+    pub(crate) index_buffer: Rc<B::Buffer>,
     index_count: u32,
-    pub(crate) model_buffer: B::Buffer,
+    pub(crate) model_buffer: Rc<B::Buffer>,
     model_matrix: glm::Mat4,
     material: Material<B>,
     object_type: ObjType,
     double_sided: bool,
     /// Local-space axis-aligned bounding box computed from vertex positions.
     aabb: AABB,
+}
+
+impl<B: GpuBackend> Clone for Drawable<B> {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id.clone(),
+            vertex_buffer: self.vertex_buffer.clone(),
+            index_buffer: self.index_buffer.clone(),
+            index_count: self.index_count.clone(),
+            model_buffer: self.model_buffer.clone(),
+            model_matrix: self.model_matrix.clone(),
+            material: self.material.clone(),
+            object_type: self.object_type.clone(),
+            double_sided: self.double_sided.clone(),
+            aabb: self.aabb.clone(),
+        }
+    }
 }
 
 impl<B: GpuBackend> Drawable<B> {
@@ -650,7 +676,7 @@ impl<B: GpuBackend> Drawable<B> {
         vertices: &[Vertex],
         indices: &[u32],
         object_type: ObjType,
-    ) -> Result<Rc<RefCell<Drawable<B>>>, GpuError> {
+    ) -> Result<Drawable<B>, GpuError> {
         let vertex_data = as_bytes(vertices);
         let index_data = as_bytes(indices);
 
@@ -683,18 +709,18 @@ impl<B: GpuBackend> Drawable<B> {
             Some(model_data),
         )?;
 
-        Ok(Rc::new(RefCell::new(Drawable {
+        Ok(Drawable {
             id: DRAWABLE_ID.fetch_add(1, Ordering::SeqCst),
-            vertex_buffer,
-            index_buffer,
+            vertex_buffer: Rc::new(vertex_buffer),
+            index_buffer: Rc::new(index_buffer),
             index_count: indices.len() as u32,
-            model_buffer,
+            model_buffer: Rc::new(model_buffer),
             model_matrix: identity,
             material: Material::new(),
             object_type,
             double_sided: false,
             aabb: AABB::from_vertices(vertices),
-        })))
+        })
     }
 
     /// Upload a new model matrix to the GPU.

@@ -207,8 +207,8 @@ impl<B: GpuBackend> Renderer<B> {
     /// Set the local transform of a node identified by name, then rebuild
     /// the world matrices for the entire scene.
     pub fn set_node_transform(&mut self, name: &str, transform: glm::Mat4) {
-        if let Ok(node) = self.scene.get_node_named(name) {
-            node.borrow_mut().set_local_transform(transform);
+        if let Ok(node) = self.scene.get_node_named_mut(name) {
+            node.set_local_transform(transform);
             self.scene.build_matrices(&self.backend);
         }
     }
@@ -228,9 +228,8 @@ impl<B: GpuBackend> Renderer<B> {
         // Collect node transforms by traversing the scenegraph
         let mut node_transforms = Vec::new();
         if let Some(root) = self.scene.root() {
-            let nodes = root.borrow().traverse();
-            for node_rc in &nodes {
-                let node = node_rc.borrow();
+            let nodes = root.traverse();
+            for node in nodes {
                 if let Some(ref name) = node.name {
                     node_transforms.push(NodeTransform {
                         name: name.clone(),
@@ -263,8 +262,8 @@ impl<B: GpuBackend> Renderer<B> {
         // Apply node transform overrides
         for nt in &data.node_transforms {
             let mat = scene_data::array_to_mat4(&nt.transform);
-            if let Ok(node) = self.scene.get_node_named(&nt.name) {
-                node.borrow_mut().set_local_transform(mat);
+            if let Ok(node) = self.scene.get_node_named_mut(&nt.name) {
+                node.set_local_transform(mat);
             }
         }
 
@@ -647,10 +646,11 @@ impl<B: GpuBackend> Renderer<B> {
         }
 
         //  Create drawable
-        let drawable = Drawable::from_verts(&self.backend, &vertices, &indices, ObjType::Opaque)?;
-        drawable.borrow_mut().add_texture(0, albedo_tex);
-        drawable.borrow_mut().add_texture(1, mr_tex);
-        drawable.borrow_mut().add_texture(2, normal_tex);
+        let mut drawable =
+            Drawable::from_verts(&self.backend, &vertices, &indices, ObjType::Opaque)?;
+        drawable.add_texture(0, albedo_tex);
+        drawable.add_texture(1, mr_tex);
+        drawable.add_texture(2, normal_tex);
 
         //  Build scenegraph
         let node = Node::create(
@@ -658,10 +658,8 @@ impl<B: GpuBackend> Renderer<B> {
             glm::identity(), // cube at origin
             Some(vec![drawable]),
         );
-        let root = Node::create(None, glm::identity(), None);
-        root.borrow_mut()
-            .add_child(node)
-            .expect("Unable to add test cube node");
+        let mut root = Node::create(None, glm::identity(), None);
+        root.add_child(node).expect("Unable to add test cube node");
 
         self.scene.set_root(root);
 
@@ -826,8 +824,7 @@ impl<B: GpuBackend> Renderer<B> {
             // Inline draw loop with per-drawable pipeline switching for double-sided materials
             if let Ok(drawables) = self.scene.traverse() {
                 let mut last_ds: Option<bool> = None;
-                for i in 0..drawables.len() {
-                    let drawable = drawables[i].borrow();
+                for drawable in drawables {
                     if drawable.object_type() != ObjType::Opaque {
                         continue;
                     }
@@ -946,7 +943,6 @@ impl<B: GpuBackend> Renderer<B> {
                     if let Ok(drawables) = self.scene.traverse() {
                         let mut last_ds: Option<bool> = None;
                         for drawable in drawables {
-                            let drawable = drawable.borrow();
                             let ds = drawable.is_double_sided();
                             if last_ds != Some(ds) {
                                 shadow.set_pipeline_for(&mut self.backend, ds);
@@ -1045,7 +1041,6 @@ impl<B: GpuBackend> Renderer<B> {
                 if let Ok(drawables) = self.scene.traverse() {
                     let mut last_ds: Option<bool> = None;
                     for drawable in drawables {
-                        let drawable = drawable.borrow();
                         if drawable.object_type() != ObjType::Transparent {
                             continue;
                         }

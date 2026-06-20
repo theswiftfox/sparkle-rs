@@ -7,11 +7,10 @@
 
 use super::backend::*;
 
-use std::cell::RefCell;
 use std::rc::Rc;
 
 pub(crate) struct Skybox<B: GpuBackend> {
-    drawable: Rc<RefCell<Drawable<B>>>,
+    drawable: Drawable<B>,
 }
 
 impl<B: GpuBackend> Skybox<B> {
@@ -87,7 +86,7 @@ impl<B: GpuBackend> Skybox<B> {
             7, 3, 5, 5, 3, 1,
         ];
 
-        let drawable = Drawable::from_verts(backend, &vertices, &indices, ObjType::Any)?;
+        let mut drawable = Drawable::from_verts(backend, &vertices, &indices, ObjType::Any)?;
 
         // Load cubemap face images
         let face_paths = [
@@ -158,23 +157,23 @@ impl<B: GpuBackend> Skybox<B> {
             },
         )?;
 
-        drawable.borrow_mut().add_texture(0, Rc::new(cubemap));
+        drawable.add_texture(0, Rc::new(cubemap));
 
         // Apply initial rotation to match skybox face orientation
         let rot = glm::rotate(&glm::identity(), 4.78, &glm::vec3(0.0, 1.0, 0.0));
         let rot = glm::rotate(&rot, 1.571, &glm::vec3(0.0, 0.0, -1.0));
-        drawable.borrow_mut().update_model(backend, &rot);
+        drawable.update_model(backend, &rot);
 
         Ok(Skybox { drawable })
     }
 
     /// Update the skybox model matrix.
-    pub fn update_model(&self, backend: &B, model: &glm::Mat4) {
-        self.drawable.borrow_mut().update_model(backend, model);
+    pub fn update_model(&mut self, backend: &B, model: &glm::Mat4) {
+        self.drawable.update_model(backend, model);
     }
 
     /// Draw the skybox cube. Binds the cubemap texture via the drawable's material.
     pub fn draw(&self, backend: &mut B) {
-        self.drawable.borrow().draw(backend, true);
+        self.drawable.draw(backend, true);
     }
 }
