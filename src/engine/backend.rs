@@ -1,7 +1,7 @@
 //! Backend abstraction layer for sparkle-rs.
 //!
 //! Defines platform- and API-agnostic traits and types for GPU rendering.
-//! Backend implementations (wgpu, Vulkan, etc.) implement the [`GpuBackend`] trait
+//! Backend implementations implement the [`GpuBackend`] trait
 //! and its associated resource types.
 
 use super::geometry::{AABB, Vertex};
@@ -121,6 +121,8 @@ pub enum BufferUsage {
     Vertex,
     Index,
     Uniform,
+    Storage,
+    Indirect,
 }
 
 /// Shader stage for uniform binding.
@@ -278,6 +280,8 @@ pub fn standard_vertex_layout() -> VertexLayout {
 pub enum BindingType {
     /// A uniform buffer.
     UniformBuffer,
+    /// A storage buffer (SSBO).
+    StorageBuffer,
     /// A 2D float texture (filterable).
     Texture2D,
     /// A 2D float texture (unfilterable, e.g. Rgba32Float G-buffer).
@@ -306,12 +310,8 @@ pub enum BindingType {
 ///
 /// Passes that don't use all groups should provide empty slices `&[]` for unused groups.
 ///
-/// ## Shader source
-///
-/// `shader_source` is WGSL text (UTF-8 bytes) for the wgpu backend.
-/// Entry points must be named `vs_main` (vertex) and `fs_main` (fragment).
 /// If `color_target_formats` is empty, no fragment stage is created (depth-only pass).
-pub struct PipelineDesc<'a, ShaderSource> {
+pub struct RenderPipelineDesc<'a, ShaderSource> {
     pub label: &'a str,
     pub shader_source: &'a ShaderSource,
     /// `None` for fullscreen / procedurally-generated-vertex shaders.
@@ -322,8 +322,12 @@ pub struct PipelineDesc<'a, ShaderSource> {
     pub depth_compare: CompareFunc,
     pub color_target_formats: &'a [TextureFormat],
     pub depth_format: Option<TextureFormat>,
-    /// Bind group layout descriptions. Index = group number (0..3).
-    pub bind_groups: &'a [&'a [BindingType]],
+}
+
+/// Description for creating a compute pipeline.
+pub struct ComputePipelineDesc<'a, ShaderSource> {
+    pub label: &'a str,
+    pub shader_source: &'a ShaderSource,
 }
 
 /// Load operation for a render pass attachment.
@@ -381,7 +385,7 @@ pub trait GpuBuffer: Sized {
 ///
 /// Implementations provide all GPU resource creation, command recording, and
 /// frame lifecycle management. The engine is generic over this trait, allowing
-/// different graphics API backends (wgpu, Vulkan, etc.) to be swapped in.
+/// different graphics API backends to be swapped in.
 ///
 /// # Usage pattern
 ///
@@ -410,6 +414,9 @@ pub trait GpuBackend: Sized + 'static {
     /// load shaders
     fn load_shaders(&self) -> Shaders<Self>;
 
+    /// load shaders for procedural generation
+    fn load_proc_gen_shaders(&self) -> ProceduralShaders<Self>;
+
     /// Create a 2D texture from raw pixel data.
     fn create_texture(&self, desc: &TextureDesc, data: &[u8]) -> Result<Self::Texture, GpuError>;
 
@@ -435,10 +442,25 @@ pub trait GpuBackend: Sized + 'static {
     -> Result<Self::RenderTarget, GpuError>;
 
     /// Create a render pipeline from compiled shader bytecode and fixed-function state.
-    fn create_pipeline(
+    fn create_render_pipeline(
         &self,
-        desc: &PipelineDesc<Self::ShaderSource>,
+        desc: &RenderPipelineDesc<Self::ShaderSource>,
     ) -> Result<Self::Pipeline, GpuError>;
+
+    /// Create a compute pipeline.
+    fn create_compute_pipeline(
+        &self,
+        desc: &ComputePipelineDesc<Self::ShaderSource>,
+    ) -> Result<Self::Pipeline, GpuError>;
+
+    /// Execute a compute pipeline in a one-shot command submission with host synchronization and a pipeline memory barrier.
+    fn execute_compute_one_shot(
+        &self,
+        pipeline: &Self::Pipeline,
+        buffers: &[(u32, &Self::Buffer)],
+        textures: &[(u32, &Self::Texture)],
+        work_groups: (u32, u32, u32),
+    ) -> Result<(), GpuError>;
 
     //  Buffer operations
 
@@ -489,8 +511,6 @@ pub trait GpuBackend: Sized + 'static {
     fn bind_uniform(&mut self, stage: ShaderStage, slot: u32, buffer: &Self::Buffer);
 
     /// Permanently bind a UBO to a descriptor set binding slot.
-    /// On Vulkan this writes the descriptor to all per-frame sets.
-    /// On wgpu this is a no-op.
     fn bind_buffer_to_descriptor(&self, binding: u32, buffer: &Self::Buffer);
 
     /// Set the vertex buffer for subsequent draw calls.
@@ -510,8 +530,7 @@ pub trait GpuBackend: Sized + 'static {
         draw_count: u32,
     );
 
-    /// Set the per-draw model matrix. On Vulkan this stages push constant data;
-    /// on wgpu this updates the model UBO bind group.
+    /// Set the per-draw model matrix
     fn set_model_matrix(&mut self, model: &glm::Mat4);
 
     fn set_material_properties(&mut self, props: MaterialProperties);
@@ -560,13 +579,15 @@ pub trait GpuBackend: Sized + 'static {
 
 pub struct Shaders<B: GpuBackend> {
     pub deferred_pre: B::ShaderSource,
-    pub ssao: B::ShaderSource,
-    pub ssao_blur: B::ShaderSource,
     pub shadow: B::ShaderSource,
     pub deferred_light: B::ShaderSource,
     pub forward: B::ShaderSource,
     pub output: B::ShaderSource,
     pub skybox: B::ShaderSource,
+}
+
+pub struct ProceduralShaders<B: GpuBackend> {
+    pub scattering: B::ShaderSource,
 }
 
 // Material
@@ -835,13 +856,42 @@ impl<B: GpuBackend> Clone for IndirectDrawable<B> {
 }
 
 impl<B: GpuBackend> IndirectDrawable<B> {
+    pub fn from_drawable(
+        drawable: Drawable<B>,
+        instance_matrix_buffer: B::Buffer,
+        indirect_command_buffer: B::Buffer,
+    ) -> Self {
+        let Drawable {
+            id,
+            vertex_buffer,
+            index_buffer,
+            index_count,
+            material,
+            object_type,
+            double_sided,
+            aabb,
+            ..
+        } = drawable;
+        Self {
+            id: id,
+            vertex_buffer: vertex_buffer,
+            index_buffer: index_buffer,
+            index_count: index_count,
+            instance_matrix_buffer: Rc::new(instance_matrix_buffer),
+            indirect_command_buffer: Rc::new(indirect_command_buffer),
+            material: material,
+            object_type: object_type,
+            double_sided: double_sided,
+            aabb: aabb,
+        }
+    }
     pub fn draw_indirect(&self, backend: &mut B, bind_material: bool) {
         backend.set_vertex_buffer(&self.vertex_buffer);
         backend.set_index_buffer(&self.index_buffer);
 
         // 1. Instead of binding a single uniform matrix, bind the matrix array SSBO.
         // Your instanced vertex shader will use gl_InstanceIndex to index into this array.
-        backend.bind_buffer_to_descriptor(0, &self.instance_matrix_buffer);
+        backend.bind_buffer_to_descriptor(10, &self.instance_matrix_buffer);
 
         if bind_material {
             self.material.bind(backend);

@@ -2,11 +2,14 @@
 
 use std::{ffi::CString, mem::offset_of};
 
+use egui::IntoAtoms;
+
 use crate::engine::{
     backend::{
-        BlendMode, BufferDesc, BufferUsage, Drawable, GpuBackend, GpuError, GpuErrorKind,
-        GpuRenderTarget, GpuTexture, PipelineDesc, RenderPassDesc, RenderTargetDesc, SamplerDesc,
-        ShaderStage, Shaders, TextureDesc, TextureFormat, ViewportDesc,
+        BlendMode, BufferDesc, BufferUsage, ComputePipelineDesc, Drawable, GpuBackend, GpuError,
+        GpuErrorKind, GpuRenderTarget, GpuTexture, ProceduralShaders, RenderPassDesc,
+        RenderPipelineDesc, RenderTargetDesc, SamplerDesc, ShaderStage, Shaders, TextureDesc,
+        TextureFormat, ViewportDesc,
     },
     vulkan_backend::{
         CurrentFrame, ENABLE_MARKER, FRAMES_IN_FLIGHT, GAMMA_DEFAULT, PushConstants,
@@ -160,8 +163,18 @@ impl GpuBackend for VulkanBackend {
             shadow: vec![shadow_vtx, shadow_pixel],
             skybox: vec![sky_vtx, sky_pxl],
             output: vec![blend_vtx, blend],
-            ssao: vec![],
-            ssao_blur: vec![],
+        }
+    }
+
+    fn load_proc_gen_shaders(&self) -> ProceduralShaders<Self> {
+        let scattering = Shader {
+            label: "Scattering Comp",
+            stage: ash::vk::ShaderStageFlags::COMPUTE,
+            code: include_bytes!("../../shaders/spv/compute/scattering_comp.spv"),
+        };
+
+        ProceduralShaders {
+            scattering: vec![scattering],
         }
     }
 
@@ -196,11 +209,7 @@ impl GpuBackend for VulkanBackend {
         desc: &BufferDesc,
         data: Option<&[u8]>,
     ) -> Result<Self::Buffer, GpuError> {
-        let usage = match desc.usage {
-            BufferUsage::Uniform => ash::vk::BufferUsageFlags::UNIFORM_BUFFER,
-            BufferUsage::Index => ash::vk::BufferUsageFlags::INDEX_BUFFER,
-            BufferUsage::Vertex => ash::vk::BufferUsageFlags::VERTEX_BUFFER,
-        } | ash::vk::BufferUsageFlags::TRANSFER_DST;
+        let usage = ash::vk::BufferUsageFlags::TRANSFER_DST | desc.usage.into();
         let mut flags = ash::vk::MemoryPropertyFlags::DEVICE_LOCAL;
         if desc.usage == BufferUsage::Uniform {
             flags = flags
@@ -358,9 +367,9 @@ impl GpuBackend for VulkanBackend {
         }))
     }
 
-    fn create_pipeline(
+    fn create_render_pipeline(
         &self,
-        desc: &PipelineDesc<Self::ShaderSource>,
+        desc: &RenderPipelineDesc<Self::ShaderSource>,
     ) -> Result<Self::Pipeline, GpuError> {
         let specialization_constants = SpecializationConstants {
             hdr_enabled: if self.swapchain.surface_format.is_hdr {
@@ -619,6 +628,69 @@ impl GpuBackend for VulkanBackend {
         for stage in &shader_modules {
             unsafe { self.device.destroy_shader_module(stage.module, None) };
         }
+
+        // Register pipeline handle for cleanup on shutdown
+        self.vulkan_handle_tracker.register_pipeline(pipeline[0]);
+
+        Ok(VulkanPipeline {
+            label: desc.label.to_owned(),
+            handle: pipeline[0],
+            bind_point: ash::vk::PipelineBindPoint::GRAPHICS,
+        })
+    }
+
+    fn create_compute_pipeline(
+        &self,
+        desc: &ComputePipelineDesc<Self::ShaderSource>,
+    ) -> Result<Self::Pipeline, GpuError> {
+        if desc.shader_source.len() != 1 {
+            return Err(GpuError {
+                message: "Compute Pipeline requires exactly 1 Shader".into(),
+                kind: GpuErrorKind::ResourceCreation,
+            });
+        }
+        let shader_module = desc
+            .shader_source
+            .iter()
+            .map(|source| {
+                println!("Compiling shader: {}", desc.label);
+                let module = create_shader_module(source.code, &self.device, source.label)?;
+
+                Ok(ash::vk::PipelineShaderStageCreateInfo {
+                    stage: source.stage,
+                    module,
+                    p_name: SHADER_ENTRY_POINT.as_ptr(),
+                    ..Default::default()
+                })
+            })
+            .collect::<Result<Vec<_>, GpuError>>()?[0];
+        println!("Compiled shader {} to module", desc.label,);
+
+        let pipeline_info = ash::vk::ComputePipelineCreateInfo {
+            stage: shader_module,
+            layout: self.pipeline_layout,
+            ..Default::default()
+        };
+
+        let pipeline = unsafe {
+            self.device.create_compute_pipelines(
+                ash::vk::PipelineCache::null(),
+                &[pipeline_info],
+                None,
+            )
+        }
+        .map_err(|e| {
+            GpuError::new(
+                format!("Failed to create graphics pipeline: {e:?}"),
+                GpuErrorKind::ResourceCreation,
+            )
+        })?;
+
+        // Shader modules can be destroyed after pipeline creation
+        unsafe {
+            self.device
+                .destroy_shader_module(shader_module.module, None)
+        };
 
         // Register pipeline handle for cleanup on shutdown
         self.vulkan_handle_tracker.register_pipeline(pipeline[0]);
@@ -1563,6 +1635,75 @@ impl GpuBackend for VulkanBackend {
         pending_push.has_parallax = 0;
     }
 
+    fn execute_compute_one_shot(
+        &self,
+        pipeline: &Self::Pipeline,
+        buffers: &[(u32, &Self::Buffer)],
+        textures: &[(u32, &Self::Texture)],
+        work_groups: (u32, u32, u32),
+    ) -> Result<(), GpuError> {
+        let cmdbuff = self.begin_single_time_commands()?;
+        for (binding, buffer) in buffers {
+            self.bind_buffer_to_descriptor(*binding, buffer);
+        }
+        for (binding, texture) in textures {
+            let info0 = ash::vk::DescriptorImageInfo {
+                sampler: texture.sampler,
+                image_view: texture.image_view,
+                image_layout: texture.current_layout.get(),
+            };
+            let write0 = ash::vk::WriteDescriptorSet {
+                dst_set: self.descriptors.sets[0],
+                dst_binding: 12,
+                dst_array_element: *binding,
+                descriptor_type: ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                descriptor_count: 1,
+                p_image_info: &info0,
+                ..Default::default()
+            };
+
+            unsafe { self.device.update_descriptor_sets(&[write0], &[]) };
+        }
+        unsafe {
+            self.device.cmd_bind_pipeline(
+                cmdbuff,
+                ash::vk::PipelineBindPoint::COMPUTE,
+                pipeline.handle,
+            );
+        }
+
+        unsafe {
+            self.device
+                .cmd_dispatch(cmdbuff, work_groups.0, work_groups.1, work_groups.2);
+        }
+
+        let barriers = buffers
+            .iter()
+            .map(|(_, b)| ash::vk::BufferMemoryBarrier2 {
+                src_stage_mask: ash::vk::PipelineStageFlags2::COMPUTE_SHADER,
+                dst_stage_mask: ash::vk::PipelineStageFlags2::VERTEX_SHADER,
+                src_access_mask: ash::vk::AccessFlags2::SHADER_WRITE,
+                dst_access_mask: ash::vk::AccessFlags2::INDIRECT_COMMAND_READ,
+                buffer: b.buffer,
+                offset: 0,
+                size: b.size,
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+
+        let dependency_info = ash::vk::DependencyInfo {
+            buffer_memory_barrier_count: barriers.len() as u32,
+            p_buffer_memory_barriers: barriers.as_ptr(),
+            ..Default::default()
+        };
+
+        unsafe {
+            self.device.cmd_pipeline_barrier2(cmdbuff, &dependency_info);
+        }
+
+        self.end_single_time_commands(cmdbuff)
+    }
+
     fn set_model_matrix(&mut self, model: &glm::Mat4) {
         let Some(CurrentFrame { pending_push, .. }) = &mut self.current_frame else {
             return;
@@ -1722,7 +1863,7 @@ impl GpuBackend for VulkanBackend {
                 &self.device,
                 self.phys_device,
                 self.queue,
-                self.device.graphics_queue_index,
+                self.device.main_queue_index,
                 self.swapchain.surface_format.format.format,
                 self.vulkan_handle_tracker.clone(),
             ) {
@@ -1832,17 +1973,4 @@ pub struct VulkanPipeline {
     label: String,
     handle: ash::vk::Pipeline,
     bind_point: ash::vk::PipelineBindPoint,
-}
-
-impl<B: GpuBackend> Drop for Drawable<B> {
-    fn drop(&mut self) {
-        // if TypeId::of::<B>() == TypeId::of::<VulkanBackend>() {
-        //     let vtx_buffer = &mut self.vertex_buffer as *mut _ as *mut VulkanBuffer;
-        //     unsafe { &(*vtx_buffer) }.destroy();
-        //     let idx_buffer = &mut self.index_buffer as *mut _ as *mut VulkanBuffer;
-        //     unsafe { &(*idx_buffer) }.destroy();
-        //     let model_buffer = &mut self.model_buffer as *mut _ as *mut VulkanBuffer;
-        //     unsafe { &(*model_buffer) }.destroy();
-        // }
-    }
 }

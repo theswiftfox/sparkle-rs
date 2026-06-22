@@ -1,7 +1,7 @@
 use std::{
     cell::{Cell, RefCell},
     collections::HashSet,
-    ffi::{CStr, c_void},
+    ffi::CStr,
     ops::Deref,
     rc::Rc,
     sync::{Arc, Mutex},
@@ -62,13 +62,13 @@ impl Deref for Instance {
 
 struct LogicalDevice {
     device: ash::Device,
-    graphics_queue_index: u32,
+    main_queue_index: u32,
     debug_utils_ext: Option<ash::ext::debug_utils::Device>,
 }
 
 impl LogicalDevice {
-    fn get_graphics_queue(&self) -> ash::vk::Queue {
-        unsafe { self.device.get_device_queue(self.graphics_queue_index, 0) }
+    fn get_main_queue(&self) -> ash::vk::Queue {
+        unsafe { self.device.get_device_queue(self.main_queue_index, 0) }
     }
 }
 
@@ -374,7 +374,7 @@ pub struct VulkanBackend {
     swapchain: Swapchain,
     depth_targets: [VulkanTexture; FRAMES_IN_FLIGHT as usize],
     queue: ash::vk::Queue,
-    graphics_pipeline: ash::vk::Pipeline,
+    // graphics_pipeline: ash::vk::Pipeline,
     pipeline_layout: ash::vk::PipelineLayout,
     command_pool: CommandPool,
     command_buffers: [ash::vk::CommandBuffer; FRAMES_IN_FLIGHT as usize],
@@ -431,7 +431,7 @@ impl Drop for VulkanBackend {
                 .destroy_command_pool(self.command_pool.short_lived, None);
 
             // Destroy pipeline
-            self.device.destroy_pipeline(self.graphics_pipeline, None);
+            // self.device.destroy_pipeline(self.graphics_pipeline, None);
             self.device
                 .destroy_pipeline_layout(self.pipeline_layout, None);
 
@@ -517,7 +517,7 @@ pub fn initialize(window: Arc<Window>, settings: &Settings) -> Result<VulkanBack
     let logical_device = create_logical_device(&context, &instance, physical_device, surface)?;
     println!("Logical device created successfully");
 
-    let queue = logical_device.get_graphics_queue();
+    let queue = logical_device.get_main_queue();
     println!("Graphics queue retrieved successfully");
 
     let vk_handle_tracker = VulkanHandleTracker::new(logical_device.device.clone());
@@ -538,8 +538,8 @@ pub fn initialize(window: Arc<Window>, settings: &Settings) -> Result<VulkanBack
     )?;
     println!("Swapchain and depth buffer created successfully");
 
-    let pipeline = create_graphics_pipeline(&logical_device, &swapchain)?;
-    println!("Graphics pipeline created successfully");
+    // let pipeline = create_graphics_pipeline(&logical_device, &swapchain)?;
+    // println!("Graphics pipeline created successfully");
 
     let command_pool = create_command_pool(&logical_device)?;
     println!("Command pools created successfully");
@@ -581,7 +581,7 @@ pub fn initialize(window: Arc<Window>, settings: &Settings) -> Result<VulkanBack
         swapchain,
         depth_targets,
         queue,
-        graphics_pipeline: pipeline,
+        // graphics_pipeline: pipeline,
         pipeline_layout,
         command_pool,
         command_buffers,
@@ -668,6 +668,9 @@ fn create_descriptor_set_layout(
     // Binding 7: Cubemap array (CIS[4]) — skybox pxl
     // Binding 8: Shadow depth images (SAMPLED_IMAGE[4]) — shadow module
     // Binding 9: Comparison samplers (SAMPLER[4]) — shadow module
+    // Binding 10: instance transforms (procedural gen)
+    // Binding 11: structured buffers (procedural gen) - draw commands
+    // Binding 12: texture binding for compute
     let bindings = [
         ash::vk::DescriptorSetLayoutBinding {
             binding: 0,
@@ -739,6 +742,27 @@ fn create_descriptor_set_layout(
             stage_flags: ash::vk::ShaderStageFlags::FRAGMENT,
             ..Default::default()
         },
+        ash::vk::DescriptorSetLayoutBinding {
+            binding: 10,
+            descriptor_type: ash::vk::DescriptorType::STORAGE_BUFFER,
+            descriptor_count: 1,
+            stage_flags: ash::vk::ShaderStageFlags::VERTEX | ash::vk::ShaderStageFlags::COMPUTE,
+            ..Default::default()
+        },
+        ash::vk::DescriptorSetLayoutBinding {
+            binding: 11,
+            descriptor_type: ash::vk::DescriptorType::STORAGE_BUFFER,
+            descriptor_count: 1,
+            stage_flags: ash::vk::ShaderStageFlags::COMPUTE,
+            ..Default::default()
+        },
+        ash::vk::DescriptorSetLayoutBinding {
+            binding: 12,
+            descriptor_type: ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            descriptor_count: 1,
+            stage_flags: ash::vk::ShaderStageFlags::COMPUTE,
+            ..Default::default()
+        },
     ];
 
     let binding_flags = ash::vk::DescriptorBindingFlags::PARTIALLY_BOUND
@@ -778,7 +802,7 @@ fn create_descriptor_pool(device: &LogicalDevice) -> Result<ash::vk::DescriptorP
     // 1024 + 4 CIS per set * FRAMES_IN_FLIGHT
     let cis_pool_info = ash::vk::DescriptorPoolSize {
         ty: ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-        descriptor_count: (MAX_BINDLESS_TEXTURES + MAX_BINDLESS_CUBEMAPS) * FRAMES_IN_FLIGHT,
+        descriptor_count: (MAX_BINDLESS_TEXTURES + MAX_BINDLESS_CUBEMAPS + 1) * FRAMES_IN_FLIGHT,
     };
     let sampled_image_pool_info = ash::vk::DescriptorPoolSize {
         ty: ash::vk::DescriptorType::SAMPLED_IMAGE,
@@ -788,11 +812,16 @@ fn create_descriptor_pool(device: &LogicalDevice) -> Result<ash::vk::DescriptorP
         ty: ash::vk::DescriptorType::SAMPLER,
         descriptor_count: MAX_BINDLESS_COMPARISON_SAMPLERS * FRAMES_IN_FLIGHT,
     };
+    let storage_pool_infos = ash::vk::DescriptorPoolSize {
+        ty: ash::vk::DescriptorType::STORAGE_BUFFER,
+        descriptor_count: 2 * FRAMES_IN_FLIGHT,
+    };
     let pool_sizes = [
         uniform_pool_info,
         cis_pool_info,
         sampled_image_pool_info,
         sampler_pool_info,
+        storage_pool_infos,
     ];
     let create_info = ash::vk::DescriptorPoolCreateInfo {
         flags: ash::vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND,
@@ -834,7 +863,7 @@ fn create_command_buffers(
 fn create_command_pool(device: &LogicalDevice) -> Result<CommandPool, GpuError> {
     let pool_create_info = ash::vk::CommandPoolCreateInfo {
         flags: ash::vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
-        queue_family_index: device.graphics_queue_index,
+        queue_family_index: device.main_queue_index,
         ..Default::default()
     };
 
@@ -847,7 +876,7 @@ fn create_command_pool(device: &LogicalDevice) -> Result<CommandPool, GpuError> 
 
     let pool_create_info = ash::vk::CommandPoolCreateInfo {
         flags: ash::vk::CommandPoolCreateFlags::TRANSIENT,
-        queue_family_index: device.graphics_queue_index,
+        queue_family_index: device.main_queue_index,
         ..Default::default()
     };
     let short_lived =
@@ -919,149 +948,149 @@ fn create_sync_objs(
     })
 }
 
-fn create_graphics_pipeline(
-    device: &ash::Device,
-    swapchain: &Swapchain,
-) -> Result<ash::vk::Pipeline, GpuError> {
-    let shader_vert = util::load_shader_blob("src/shaders/spv/example.vert.spv")?;
-    let shader_pxl = util::load_shader_blob("src/shaders/spv/example.pxl.spv")?;
+// fn create_graphics_pipeline(
+//     device: &ash::Device,
+//     swapchain: &Swapchain,
+// ) -> Result<ash::vk::Pipeline, GpuError> {
+//     let shader_vert = util::load_shader_blob("src/shaders/spv/example.vert.spv")?;
+//     let shader_pxl = util::load_shader_blob("src/shaders/spv/example.pxl.spv")?;
 
-    let shader_module_vert = create_shader_module(&shader_vert, device, "Vertex Shader")?;
-    let shader_module_pxl = create_shader_module(&shader_pxl, device, "Pixel Shader")?;
+//     let shader_module_vert = create_shader_module(&shader_vert, device, "Vertex Shader")?;
+//     let shader_module_pxl = create_shader_module(&shader_pxl, device, "Pixel Shader")?;
 
-    let vtx_shader_stage_create = ash::vk::PipelineShaderStageCreateInfo {
-        stage: ash::vk::ShaderStageFlags::VERTEX,
-        module: shader_module_vert,
-        p_name: SHADER_ENTRY_POINT.as_ptr(),
-        ..Default::default()
-    };
-    let pxl_shader_stage_create = ash::vk::PipelineShaderStageCreateInfo {
-        stage: ash::vk::ShaderStageFlags::FRAGMENT,
-        module: shader_module_pxl,
-        p_name: SHADER_ENTRY_POINT.as_ptr(),
-        ..Default::default()
-    };
-    let shader_stages = [vtx_shader_stage_create, pxl_shader_stage_create];
+//     let vtx_shader_stage_create = ash::vk::PipelineShaderStageCreateInfo {
+//         stage: ash::vk::ShaderStageFlags::VERTEX,
+//         module: shader_module_vert,
+//         p_name: SHADER_ENTRY_POINT.as_ptr(),
+//         ..Default::default()
+//     };
+//     let pxl_shader_stage_create = ash::vk::PipelineShaderStageCreateInfo {
+//         stage: ash::vk::ShaderStageFlags::FRAGMENT,
+//         module: shader_module_pxl,
+//         p_name: SHADER_ENTRY_POINT.as_ptr(),
+//         ..Default::default()
+//     };
+//     let shader_stages = [vtx_shader_stage_create, pxl_shader_stage_create];
 
-    let dynamic_states = [
-        ash::vk::DynamicState::VIEWPORT,
-        ash::vk::DynamicState::SCISSOR,
-    ];
+//     let dynamic_states = [
+//         ash::vk::DynamicState::VIEWPORT,
+//         ash::vk::DynamicState::SCISSOR,
+//     ];
 
-    let dynamic_state_create_info = ash::vk::PipelineDynamicStateCreateInfo {
-        dynamic_state_count: dynamic_states.len() as u32,
-        p_dynamic_states: dynamic_states.as_ptr(),
-        ..Default::default()
-    };
+//     let dynamic_state_create_info = ash::vk::PipelineDynamicStateCreateInfo {
+//         dynamic_state_count: dynamic_states.len() as u32,
+//         p_dynamic_states: dynamic_states.as_ptr(),
+//         ..Default::default()
+//     };
 
-    let vtx_input_state_info = ash::vk::PipelineVertexInputStateCreateInfo {
-        ..Default::default()
-    };
-    let input_assembly_info = ash::vk::PipelineInputAssemblyStateCreateInfo {
-        topology: ash::vk::PrimitiveTopology::TRIANGLE_LIST,
-        ..Default::default()
-    };
+//     let vtx_input_state_info = ash::vk::PipelineVertexInputStateCreateInfo {
+//         ..Default::default()
+//     };
+//     let input_assembly_info = ash::vk::PipelineInputAssemblyStateCreateInfo {
+//         topology: ash::vk::PrimitiveTopology::TRIANGLE_LIST,
+//         ..Default::default()
+//     };
 
-    let viewport_create_info = ash::vk::PipelineViewportStateCreateInfo {
-        viewport_count: 1,
-        scissor_count: 1,
-        ..Default::default()
-    };
+//     let viewport_create_info = ash::vk::PipelineViewportStateCreateInfo {
+//         viewport_count: 1,
+//         scissor_count: 1,
+//         ..Default::default()
+//     };
 
-    let rasterization_state_create_info = ash::vk::PipelineRasterizationStateCreateInfo {
-        depth_clamp_enable: ash::vk::FALSE,
-        rasterizer_discard_enable: ash::vk::FALSE,
-        polygon_mode: ash::vk::PolygonMode::FILL,
-        cull_mode: ash::vk::CullModeFlags::BACK,
-        front_face: ash::vk::FrontFace::CLOCKWISE,
-        depth_bias_enable: ash::vk::FALSE,
-        line_width: 1.0f32,
-        ..Default::default()
-    };
+//     let rasterization_state_create_info = ash::vk::PipelineRasterizationStateCreateInfo {
+//         depth_clamp_enable: ash::vk::FALSE,
+//         rasterizer_discard_enable: ash::vk::FALSE,
+//         polygon_mode: ash::vk::PolygonMode::FILL,
+//         cull_mode: ash::vk::CullModeFlags::BACK,
+//         front_face: ash::vk::FrontFace::CLOCKWISE,
+//         depth_bias_enable: ash::vk::FALSE,
+//         line_width: 1.0f32,
+//         ..Default::default()
+//     };
 
-    let multisample_state_create_info = ash::vk::PipelineMultisampleStateCreateInfo {
-        rasterization_samples: ash::vk::SampleCountFlags::TYPE_1,
-        sample_shading_enable: ash::vk::FALSE,
-        ..Default::default()
-    };
+//     let multisample_state_create_info = ash::vk::PipelineMultisampleStateCreateInfo {
+//         rasterization_samples: ash::vk::SampleCountFlags::TYPE_1,
+//         sample_shading_enable: ash::vk::FALSE,
+//         ..Default::default()
+//     };
 
-    let blend_attachment_state = ash::vk::PipelineColorBlendAttachmentState {
-        blend_enable: ash::vk::FALSE,
-        color_write_mask: ash::vk::ColorComponentFlags::RGBA,
-        ..Default::default()
-    };
-    let blend_state_create_info = ash::vk::PipelineColorBlendStateCreateInfo {
-        logic_op_enable: ash::vk::FALSE,
-        logic_op: ash::vk::LogicOp::COPY,
-        attachment_count: 1,
-        p_attachments: &blend_attachment_state as *const _,
-        ..Default::default()
-    };
+//     let blend_attachment_state = ash::vk::PipelineColorBlendAttachmentState {
+//         blend_enable: ash::vk::FALSE,
+//         color_write_mask: ash::vk::ColorComponentFlags::RGBA,
+//         ..Default::default()
+//     };
+//     let blend_state_create_info = ash::vk::PipelineColorBlendStateCreateInfo {
+//         logic_op_enable: ash::vk::FALSE,
+//         logic_op: ash::vk::LogicOp::COPY,
+//         attachment_count: 1,
+//         p_attachments: &blend_attachment_state as *const _,
+//         ..Default::default()
+//     };
 
-    let pipeline_layout_create_info = ash::vk::PipelineLayoutCreateInfo {
-        set_layout_count: 0,
-        push_constant_range_count: 0,
-        ..Default::default()
-    };
-    let pipeline_layout =
-        unsafe { device.create_pipeline_layout(&pipeline_layout_create_info, None) }.map_err(
-            |e| {
-                GpuError::new(
-                    format!("Pipeline Layout creation failed: {e:?}"),
-                    GpuErrorKind::ResourceCreation,
-                )
-            },
-        )?;
-    let rendering_create_info = ash::vk::PipelineRenderingCreateInfo {
-        color_attachment_count: 1,
-        p_color_attachment_formats: &swapchain.surface_format.format.format as *const _,
-        ..Default::default()
-    };
+//     let pipeline_layout_create_info = ash::vk::PipelineLayoutCreateInfo {
+//         set_layout_count: 0,
+//         push_constant_range_count: 0,
+//         ..Default::default()
+//     };
+//     let pipeline_layout =
+//         unsafe { device.create_pipeline_layout(&pipeline_layout_create_info, None) }.map_err(
+//             |e| {
+//                 GpuError::new(
+//                     format!("Pipeline Layout creation failed: {e:?}"),
+//                     GpuErrorKind::ResourceCreation,
+//                 )
+//             },
+//         )?;
+//     let rendering_create_info = ash::vk::PipelineRenderingCreateInfo {
+//         color_attachment_count: 1,
+//         p_color_attachment_formats: &swapchain.surface_format.format.format as *const _,
+//         ..Default::default()
+//     };
 
-    let pipeline_create_info = ash::vk::GraphicsPipelineCreateInfo {
-        stage_count: 2,
-        p_stages: shader_stages.as_ptr(),
-        p_vertex_input_state: &vtx_input_state_info as *const _,
-        p_input_assembly_state: &input_assembly_info as *const _,
-        p_viewport_state: &viewport_create_info as *const _,
-        p_rasterization_state: &rasterization_state_create_info as *const _,
-        p_multisample_state: &multisample_state_create_info as *const _,
-        p_color_blend_state: &blend_state_create_info as *const _,
-        p_dynamic_state: &dynamic_state_create_info as *const _,
-        layout: pipeline_layout,
-        render_pass: ash::vk::RenderPass::null(),
-        p_next: &rendering_create_info as *const _ as *const c_void,
-        ..Default::default()
-    };
+//     let pipeline_create_info = ash::vk::GraphicsPipelineCreateInfo {
+//         stage_count: 2,
+//         p_stages: shader_stages.as_ptr(),
+//         p_vertex_input_state: &vtx_input_state_info as *const _,
+//         p_input_assembly_state: &input_assembly_info as *const _,
+//         p_viewport_state: &viewport_create_info as *const _,
+//         p_rasterization_state: &rasterization_state_create_info as *const _,
+//         p_multisample_state: &multisample_state_create_info as *const _,
+//         p_color_blend_state: &blend_state_create_info as *const _,
+//         p_dynamic_state: &dynamic_state_create_info as *const _,
+//         layout: pipeline_layout,
+//         render_pass: ash::vk::RenderPass::null(),
+//         p_next: &rendering_create_info as *const _ as *const c_void,
+//         ..Default::default()
+//     };
 
-    let pipeline = unsafe {
-        device.create_graphics_pipelines(
-            ash::vk::PipelineCache::null(),
-            &[pipeline_create_info],
-            None,
-        )
-    }
-    .map_err(|e| {
-        GpuError::new(
-            format!("Failed to create graphics pipeline: {e:?}"),
-            GpuErrorKind::ResourceCreation,
-        )
-    })?;
+//     let pipeline = unsafe {
+//         device.create_graphics_pipelines(
+//             ash::vk::PipelineCache::null(),
+//             &[pipeline_create_info],
+//             None,
+//         )
+//     }
+//     .map_err(|e| {
+//         GpuError::new(
+//             format!("Failed to create graphics pipeline: {e:?}"),
+//             GpuErrorKind::ResourceCreation,
+//         )
+//     })?;
 
-    // Shader modules can be destroyed after pipeline creation
-    unsafe {
-        device.destroy_shader_module(shader_module_vert, None);
-        device.destroy_shader_module(shader_module_pxl, None);
-        device.destroy_pipeline_layout(pipeline_layout, None);
-    }
+//     // Shader modules can be destroyed after pipeline creation
+//     unsafe {
+//         device.destroy_shader_module(shader_module_vert, None);
+//         device.destroy_shader_module(shader_module_pxl, None);
+//         device.destroy_pipeline_layout(pipeline_layout, None);
+//     }
 
-    pipeline.into_iter().next().ok_or_else(|| {
-        GpuError::new(
-            "Create pipeline returned empty response",
-            GpuErrorKind::ResourceCreation,
-        )
-    })
-}
+//     pipeline.into_iter().next().ok_or_else(|| {
+//         GpuError::new(
+//             "Create pipeline returned empty response",
+//             GpuErrorKind::ResourceCreation,
+//         )
+//     })
+// }
 
 fn create_shader_module(
     code: &[u8],
@@ -1335,7 +1364,9 @@ fn create_logical_device(
                 return false;
             }
         };
-        q.queue_flags.contains(ash::vk::QueueFlags::GRAPHICS) && surface_support
+        q.queue_flags.contains(ash::vk::QueueFlags::GRAPHICS)
+            && surface_support
+            && q.queue_flags.contains(ash::vk::QueueFlags::COMPUTE)
     }) else {
         return Err(GpuError::new(
             "Selected physical device does not have graphics queue family with present support",
@@ -1366,6 +1397,7 @@ fn create_logical_device(
         descriptor_binding_partially_bound: ash::vk::TRUE,
         descriptor_binding_sampled_image_update_after_bind: ash::vk::TRUE,
         descriptor_binding_update_unused_while_pending: ash::vk::TRUE,
+        descriptor_binding_storage_buffer_update_after_bind: ash::vk::TRUE,
         runtime_descriptor_array: ash::vk::TRUE,
         p_next: &mut vk_13_feats as *mut _ as *mut std::ffi::c_void,
         ..Default::default()
@@ -1417,7 +1449,7 @@ fn create_logical_device(
 
     Ok(LogicalDevice {
         device,
-        graphics_queue_index: idx as u32,
+        main_queue_index: idx as u32,
         debug_utils_ext,
     })
 }
@@ -1498,9 +1530,13 @@ fn get_physical_device(instance: &ash::Instance) -> Result<ash::vk::PhysicalDevi
             }
 
             // check additional required features
+            // check for update after bind on storage buffers
+            let mut descriptor_indexing_features: ash::vk::PhysicalDeviceDescriptorIndexingFeatures = Default::default();
             // check for extended dynamic state
-            let mut features_ext_state: ash::vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT =
-                Default::default();
+            let mut features_ext_state = ash::vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT {
+                p_next: &mut descriptor_indexing_features as *mut _ as *mut _,
+                ..Default::default()
+            };
             // dynamic rendering feature
             let mut features3 = ash::vk::PhysicalDeviceVulkan13Features {
                 p_next: &mut features_ext_state as *mut _ as *mut std::ffi::c_void,
@@ -1517,6 +1553,13 @@ fn get_physical_device(instance: &ash::Instance) -> Result<ash::vk::PhysicalDevi
                 println!(
                     "Physical device {:?} does not support dynamic rendering, skipping",
                     device,
+                );
+                return None;
+            }
+            if descriptor_indexing_features.descriptor_binding_storage_buffer_update_after_bind != ash::vk::TRUE {
+                println!(
+                    "Physical device {:?} does not support updating storage buffers after bind. skipping",
+                    device
                 );
                 return None;
             }

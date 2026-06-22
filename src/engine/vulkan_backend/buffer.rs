@@ -162,6 +162,8 @@ impl Into<ash::vk::BufferUsageFlags> for BufferUsage {
             BufferUsage::Vertex => ash::vk::BufferUsageFlags::VERTEX_BUFFER,
             BufferUsage::Index => ash::vk::BufferUsageFlags::INDEX_BUFFER,
             BufferUsage::Uniform => ash::vk::BufferUsageFlags::UNIFORM_BUFFER,
+            BufferUsage::Storage => ash::vk::BufferUsageFlags::STORAGE_BUFFER,
+            BufferUsage::Indirect => ash::vk::BufferUsageFlags::INDIRECT_BUFFER | ash::vk::BufferUsageFlags::STORAGE_BUFFER,
         }
     }
 }

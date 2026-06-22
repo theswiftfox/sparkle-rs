@@ -164,204 +164,6 @@ struct SsaoUniforms {
     kernel: [[f32; 4]; 32],
 }
 
-/// Screen-space ambient occlusion pass.
-///
-/// Runs as two sub-passes:
-/// 1. SSAO: reads G-buffer positions → raw AO texture
-/// 2. Blur: smooths raw AO → final AO texture
-///
-/// The final blurred result is bound by the Renderer into the deferred light pass.
-pub(crate) struct SsaoPass<B: GpuBackend> {
-    ssao_pipeline: B::Pipeline,
-    blur_pipeline: B::Pipeline,
-    pub(crate) uniforms_buf: B::Buffer,
-    pub(crate) noise_texture: B::Texture,
-    ssao_target: B::RenderTarget,
-    blur_target: B::RenderTarget,
-    uniforms: SsaoUniforms,
-}
-
-impl<B: GpuBackend> SsaoPass<B> {
-    /// The blurred SSAO result, ready to be bound in the deferred light pass.
-    pub fn blur_target(&self) -> &B::RenderTarget {
-        &self.blur_target
-    }
-
-    /// The raw (unblurred) SSAO target — used internally for the blur sub-pass.
-    pub fn ssao_target(&self) -> &B::RenderTarget {
-        &self.ssao_target
-    }
-
-    /// Bind the SSAO pipeline, uniforms, and noise texture for the main SSAO sub-pass.
-    pub fn prepare_draw_ssao(&self, backend: &mut B) {
-        backend.set_pipeline(&self.ssao_pipeline);
-    }
-
-    /// Bind the blur pipeline for the blur sub-pass.
-    /// The raw SSAO target is bound by the Renderer via `bind_render_target_as_texture`.
-    pub fn prepare_draw_blur(&self, backend: &mut B) {
-        backend.set_pipeline(&self.blur_pipeline);
-    }
-
-    /// Upload SSAO uniform data to the GPU.
-    pub fn update(&self, backend: &B) {
-        backend.update_buffer(
-            &self.uniforms_buf,
-            as_bytes(std::slice::from_ref(&self.uniforms)),
-        );
-    }
-
-    pub fn set_view(&mut self, view: glm::Mat4) {
-        self.uniforms.view = view;
-    }
-
-    pub fn set_proj(&mut self, proj: glm::Mat4) {
-        self.uniforms.projection = proj;
-    }
-
-    pub fn set_view_proj(&mut self, view: glm::Mat4, proj: glm::Mat4) {
-        self.uniforms.view = view;
-        self.uniforms.projection = proj;
-    }
-
-    pub fn create(
-        backend: &B,
-        resolution: (u32, u32),
-        ssao_shader: &B::ShaderSource,
-        blur_shader: &B::ShaderSource,
-    ) -> Result<Self, GpuError> {
-        // SSAO pipeline
-        let ssao_pipeline = backend.create_pipeline(&PipelineDesc {
-            label: "ssao_pass",
-            shader_source: ssao_shader,
-            vertex_layout: Some(standard_vertex_layout()),
-            blend_mode: BlendMode::None,
-            cull_mode: CullMode::None,
-            depth_write: false,
-            depth_compare: CompareFunc::Always,
-            color_target_formats: &[TextureFormat::R8Unorm],
-            depth_format: None,
-            bind_groups: &[
-                // Group 0: empty (fullscreen quad)
-                &[],
-                // Group 1: empty (no per-object)
-                &[],
-                // Group 2: noise texture
-                &[BindingType::Texture2D, BindingType::Sampler],
-                // Group 3: SSAO uniforms + positions G-buffer + normal G-buffer
-                &[
-                    BindingType::UniformBuffer,
-                    BindingType::Texture2DUnfilterable,
-                    BindingType::Texture2D,
-                ],
-            ],
-        })?;
-
-        // Blur pipeline
-        let blur_pipeline = backend.create_pipeline(&PipelineDesc {
-            label: "ssao_blur",
-            shader_source: blur_shader,
-            vertex_layout: Some(standard_vertex_layout()),
-            blend_mode: BlendMode::None,
-            cull_mode: CullMode::None,
-            depth_write: false,
-            depth_compare: CompareFunc::Always,
-            color_target_formats: &[TextureFormat::R8Unorm],
-            depth_format: None,
-            bind_groups: &[
-                // Group 0: empty
-                &[],
-                // Group 1: empty
-                &[],
-                // Group 2: empty
-                &[],
-                // Group 3: raw SSAO texture
-                &[BindingType::Texture2D, BindingType::Sampler],
-            ],
-        })?;
-
-        // Generate kernel and noise
-        let kernel = generate_ssao_kernel();
-        let noise_data = generate_ssao_noise();
-
-        let uniforms = SsaoUniforms {
-            projection: glm::identity(),
-            view: glm::identity(),
-            resolution: [resolution.0 as f32, resolution.1 as f32],
-            radius: 0.5,
-            bias: 0.025,
-            kernel,
-        };
-
-        let uniforms_buf = backend.create_buffer(
-            &BufferDesc {
-                label: "SSAO Uniforms".into(),
-                usage: BufferUsage::Uniform,
-                size: std::mem::size_of::<SsaoUniforms>(),
-            },
-            Some(as_bytes(std::slice::from_ref(&uniforms))),
-        )?;
-
-        let noise_texture = backend.create_texture(
-            &TextureDesc {
-                width: 4,
-                height: 4,
-                format: TextureFormat::Rgba8Unorm,
-                sampler: SamplerDesc {
-                    address_u: AddressMode::Repeat,
-                    address_v: AddressMode::Repeat,
-                    filter: FilterMode::Nearest,
-                    compare: None,
-                },
-                generate_mipmaps: false,
-            },
-            &noise_data,
-        )?;
-
-        let ssao_target = backend.create_render_target(&RenderTargetDesc {
-            width: resolution.0,
-            height: resolution.1,
-            format: TextureFormat::R8Unorm,
-            sampler: SamplerDesc::default(),
-        })?;
-
-        let blur_target = backend.create_render_target(&RenderTargetDesc {
-            width: resolution.0,
-            height: resolution.1,
-            format: TextureFormat::R8Unorm,
-            sampler: SamplerDesc::default(),
-        })?;
-
-        Ok(SsaoPass {
-            ssao_pipeline,
-            blur_pipeline,
-            uniforms_buf,
-            noise_texture,
-            ssao_target,
-            blur_target,
-            uniforms,
-        })
-    }
-
-    /// Recreate resolution-dependent render targets after a window resize.
-    pub fn resize(&mut self, backend: &B, resolution: (u32, u32)) -> Result<(), GpuError> {
-        self.ssao_target = backend.create_render_target(&RenderTargetDesc {
-            width: resolution.0,
-            height: resolution.1,
-            format: TextureFormat::R8Unorm,
-            sampler: SamplerDesc::default(),
-        })?;
-        self.blur_target = backend.create_render_target(&RenderTargetDesc {
-            width: resolution.0,
-            height: resolution.1,
-            format: TextureFormat::R8Unorm,
-            sampler: SamplerDesc::default(),
-        })?;
-        self.uniforms.resolution = [resolution.0 as f32, resolution.1 as f32];
-        Ok(())
-    }
-}
-
 // ForwardPass
 
 /// Forward rendering pass: renders transparent objects with full lighting.
@@ -373,10 +175,7 @@ impl<B: GpuBackend> SsaoPass<B> {
 pub(crate) struct ForwardPass<B: GpuBackend> {
     pipeline: B::Pipeline,
     pipeline_double_sided: B::Pipeline, // Shared UBOs are bound globally
-    pub(crate) vertex_uniforms: ViewProjUniforms, // Shared UBOs are bound globally
     render_target: B::RenderTarget,
-    pub(crate) pixel_uniforms: CameraUniforms,
-    pub(crate) light_data: GpuLight,
 }
 
 impl<B: GpuBackend> ForwardPass<B> {
@@ -399,57 +198,12 @@ impl<B: GpuBackend> ForwardPass<B> {
         }
     }
 
-    /// Upload all CPU-side uniform data to GPU buffers.
-    // This method is no longer needed as the Renderer will directly update shared UBOs.
-    // pub fn update(&self, backend: &B) {
-    //     backend.update_buffer(
-    //         &self.vertex_uniforms_buf,
-    //         as_bytes(std::slice::from_ref(&self.vertex_uniforms)),
-    //     );
-    //     backend.update_buffer(
-    //         &self.pixel_uniforms_buf,
-    //         as_bytes(std::slice::from_ref(&self.pixel_uniforms)),
-    //     );
-    //     backend.update_buffer(
-    //         &self.light_buf,
-    //         as_bytes(std::slice::from_ref(&self.light_data)),
-    //     );
-    // }
-
-    pub fn set_view(&mut self, view: glm::Mat4) {
-        // This updates the CPU-side struct
-        self.vertex_uniforms.view = view;
-    }
-
-    pub fn set_proj(&mut self, proj: glm::Mat4) {
-        self.vertex_uniforms.proj = proj;
-    }
-
-    pub fn set_view_proj(&mut self, view: glm::Mat4, proj: glm::Mat4) {
-        self.vertex_uniforms.view = view;
-        self.vertex_uniforms.proj = proj;
-    }
-
-    pub fn set_camera_pos(&mut self, pos: glm::Vec3) {
-        self.pixel_uniforms.camera_pos = pos;
-    }
-
-    pub fn set_ssao(&mut self, enabled: bool) {
-        // This updates the CPU-side struct
-        self.pixel_uniforms.ssao = if enabled { 1 } else { 0 };
-    }
-
-    pub fn set_light(&mut self, light: &Light) {
-        // This updates the CPU-side struct
-        self.light_data = GpuLight::from_light(light);
-    }
-
     pub fn create(
         backend: &B,
         resolution: (u32, u32),
         shader_source: &B::ShaderSource,
     ) -> Result<Self, GpuError> {
-        let pipeline = backend.create_pipeline(&PipelineDesc {
+        let pipeline = backend.create_render_pipeline(&RenderPipelineDesc {
             label: "forward_pass",
             shader_source,
             vertex_layout: Some(standard_vertex_layout()),
@@ -459,31 +213,9 @@ impl<B: GpuBackend> ForwardPass<B> {
             depth_compare: CompareFunc::LessEqual,
             color_target_formats: &[TextureFormat::R16g16b16a16Float],
             depth_format: Some(TextureFormat::Depth32Float),
-            bind_groups: &[
-                // Group 0: vertex frame uniforms (view + proj)
-                &[BindingType::UniformBuffer],
-                // Group 1: per-object (model matrix)
-                &[BindingType::UniformBuffer],
-                // Group 2: material textures (diffuse, MR, normal)
-                &[
-                    BindingType::Texture2D,
-                    BindingType::Sampler,
-                    BindingType::Texture2D,
-                    BindingType::Sampler,
-                    BindingType::Texture2D,
-                    BindingType::Sampler,
-                ],
-                // Group 3: fragment uniforms + shadow map
-                &[
-                    BindingType::UniformBuffer,     // camera
-                    BindingType::UniformBuffer,     // light
-                    BindingType::TextureDepth2D,    // shadow map
-                    BindingType::SamplerComparison, // shadow sampler
-                ],
-            ],
         })?;
 
-        let pipeline_double_sided = backend.create_pipeline(&PipelineDesc {
+        let pipeline_double_sided = backend.create_render_pipeline(&RenderPipelineDesc {
             label: "forward_pass_double_sided",
             shader_source,
             vertex_layout: Some(standard_vertex_layout()),
@@ -493,24 +225,6 @@ impl<B: GpuBackend> ForwardPass<B> {
             depth_compare: CompareFunc::LessEqual,
             color_target_formats: &[TextureFormat::R16g16b16a16Float],
             depth_format: Some(TextureFormat::Depth32Float),
-            bind_groups: &[
-                &[BindingType::UniformBuffer],
-                &[BindingType::UniformBuffer],
-                &[
-                    BindingType::Texture2D,
-                    BindingType::Sampler,
-                    BindingType::Texture2D,
-                    BindingType::Sampler,
-                    BindingType::Texture2D,
-                    BindingType::Sampler,
-                ],
-                &[
-                    BindingType::UniformBuffer,
-                    BindingType::UniformBuffer,
-                    BindingType::TextureDepth2D,
-                    BindingType::SamplerComparison,
-                ],
-            ],
         })?;
 
         let render_target = backend.create_render_target(&RenderTargetDesc {
@@ -521,21 +235,6 @@ impl<B: GpuBackend> ForwardPass<B> {
         })?;
 
         Ok(ForwardPass {
-            vertex_uniforms: ViewProjUniforms {
-                view: glm::identity(),
-                proj: glm::identity(),
-            },
-            pixel_uniforms: CameraUniforms {
-                camera_pos: glm::zero(),
-                ssao: 1,
-            },
-            light_data: GpuLight {
-                position: glm::zero(),
-                t: 0,
-                color: glm::zero(),
-                radius: 0.0,
-                light_space: glm::identity(),
-            },
             pipeline,
             pipeline_double_sided,
             render_target,
@@ -603,7 +302,7 @@ impl<B: GpuBackend> DeferredPassPre<B> {
         resolution: (u32, u32),
         shader_source: &B::ShaderSource,
     ) -> Result<Self, GpuError> {
-        let pipeline = backend.create_pipeline(&PipelineDesc {
+        let pipeline = backend.create_render_pipeline(&RenderPipelineDesc {
             label: "deferred_pre",
             shader_source,
             vertex_layout: Some(standard_vertex_layout()),
@@ -617,26 +316,9 @@ impl<B: GpuBackend> DeferredPassPre<B> {
                 TextureFormat::R16g16b16a16Float,
             ],
             depth_format: Some(TextureFormat::Depth32Float),
-            bind_groups: &[
-                // Group 0: vertex frame uniforms (view + proj)
-                &[BindingType::UniformBuffer],
-                // Group 1: per-object (model matrix)
-                &[BindingType::UniformBuffer],
-                // Group 2: material textures (diffuse, MR, normal)
-                &[
-                    BindingType::Texture2D,
-                    BindingType::Sampler,
-                    BindingType::Texture2D,
-                    BindingType::Sampler,
-                    BindingType::Texture2D,
-                    BindingType::Sampler,
-                ],
-                // Group 3: fragment uniforms (near/far planes)
-                &[BindingType::UniformBuffer],
-            ],
         })?;
 
-        let pipeline_double_sided = backend.create_pipeline(&PipelineDesc {
+        let pipeline_double_sided = backend.create_render_pipeline(&RenderPipelineDesc {
             label: "deferred_pre_double_sided",
             shader_source,
             vertex_layout: Some(standard_vertex_layout()),
@@ -650,19 +332,6 @@ impl<B: GpuBackend> DeferredPassPre<B> {
                 TextureFormat::R16g16b16a16Float,
             ],
             depth_format: Some(TextureFormat::Depth32Float),
-            bind_groups: &[
-                &[BindingType::UniformBuffer],
-                &[BindingType::UniformBuffer],
-                &[
-                    BindingType::Texture2D,
-                    BindingType::Sampler,
-                    BindingType::Texture2D,
-                    BindingType::Sampler,
-                    BindingType::Texture2D,
-                    BindingType::Sampler,
-                ],
-                &[BindingType::UniformBuffer],
-            ],
         })?;
 
         let positions_target = backend.create_render_target(&RenderTargetDesc {
@@ -762,7 +431,7 @@ impl<B: GpuBackend> DeferredPassLight<B> {
         resolution: (u32, u32),
         shader_source: &B::ShaderSource,
     ) -> Result<Self, GpuError> {
-        let pipeline = backend.create_pipeline(&PipelineDesc {
+        let pipeline = backend.create_render_pipeline(&RenderPipelineDesc {
             label: "deferred_light",
             shader_source,
             vertex_layout: Some(standard_vertex_layout()),
@@ -772,26 +441,6 @@ impl<B: GpuBackend> DeferredPassLight<B> {
             depth_compare: CompareFunc::Always,
             color_target_formats: &[TextureFormat::R16g16b16a16Float],
             depth_format: None,
-            bind_groups: &[
-                // Group 0: empty (fullscreen quad, no vertex uniforms)
-                &[],
-                // Group 1: empty (no per-object data)
-                &[],
-                // Group 2: empty (no material textures)
-                &[],
-                // Group 3: fragment uniforms + G-buffer + shadow map + SSAO
-                &[
-                    BindingType::UniformBuffer,         // camera
-                    BindingType::UniformBuffer,         // light
-                    BindingType::Texture2DUnfilterable, // positions G-buffer (Rgba32Float, unfilterable)
-                    BindingType::Texture2D,             // normal+roughness G-buffer (Rgba16Float)
-                    BindingType::Texture2D,             // albedo+metallic G-buffer (Rgba16Float)
-                    BindingType::TextureDepth2D,        // shadow map
-                    BindingType::SamplerComparison,     // shadow sampler
-                    BindingType::Texture2D,             // SSAO blurred
-                    BindingType::Sampler,               // SSAO sampler
-                ],
-            ],
         })?;
 
         let render_target = backend.create_render_target(&RenderTargetDesc {
@@ -837,7 +486,6 @@ pub(crate) struct ShadowPass<B: GpuBackend> {
     pipeline_double_sided: B::Pipeline, // Shared UBOs are bound globally
     shadow_map: B::RenderTarget,
     shadow_viewport: ViewportDesc,
-    pub(crate) vertex_uniforms: LightSpaceUniforms,
 }
 
 impl<B: GpuBackend> ShadowPass<B> {
@@ -864,15 +512,8 @@ impl<B: GpuBackend> ShadowPass<B> {
         }
     }
 
-    /// Upload light-space matrix to GPU.
-    // This method is no longer needed as the Renderer will directly update shared UBOs.
-
-    pub fn set_light_space(&mut self, light_space_matrix: glm::Mat4) {
-        self.vertex_uniforms.light_space_matrix = light_space_matrix;
-    }
-
     pub fn create(backend: &B, shader_source: &B::ShaderSource) -> Result<Self, GpuError> {
-        let pipeline = backend.create_pipeline(&PipelineDesc {
+        let pipeline = backend.create_render_pipeline(&RenderPipelineDesc {
             label: "shadow_pass",
             shader_source,
             vertex_layout: Some(standard_vertex_layout()),
@@ -882,19 +523,9 @@ impl<B: GpuBackend> ShadowPass<B> {
             depth_compare: CompareFunc::Less,
             color_target_formats: &[],
             depth_format: Some(TextureFormat::Depth32Float),
-            bind_groups: &[
-                // Group 0: vertex frame uniforms (light-space matrix)
-                &[BindingType::UniformBuffer],
-                // Group 1: per-object (model matrix)
-                &[BindingType::UniformBuffer],
-                // Group 2: empty (no material needed for shadow)
-                &[],
-                // Group 3: empty (no fragment stage)
-                &[],
-            ],
         })?;
 
-        let pipeline_double_sided = backend.create_pipeline(&PipelineDesc {
+        let pipeline_double_sided = backend.create_render_pipeline(&RenderPipelineDesc {
             label: "shadow_pass_double_sided",
             shader_source,
             vertex_layout: Some(standard_vertex_layout()),
@@ -904,12 +535,6 @@ impl<B: GpuBackend> ShadowPass<B> {
             depth_compare: CompareFunc::Less,
             color_target_formats: &[],
             depth_format: Some(TextureFormat::Depth32Float),
-            bind_groups: &[
-                &[BindingType::UniformBuffer],
-                &[BindingType::UniformBuffer],
-                &[],
-                &[],
-            ],
         })?;
 
         let shadow_map = backend.create_render_target(&RenderTargetDesc {
@@ -934,9 +559,6 @@ impl<B: GpuBackend> ShadowPass<B> {
         };
 
         Ok(ShadowPass {
-            vertex_uniforms: LightSpaceUniforms {
-                light_space_matrix: glm::identity(),
-            },
             pipeline,
             pipeline_double_sided,
             shadow_map,
@@ -967,7 +589,7 @@ impl<B: GpuBackend> OutputPass<B> {
         shader_source: &B::ShaderSource,
         backbuffer_format: TextureFormat,
     ) -> Result<Self, GpuError> {
-        let pipeline = backend.create_pipeline(&PipelineDesc {
+        let pipeline = backend.create_render_pipeline(&RenderPipelineDesc {
             label: "output_pass",
             shader_source,
             vertex_layout: Some(standard_vertex_layout()),
@@ -977,21 +599,6 @@ impl<B: GpuBackend> OutputPass<B> {
             depth_compare: CompareFunc::Always,
             color_target_formats: &[backbuffer_format],
             depth_format: None,
-            bind_groups: &[
-                // Group 0: empty (fullscreen quad, no vertex uniforms)
-                &[],
-                // Group 1: empty (no per-object data)
-                &[],
-                // Group 2: empty (no material textures)
-                &[],
-                // Group 3: deferred + forward render target textures
-                &[
-                    BindingType::Texture2D,
-                    BindingType::Sampler, // deferred result
-                    BindingType::Texture2D,
-                    BindingType::Sampler, // forward result
-                ],
-            ],
         })?;
 
         Ok(OutputPass { pipeline })
@@ -1007,8 +614,6 @@ impl<B: GpuBackend> OutputPass<B> {
 /// (mat3→mat4 conversion) so the skybox moves with the camera.
 pub(crate) struct SkyBoxPass<B: GpuBackend> {
     pipeline: B::Pipeline,
-    pub(crate) vertex_uniforms_buf: B::Buffer,
-    vertex_uniforms: ViewProjUniforms,
 }
 
 impl<B: GpuBackend> SkyBoxPass<B> {
@@ -1017,33 +622,12 @@ impl<B: GpuBackend> SkyBoxPass<B> {
         backend.set_pipeline(&self.pipeline);
     }
 
-    /// Upload view/projection matrices to GPU.
-    pub fn update(&self, backend: &B) {
-        backend.update_buffer(
-            &self.vertex_uniforms_buf,
-            as_bytes(std::slice::from_ref(&self.vertex_uniforms)),
-        );
-    }
-
-    pub fn set_view(&mut self, view: glm::Mat4) {
-        self.vertex_uniforms.view = view;
-    }
-
-    pub fn set_proj(&mut self, proj: glm::Mat4) {
-        self.vertex_uniforms.proj = proj;
-    }
-
-    pub fn set_view_proj(&mut self, view: glm::Mat4, proj: glm::Mat4) {
-        self.vertex_uniforms.view = view;
-        self.vertex_uniforms.proj = proj;
-    }
-
     pub fn create(
         backend: &B,
         shader_source: &B::ShaderSource,
         backbuffer_format: TextureFormat,
     ) -> Result<Self, GpuError> {
-        let pipeline = backend.create_pipeline(&PipelineDesc {
+        let pipeline = backend.create_render_pipeline(&RenderPipelineDesc {
             label: "skybox_pass",
             shader_source,
             vertex_layout: Some(standard_vertex_layout()),
@@ -1053,36 +637,8 @@ impl<B: GpuBackend> SkyBoxPass<B> {
             depth_compare: CompareFunc::LessEqual,
             color_target_formats: &[backbuffer_format],
             depth_format: Some(TextureFormat::Depth32Float),
-            bind_groups: &[
-                // Group 0: vertex frame uniforms (view + proj)
-                &[BindingType::UniformBuffer],
-                // Group 1: per-object (model matrix)
-                &[BindingType::UniformBuffer],
-                // Group 2: cubemap texture
-                &[BindingType::TextureCube, BindingType::Sampler],
-                // Group 3: empty (no fragment uniforms)
-                &[],
-            ],
         })?;
 
-        let vertex_uniforms = ViewProjUniforms {
-            view: glm::identity(),
-            proj: glm::identity(),
-        };
-
-        let vertex_uniforms_buf = backend.create_buffer(
-            &BufferDesc {
-                label: "Skybox ViewProj Uniforms".into(),
-                usage: BufferUsage::Uniform,
-                size: std::mem::size_of::<ViewProjUniforms>(),
-            },
-            Some(as_bytes(std::slice::from_ref(&vertex_uniforms))),
-        )?;
-
-        Ok(SkyBoxPass {
-            pipeline,
-            vertex_uniforms_buf,
-            vertex_uniforms,
-        })
+        Ok(SkyBoxPass { pipeline })
     }
 }

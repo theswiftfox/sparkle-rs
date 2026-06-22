@@ -33,7 +33,6 @@ pub struct Renderer<B: GpuBackend> {
     shadow_program: Option<ShadowPass<B>>,
     skybox_program: Option<SkyBoxPass<B>>,
     skybox: Option<Skybox<B>>,
-    ssao_program: Option<SsaoPass<B>>,
     output_program: Option<OutputPass<B>>,
     /// Path to the currently loaded glTF scene file.
     scene_file: Option<String>,
@@ -137,7 +136,6 @@ impl<B: GpuBackend> Renderer<B> {
             shadow_program: None,
             skybox_program: None,
             skybox: None,
-            ssao_program: None,
             output_program: None,
             scene_file: None,
             backend,
@@ -300,13 +298,6 @@ impl<B: GpuBackend> Renderer<B> {
             &self.ubo_near_far,
             as_bytes(std::slice::from_ref(&self.near_far_cpu)),
         );
-
-        if let Some(ref mut sky) = self.skybox_program {
-            sky.set_proj(proj);
-        }
-        if let Some(ref mut ssao) = self.ssao_program {
-            ssao.set_proj(proj);
-        }
     }
 
     /// Resize the backend and all resolution-dependent render targets.
@@ -317,11 +308,6 @@ impl<B: GpuBackend> Renderer<B> {
         if let Some(ref mut dp) = self.deferred_program_pre {
             if let Err(e) = dp.resize(&self.backend, resolution) {
                 eprintln!("Failed to resize deferred pre targets: {}", e);
-            }
-        }
-        if let Some(ref mut ssao) = self.ssao_program {
-            if let Err(e) = ssao.resize(&self.backend, resolution) {
-                eprintln!("Failed to resize SSAO targets: {}", e);
             }
         }
         if let Some(ref mut dl) = self.deferred_program_light {
@@ -348,8 +334,6 @@ impl<B: GpuBackend> Renderer<B> {
 
         let Shaders {
             deferred_pre,
-            ssao,
-            ssao_blur,
             shadow: shadow_wgsl,
             deferred_light,
             forward,
@@ -366,17 +350,6 @@ impl<B: GpuBackend> Renderer<B> {
             &deferred_pre,
         )?);
         println!("  deferred_pre: OK");
-
-        // SSAO pass (ambient occlusion)
-        if self.settings.ssao {
-            self.ssao_program = Some(SsaoPass::create(
-                &self.backend,
-                resolution,
-                &ssao,
-                &ssao_blur,
-            )?);
-            println!("  ssao: OK");
-        }
 
         // Shadow mapping pass
         self.shadow_program = Some(ShadowPass::create(&self.backend, &shadow_wgsl)?);
@@ -759,22 +732,6 @@ impl<B: GpuBackend> Renderer<B> {
             &self.ubo_skybox_view_proj,
             as_bytes(std::slice::from_ref(&self.skybox_view_proj_cpu)), // This is fine, outside the loop
         );
-
-        // Keep legacy draw program updates (still needed by wgpu path)
-        if let Some(ref mut fwd) = self.forward_program {
-            fwd.set_view(view);
-            fwd.set_camera_pos(pos);
-            fwd.set_ssao(ssao_enabled);
-        }
-
-        if let Some(ref mut dl) = self.deferred_program_light {
-            dl.set_camera_pos(pos);
-            dl.set_ssao(ssao_enabled);
-        }
-        if let Some(ref mut sky) = self.skybox_program {
-            sky.set_view(glm::mat3_to_mat4(&glm::mat4_to_mat3(&view)));
-            sky.update(&self.backend);
-        }
     }
 
     /// Execute the full rendering pipeline for one frame.
@@ -838,60 +795,6 @@ impl<B: GpuBackend> Renderer<B> {
             }
             self.backend.end_render_pass();
             self.backend.end_event();
-        }
-        // SSAO (ambient occlusion)
-        if let Some(ref ssao) = self.ssao_program {
-            if self.settings.ssao {
-                let ssao_rt = ssao.ssao_target().clone();
-                let blur_rt = ssao.blur_target().clone();
-
-                // Bind G-buffer inputs (slot 0 = position, slot 1 = normal+roughness)
-                if let Some(ref dp) = self.deferred_program_pre {
-                    self.backend
-                        .bind_render_target_as_texture(0, dp.positions());
-                    self.backend
-                        .bind_render_target_as_texture(1, dp.normal_roughness());
-                }
-
-                self.backend
-                    .bind_uniform(ShaderStage::Fragment, 0, &ssao.uniforms_buf);
-                self.backend.bind_texture(0, &ssao.noise_texture);
-
-                // Sub-pass 2a: compute raw SSAO
-                self.backend.begin_event("SSAO");
-                self.backend.begin_render_pass(&RenderPassDesc {
-                    label: "ssao",
-                    color_targets: vec![ColorAttachment {
-                        target: &ssao_rt,
-                        load_op: LoadOp::Clear,
-                        clear_color: [1.0, 1.0, 1.0, 1.0],
-                    }],
-                    depth_target: None,
-                });
-                self.backend.set_viewport(&viewport);
-                ssao.prepare_draw_ssao(&mut self.backend);
-                self.screen_quad.draw(&mut self.backend);
-                self.backend.end_render_pass();
-                self.backend.end_event();
-
-                self.backend.bind_render_target_as_texture(0, &ssao_rt);
-
-                // Sub-pass 2b: blur SSAO
-                self.backend.begin_event("SSAO Blur");
-                self.backend.begin_render_pass(&RenderPassDesc {
-                    label: "ssao_blur",
-                    color_targets: vec![ColorAttachment {
-                        target: &blur_rt,
-                        load_op: LoadOp::Clear,
-                        clear_color: [1.0, 1.0, 1.0, 1.0],
-                    }],
-                    depth_target: None,
-                });
-                ssao.prepare_draw_blur(&mut self.backend);
-                self.screen_quad.draw(&mut self.backend);
-                self.backend.end_render_pass();
-                self.backend.end_event();
-            }
         }
 
         // Process lights individually to correctly synchronize shadow mapping and accumulation
@@ -960,10 +863,6 @@ impl<B: GpuBackend> Renderer<B> {
             if let Some(ref sp) = self.shadow_program {
                 self.backend
                     .bind_render_target_as_texture(3, sp.shadow_map());
-            }
-            if let Some(ref ssao) = self.ssao_program {
-                self.backend
-                    .bind_render_target_as_texture(4, ssao.blur_target());
             }
             if let Some(ref dp) = self.deferred_program_pre {
                 self.backend
@@ -1119,8 +1018,8 @@ impl<B: GpuBackend> Renderer<B> {
         if let Some(ref skybox_prog) = self.skybox_program {
             if let Some(ref skybox) = self.skybox {
                 self.backend.begin_event("Skybox");
-                self.backend
-                    .bind_uniform(ShaderStage::Vertex, 0, &skybox_prog.vertex_uniforms_buf);
+                // self.backend
+                //     .bind_uniform(ShaderStage::Vertex, 0, &skybox_prog.vertex_uniforms_buf);
                 self.backend.begin_render_pass(&RenderPassDesc {
                     label: "skybox",
                     color_targets: vec![ColorAttachment {
