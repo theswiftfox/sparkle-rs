@@ -671,7 +671,7 @@ pub struct Drawable<B: GpuBackend> {
     id: usize,
     pub(crate) vertex_buffer: Rc<B::Buffer>,
     pub(crate) index_buffer: Rc<B::Buffer>,
-    index_count: u32,
+    pub(crate) index_count: u32,
     pub(crate) model_buffer: Rc<B::Buffer>,
     model_matrix: glm::Mat4,
     material: Material<B>,

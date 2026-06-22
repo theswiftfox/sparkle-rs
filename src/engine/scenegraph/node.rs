@@ -101,6 +101,24 @@ impl<B: GpuBackend> Node<B> {
         n
     }
 
+    pub fn create_procedural_world(
+        name: Option<&str>,
+        terrain: Drawable<B>,
+        instanced_assets: Vec<IndirectDrawable<B>>,
+    ) -> Node<B> {
+        Node {
+            uuid: 0,
+            name: name.map(String::from),
+            model: glm::Mat4::identity(),
+            model_orig: glm::Mat4::identity(),
+            data: NodeData::ProceduralWorld {
+                terrain,
+                instanced_assets,
+            },
+            children: HashMap::new(),
+        }
+    }
+
     pub fn destroy(&mut self) {
         self.data.clear();
         for (_, mut c) in self.children.drain() {
@@ -317,5 +335,14 @@ impl<B: GpuBackend> Node<B> {
         for (_, c) in &mut self.children {
             c.build_model(backend, &self.model);
         }
+    }
+}
+
+pub fn collect_drawables<B: GpuBackend>(node: &Node<B>, out: &mut Vec<Drawable<B>>) {
+    if let NodeData::StandardMesh(drawables) = &node.data {
+        out.extend(drawables.iter().cloned());
+    }
+    for child in node.children_list() {
+        collect_drawables(child, out);
     }
 }

@@ -2,11 +2,9 @@
 
 use std::{ffi::CString, mem::offset_of};
 
-use egui::IntoAtoms;
-
 use crate::engine::{
     backend::{
-        BlendMode, BufferDesc, BufferUsage, ComputePipelineDesc, Drawable, GpuBackend, GpuError,
+        BlendMode, BufferDesc, BufferUsage, ComputePipelineDesc, GpuBackend, GpuError,
         GpuErrorKind, GpuRenderTarget, GpuTexture, ProceduralShaders, RenderPassDesc,
         RenderPipelineDesc, RenderTargetDesc, SamplerDesc, ShaderStage, Shaders, TextureDesc,
         TextureFormat, ViewportDesc,

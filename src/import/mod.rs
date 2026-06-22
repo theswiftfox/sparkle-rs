@@ -31,6 +31,12 @@ impl ImportError {
     }
 }
 
+impl From<GpuError> for ImportError {
+    fn from(e: GpuError) -> Self {
+        ImportError::from("GpuError", &e.message)
+    }
+}
+
 struct GltfImporter<'a, B: GpuBackend> {
     buffers: Vec<gltf::buffer::Data>,
     images: Vec<gltf::image::Data>,

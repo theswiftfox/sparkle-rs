@@ -437,6 +437,70 @@ impl<B: GpuBackend> Renderer<B> {
         Ok(())
     }
 
+    /// Load a procedurally generated world.
+    pub fn load_procedural_scene(&mut self) -> Result<(), import::ImportError> {
+        use crate::engine::procedural::{load_procedural_world, AssetConfig, ProceduralConfig};
+
+        let config = ProceduralConfig {
+            assets: vec![
+                AssetConfig {
+                    path: "assets/procedural/tree/tree_small_02_4k.gltf".into(),
+                    max_count: 500,
+                },
+                AssetConfig {
+                    path: "assets/procedural/rocks/rock_moss_set_02_2k.gltf".into(),
+                    max_count: 1000,
+                },
+                AssetConfig {
+                    path: "assets/procedural/grass/grass_medium_01_2k.gltf".into(),
+                    max_count: 2000,
+                },
+            ],
+            input_seed: "default".into(),
+            terrain_dir: "assets/procedural/terrain".into(),
+            world_dimension: 512.0,
+            terrain_segments: 64,
+        };
+
+        println!("Generating procedural world...");
+        let sg = load_procedural_world(&self.backend, &config)?;
+        self.scene = sg;
+        self.scene_file = Some("__procedural__".into());
+
+        self.scene.add_light(Light {
+            color: glm::vec3(0.25, 0.25, 0.25),
+            ..Light::default()
+        });
+        let shadow_dist = 20.0;
+        self.scene.add_light(Light {
+            position: glm::vec3(-0.15, -0.5, -0.05).normalize(),
+            t: LightType::Directional,
+            color: glm::vec3(23.47, 21.31, 20.79),
+            radius: 1.0,
+            light_proj: glm::ortho_zo(
+                -shadow_dist,
+                shadow_dist,
+                -shadow_dist,
+                shadow_dist,
+                1.0,
+                2.5 * self.shadow_dist,
+            ),
+        });
+
+        self.scene.build_matrices(&self.backend);
+
+        println!("Loading skybox...");
+        match Skybox::load(&self.backend) {
+            Ok(sky) => self.skybox = Some(sky),
+            Err(e) => println!(
+                "Warning: skybox loading failed: {} (continuing without skybox)",
+                e
+            ),
+        }
+
+        Ok(())
+    }
+
     /// Load a minimal test scene: a textured unit cube at the origin.
     ///
     /// Bypasses glTF import entirely to verify the render pipeline works

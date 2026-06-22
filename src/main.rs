@@ -13,7 +13,7 @@ use std::{
     io::{Read as _, Write as _},
     sync::{
         Arc,
-        atomic::Ordering,
+        atomic::{AtomicBool, Ordering},
         mpsc::{Receiver, RecvTimeoutError, TryRecvError},
     },
     time::{Duration, Instant},
@@ -39,7 +39,7 @@ fn pause() {
 
 /// Drain channel to get the latest FrameData, discarding older ones.
 /// Returns None if channel is disconnected (quit signal).
-fn drain_latest(receiver: &Receiver<FrameData>) -> Result<FrameData, ()> {
+fn drain_latest(receiver: &Receiver<FrameData>, quit_flag: &AtomicBool) -> Result<FrameData, ()> {
     // First, block until we get at least one frame
     let mut latest = match receiver.recv() {
         Ok(f) => f,
@@ -48,6 +48,9 @@ fn drain_latest(receiver: &Receiver<FrameData>) -> Result<FrameData, ()> {
 
     // Then drain any additional queued frames (keep latest state)
     loop {
+        if quit_flag.load(Ordering::SeqCst) {
+            return Err(()); // quit signal received
+        }
         match receiver.try_recv() {
             Ok(mut newer) => {
                 // Merge edit commands from older frame into newer
@@ -118,7 +121,7 @@ fn apply_edit_commands<B: GpuBackend>(commands: EditCommands, renderer: &mut Ren
     }
 }
 
-fn vk_render_loop(channels: RenderChannels, settings: Settings) {
+fn vk_render_loop(channels: RenderChannels, settings: Settings, procedural_mode: bool) {
     let RenderChannels {
         frame_receiver,
         cmd_sender: _,
@@ -147,7 +150,7 @@ fn vk_render_loop(channels: RenderChannels, settings: Settings) {
     // Create renderer + editor renderer
     // Note: egui::Context is cheap to clone (it's Arc-based)
     let (mut renderer, editor_renderer) =
-        match create_vk_renderer(&window, egui_ctx.clone(), &settings) {
+        match create_vk_renderer(&window, egui_ctx.clone(), &settings, procedural_mode) {
             Ok((r, er)) => (r, er),
             Err(e) => {
                 eprintln!("Failed to create VK renderer: {}", e);
@@ -165,7 +168,7 @@ fn vk_render_loop(channels: RenderChannels, settings: Settings) {
             break;
         }
 
-        let frame = match drain_latest(&frame_receiver) {
+        let frame = match drain_latest(&frame_receiver, &quit_flag) {
             Ok(f) => f,
             Err(()) => break, // channel closed = quit
         };
@@ -257,6 +260,7 @@ fn create_vk_renderer(
     window: &Arc<Window>,
     egui_ctx: egui::Context,
     settings: &Settings,
+    procedural_mode: bool,
 ) -> Result<(Renderer<VulkanBackend>, EditorRenderer), Box<dyn std::error::Error>> {
     let vk_backend = engine::vulkan_backend::initialize(Arc::clone(window), settings)?;
     let mut renderer = engine::renderer::Renderer::create(vk_backend, settings.clone())?;
@@ -276,10 +280,17 @@ fn create_vk_renderer(
     let editor_renderer = EditorRenderer::new(egui_ctx);
 
     let scene_path = "assets/glTF/Sponza.gltf";
-    match renderer.load_scene(scene_path) {
-        Ok(()) => println!("Scene loaded: {}", scene_path),
-        Err(e) => {
-            eprintln!("Warning: scene loading failed: {}", e);
+    if procedural_mode {
+        match renderer.load_procedural_scene() {
+            Ok(()) => println!("Procedural world loaded"),
+            Err(e) => eprintln!("Warning: procedural world failed: {}", e),
+        }
+    } else {
+        match renderer.load_scene(scene_path) {
+            Ok(()) => println!("Scene loaded: {}", scene_path),
+            Err(e) => {
+                eprintln!("Warning: scene loading failed: {}", e);
+            }
         }
     }
 
@@ -287,6 +298,7 @@ fn create_vk_renderer(
 }
 
 fn run_vulkan() -> Result<(), Box<dyn std::error::Error>> {
+    let procedural_mode = std::env::args().any(|a| a == "--procedural");
     let settings = engine::settings::Settings::load();
     let (width, height) = settings.resolution;
 
@@ -309,7 +321,7 @@ fn run_vulkan() -> Result<(), Box<dyn std::error::Error>> {
 
     let render_thread = {
         std::thread::spawn(move || {
-            vk_render_loop(channels, settings);
+            vk_render_loop(channels, settings, procedural_mode);
         })
     };
 
@@ -318,6 +330,7 @@ fn run_vulkan() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // drop app so channels are closed
+    #[cfg(not(target_os = "macos"))]
     drop(app);
 
     quit_flag.store(true, Ordering::SeqCst);
