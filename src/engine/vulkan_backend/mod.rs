@@ -24,6 +24,7 @@ mod buffer;
 mod egui;
 mod gpu_backend_impl;
 mod image_layout_transition;
+mod rt;
 mod texture;
 mod util;
 
@@ -41,6 +42,12 @@ const REQUIRED_EXTS: [&CStr; 3] = [
     ash::vk::KHR_SYNCHRONIZATION2_NAME,
     // ash::vk::EXT_SWAPCHAIN_COLORSPACE_NAME,
     // ash::vk::EXT_HDR_METADATA_NAME,
+];
+
+const RT_EXTS: [&CStr; 3] = [
+    ash::vk::KHR_ACCELERATION_STRUCTURE_NAME,
+    ash::vk::KHR_RAY_TRACING_PIPELINE_NAME,
+    ash::vk::KHR_DEFERRED_HOST_OPERATIONS_NAME,
 ];
 
 const FRAMES_IN_FLIGHT: u32 = 2u32;
@@ -65,6 +72,7 @@ struct LogicalDevice {
     device: ash::Device,
     main_queue_index: u32,
     debug_utils_ext: Option<ash::ext::debug_utils::Device>,
+    rt_supported: bool,
 }
 
 impl LogicalDevice {
@@ -274,24 +282,31 @@ impl Default for SpecializationConstants {
 #[derive(Clone)]
 pub struct VulkanHandleTracker {
     device: Arc<Mutex<ash::Device>>,
+    ac_device: Arc<Mutex<Option<ash::khr::acceleration_structure::Device>>>,
     active_samplers: Arc<Mutex<HashSet<ash::vk::Sampler>>>,
     active_image_views: Arc<Mutex<HashSet<ash::vk::ImageView>>>,
     active_images: Arc<Mutex<HashSet<ash::vk::Image>>>,
     active_device_memory: Arc<Mutex<HashSet<ash::vk::DeviceMemory>>>,
     active_buffers: Arc<Mutex<HashSet<ash::vk::Buffer>>>,
     active_pipelines: Arc<Mutex<HashSet<ash::vk::Pipeline>>>,
+    acceleration_structures: Arc<Mutex<HashSet<ash::vk::AccelerationStructureKHR>>>,
 }
 
 impl VulkanHandleTracker {
-    pub fn new(device: ash::Device) -> Self {
+    pub fn new(
+        device: ash::Device,
+        ac_device: Option<ash::khr::acceleration_structure::Device>,
+    ) -> Self {
         VulkanHandleTracker {
             device: Arc::new(Mutex::new(device)),
+            ac_device: Arc::new(Mutex::new(ac_device)),
             active_samplers: Arc::new(Mutex::new(HashSet::new())),
             active_image_views: Arc::new(Mutex::new(HashSet::new())),
             active_images: Arc::new(Mutex::new(HashSet::new())),
             active_device_memory: Arc::new(Mutex::new(HashSet::new())),
             active_buffers: Arc::new(Mutex::new(HashSet::new())),
             active_pipelines: Arc::new(Mutex::new(HashSet::new())),
+            acceleration_structures: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -343,6 +358,14 @@ impl VulkanHandleTracker {
         crate_utils::mtx_lock(&self.active_pipelines).remove(&pipeline);
     }
 
+    pub fn register_acceleration_structure(&self, structure: ash::vk::AccelerationStructureKHR) {
+        crate_utils::mtx_lock(&self.acceleration_structures).insert(structure);
+    }
+
+    pub fn unregister_acceleration_structure(&self, structure: ash::vk::AccelerationStructureKHR) {
+        crate_utils::mtx_lock(&self.acceleration_structures).remove(&structure);
+    }
+
     pub fn cleanup_leftover(&self) {
         for pipeline in crate_utils::mtx_lock(&self.active_pipelines).drain() {
             unsafe { crate_utils::mtx_lock(&self.device).destroy_pipeline(pipeline, None) };
@@ -362,6 +385,13 @@ impl VulkanHandleTracker {
         }
         for mem in crate_utils::mtx_lock(&self.active_device_memory).drain() {
             unsafe { crate_utils::mtx_lock(&self.device).free_memory(mem, None) };
+        }
+        if let Some(ac_device) = crate_utils::mtx_lock(&self.ac_device).as_ref() {
+            for accel_struct in crate_utils::mtx_lock(&self.acceleration_structures).drain() {
+                unsafe {
+                    ac_device.destroy_acceleration_structure(accel_struct, None);
+                }
+            }
         }
     }
 }
@@ -388,6 +418,7 @@ pub struct VulkanBackend {
     texture_registry: RefCell<TextureRegistry>,
     egui_renderer: Option<egui::EguiRenderer>,
     vulkan_handle_tracker: VulkanHandleTracker,
+    rt_properties: Option<rt::RtDeviceProperties>,
 }
 
 impl Drop for VulkanBackend {
@@ -512,19 +543,29 @@ pub fn initialize(window: Arc<Window>, settings: &Settings) -> Result<VulkanBack
         instance.debug_messenger = Some(setup_debug_messenger(&context, &instance)?);
     }
 
-    let physical_device = get_physical_device(&instance)?;
+    let (physical_device, rt_props) = get_physical_device(&instance)?;
+    let rt_supported = rt_props.is_some();
     println!("Physical device selected successfully");
 
     let surface = util::create_surface(&context, &instance, &window)?;
     println!("Surface created successfully");
 
-    let logical_device = create_logical_device(&context, &instance, physical_device, surface)?;
+    let logical_device =
+        create_logical_device(&context, &instance, physical_device, surface, rt_supported)?;
     println!("Logical device created successfully");
 
     let queue = logical_device.get_main_queue();
     println!("Graphics queue retrieved successfully");
 
-    let vk_handle_tracker = VulkanHandleTracker::new(logical_device.device.clone());
+    let ac_device = if logical_device.rt_supported {
+        Some(ash::khr::acceleration_structure::Device::new(
+            &instance,
+            &logical_device.device,
+        ))
+    } else {
+        None
+    };
+    let vk_handle_tracker = VulkanHandleTracker::new(logical_device.device.clone(), ac_device);
 
     let (swapchain, depth_targets) = create_swapchain_and_depth_buffer(
         &context,
@@ -603,6 +644,7 @@ pub fn initialize(window: Arc<Window>, settings: &Settings) -> Result<VulkanBack
         texture_registry: RefCell::new(TextureRegistry::new()),
         egui_renderer: None,
         vulkan_handle_tracker: vk_handle_tracker,
+        rt_properties: rt_props,
     })
 }
 
@@ -1374,6 +1416,7 @@ fn create_logical_device(
     instance: &Instance,
     physical_device: ash::vk::PhysicalDevice,
     surface: ash::vk::SurfaceKHR,
+    with_rt: bool,
 ) -> Result<LogicalDevice, GpuError> {
     let queue_fam_props =
         unsafe { instance.get_physical_device_queue_family_properties(physical_device) };
@@ -1412,16 +1455,38 @@ fn create_logical_device(
         ..Default::default()
     };
 
-    let mut ext_state_struct = ash::vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT {
-        extended_dynamic_state: ash::vk::TRUE,
+    let mut accel_features = ash::vk::PhysicalDeviceAccelerationStructureFeaturesKHR {
+        acceleration_structure: ash::vk::TRUE,
         ..Default::default()
     };
+    let mut rt_features = ash::vk::PhysicalDeviceRayTracingPipelineFeaturesKHR {
+        ray_tracing_pipeline: ash::vk::TRUE,
+        p_next: &mut accel_features as *mut _ as *mut _,
+        ..Default::default()
+    };
+
+    let mut vk_12_feats = ash::vk::PhysicalDeviceVulkan12Features {
+        buffer_device_address: ash::vk::TRUE,
+        ..Default::default()
+    };
+
+    if with_rt {
+        vk_12_feats.p_next = &mut rt_features as *mut _ as *mut _;
+    }
+
+    let mut ext_state_struct = ash::vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT {
+        extended_dynamic_state: ash::vk::TRUE,
+        p_next: &mut vk_12_feats as *mut _ as *mut std::ffi::c_void,
+        ..Default::default()
+    };
+
     let mut vk_13_feats = ash::vk::PhysicalDeviceVulkan13Features {
         dynamic_rendering: ash::vk::TRUE,
         synchronization2: ash::vk::TRUE,
         p_next: &mut ext_state_struct as *mut _ as *mut std::ffi::c_void,
         ..Default::default()
     };
+
     let mut indexing_feats = ash::vk::PhysicalDeviceDescriptorIndexingFeatures {
         descriptor_binding_uniform_buffer_update_after_bind: ash::vk::TRUE,
         descriptor_binding_partially_bound: ash::vk::TRUE,
@@ -1448,17 +1513,18 @@ fn create_logical_device(
         p_next: &mut shader_float16_feats as *mut _ as *mut std::ffi::c_void,
         ..Default::default()
     };
-    let device_exts = REQUIRED_EXTS;
-    let device_exts_ptr = device_exts
-        .iter()
-        .map(|ext| ext.as_ptr())
-        .collect::<Vec<_>>();
+    let required_exts = if with_rt {
+        REQUIRED_EXTS.iter().chain(RT_EXTS.iter())
+    } else {
+        REQUIRED_EXTS.iter().chain([].iter())
+    };
+    let device_exts_ptr = required_exts.map(|ext| ext.as_ptr()).collect::<Vec<_>>();
 
     let create_info = ash::vk::DeviceCreateInfo {
         p_next: &mut base_struct as *mut _ as *mut std::ffi::c_void,
         queue_create_info_count: 1,
         p_queue_create_infos: &queue_info,
-        enabled_extension_count: device_exts.len() as u32,
+        enabled_extension_count: device_exts_ptr.len() as u32,
         pp_enabled_extension_names: device_exts_ptr.as_ptr(),
         ..Default::default()
     };
@@ -1481,10 +1547,13 @@ fn create_logical_device(
         device,
         main_queue_index: idx as u32,
         debug_utils_ext,
+        rt_supported: with_rt,
     })
 }
 
-fn get_physical_device(instance: &ash::Instance) -> Result<ash::vk::PhysicalDevice, GpuError> {
+fn get_physical_device(
+    instance: &ash::Instance,
+) -> Result<(ash::vk::PhysicalDevice, Option<rt::RtDeviceProperties>), GpuError> {
     let devices = unsafe { instance.enumerate_physical_devices() }.map_err(|e| {
         GpuError::new(
             format!("Failed to enumerate physical devices: {:?}", e),
@@ -1558,6 +1627,20 @@ fn get_physical_device(instance: &ash::Instance) -> Result<ash::vk::PhysicalDevi
                 );
                 return None;
             }
+            let mut with_rt = true;
+            if let Some(ext) = RT_EXTS.iter().find(|ext| {
+                !device_exts.iter().any(|prop| {
+                    let extension_name = unsafe { CStr::from_ptr(prop.extension_name.as_ptr()) };
+                    extension_name == **ext
+                })
+            }) {
+                println!(
+                    "Physical device {:?} does not support raytracing extension {}, skipping",
+                    device,
+                    ext.to_string_lossy()
+                );
+                with_rt = false;
+            }
 
             // check additional required features
             // check for update after bind on storage buffers
@@ -1601,10 +1684,10 @@ fn get_physical_device(instance: &ash::Instance) -> Result<ash::vk::PhysicalDevi
                 && features.sampler_anisotropy == ash::vk::TRUE;
 
             println!(
-                "Evaluated physical device {:?}: type={:?}, discrete={}, preferred_features={}",
-                device, properties.device_type, discrete, has_preferred_features
+                "Evaluated physical device {:?}: type={:?}, discrete={}, preferred_features={}, raytracing={}",
+                device, properties.device_type, discrete, has_preferred_features, with_rt
             );
-            Some((*device, discrete, is_gpu, has_preferred_features))
+            Some((*device, discrete, is_gpu, has_preferred_features, with_rt))
         })
         .collect::<Vec<_>>();
 
@@ -1616,13 +1699,15 @@ fn get_physical_device(instance: &ash::Instance) -> Result<ash::vk::PhysicalDevi
     }
 
     // rank devices by discrete > integrated, then by having preferred features
-    let best_device = evaluated_devices
+    let (best_device, _, _, _, with_rt) = evaluated_devices
         .into_iter()
-        .max_by_key(|(_, discrete, is_gpu, has_features)| {
-            (*discrete as u8) << 3 | (*is_gpu as u8) << 2 | (*has_features as u8)
+        .max_by_key(|(_, discrete, is_gpu, has_features, with_rt)| {
+            (*discrete as u8) << 4
+                | (*with_rt as u8) << 3
+                | (*is_gpu as u8) << 2
+                | (*has_features as u8)
         })
-        .unwrap()
-        .0;
+        .unwrap();
 
     let properties = unsafe { instance.get_physical_device_properties(best_device) };
     let mem_properties = unsafe { instance.get_physical_device_memory_properties(best_device) };
@@ -1642,11 +1727,36 @@ fn get_physical_device(instance: &ash::Instance) -> Result<ash::vk::PhysicalDevi
     let vram_gib = vram_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
     let major = ash::vk::api_version_major(properties.api_version);
     let minor = ash::vk::api_version_minor(properties.api_version);
+
+    let rt_props = if with_rt {
+        let mut rt_pipeline_props =
+            ash::vk::PhysicalDeviceRayTracingPipelinePropertiesKHR::default();
+        let mut accel_props = ash::vk::PhysicalDeviceAccelerationStructurePropertiesKHR {
+            p_next: &mut rt_pipeline_props as *mut _ as *mut _,
+            ..Default::default()
+        };
+        let mut props2 = ash::vk::PhysicalDeviceProperties2 {
+            p_next: &mut accel_props as *mut _ as *mut _,
+            ..Default::default()
+        };
+        unsafe { instance.get_physical_device_properties2(best_device, &mut props2) };
+        Some(rt::RtDeviceProperties {
+            min_scratch_offset_alignment: accel_props
+                .min_acceleration_structure_scratch_offset_alignment,
+            shader_group_handle_size: rt_pipeline_props.shader_group_handle_size,
+            shader_group_base_alignment: rt_pipeline_props.shader_group_base_alignment,
+            shader_group_handle_alignment: rt_pipeline_props.shader_group_handle_alignment,
+            max_ray_recursion_depth: rt_pipeline_props.max_ray_recursion_depth,
+        })
+    } else {
+        None
+    };
+
     println!("Selected GPU: {device_name} ({device_type_str})");
     println!("  Vulkan: {major}.{minor}");
     println!("  VRAM: {vram_gib:.1} GiB");
 
-    Ok(best_device)
+    Ok((best_device, rt_props))
 }
 
 fn create_instance(

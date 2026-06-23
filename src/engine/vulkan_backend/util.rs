@@ -471,6 +471,12 @@ impl VulkanBackend {
         })?;
 
         let mem_reqs = unsafe { device.get_buffer_memory_requirements(buffer) };
+
+        let needs_device_address = usage.contains(ash::vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
+        let mut alloc_flags = ash::vk::MemoryAllocateFlagsInfo {
+            flags: ash::vk::MemoryAllocateFlags::DEVICE_ADDRESS,
+            ..Default::default()
+        };
         let alloc_info = ash::vk::MemoryAllocateInfo {
             allocation_size: mem_reqs.size,
             memory_type_index: Self::find_memory_type(
@@ -479,6 +485,11 @@ impl VulkanBackend {
                 mem_reqs.memory_type_bits,
                 properties,
             )?,
+            p_next: if needs_device_address {
+                &mut alloc_flags as *mut _ as *mut std::ffi::c_void
+            } else {
+                std::ptr::null_mut()
+            },
             ..Default::default()
         };
         let device_mem = unsafe { device.allocate_memory(&alloc_info, None) }.map_err(|e| {

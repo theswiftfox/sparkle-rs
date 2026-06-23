@@ -412,6 +412,7 @@ pub trait GpuBackend: Sized + 'static {
     type Buffer: GpuBuffer;
     type Pipeline;
     type ShaderSource;
+    type AccelerationStructure;
 
     /// load shaders
     fn load_shaders(&self) -> Shaders<Self>;
@@ -587,6 +588,25 @@ pub trait GpuBackend: Sized + 'static {
 
     /// End the current debug event region.
     fn end_event(&self) {}
+
+    // raytracing
+    fn has_rt_support(&self) -> bool;
+
+    fn create_acceleration_structures(
+        &self,
+        ty: AccelerationStructureType,
+        render_items: &[RenderItem<'_, Self>],
+    ) -> Result<Vec<Self::AccelerationStructure>, GpuError>;
+
+    /// Build a top-level acceleration structure from a set of BLAS instances.
+    ///
+    /// `blas` and `transforms` must have the same length.
+    /// Each entry pairs a BLAS with its world-space transform matrix.
+    fn create_tlas(
+        &self,
+        blas: &[Self::AccelerationStructure],
+        transforms: &[glm::Mat4],
+    ) -> Result<Self::AccelerationStructure, GpuError>;
 }
 
 pub struct Shaders<B: GpuBackend> {
@@ -600,6 +620,12 @@ pub struct Shaders<B: GpuBackend> {
 
 pub struct ProceduralShaders<B: GpuBackend> {
     pub scattering: B::ShaderSource,
+}
+
+#[derive(Clone, Copy)]
+pub enum AccelerationStructureType {
+    Blas,
+    Tlas,
 }
 
 // Material
@@ -682,6 +708,7 @@ static DRAWABLE_ID: AtomicUsize = AtomicUsize::new(0);
 pub struct Drawable<B: GpuBackend> {
     id: usize,
     pub(crate) vertex_buffer: Rc<B::Buffer>,
+    pub(crate) vertex_count: u32,
     pub(crate) index_buffer: Rc<B::Buffer>,
     pub(crate) index_count: u32,
     pub(crate) model_buffer: Rc<B::Buffer>,
@@ -698,6 +725,7 @@ impl<B: GpuBackend> Clone for Drawable<B> {
         Self {
             id: self.id.clone(),
             vertex_buffer: self.vertex_buffer.clone(),
+            vertex_count: self.vertex_count,
             index_buffer: self.index_buffer.clone(),
             index_count: self.index_count.clone(),
             model_buffer: self.model_buffer.clone(),
@@ -753,6 +781,7 @@ impl<B: GpuBackend> Drawable<B> {
         Ok(Drawable {
             id: DRAWABLE_ID.fetch_add(1, Ordering::SeqCst),
             vertex_buffer: Rc::new(vertex_buffer),
+            vertex_count: vertex_data.len() as u32,
             index_buffer: Rc::new(index_buffer),
             index_count: indices.len() as u32,
             model_buffer: Rc::new(model_buffer),
@@ -809,6 +838,11 @@ impl<B: GpuBackend> Drawable<B> {
     pub fn add_texture(&mut self, slot: u32, tex: Rc<B::Texture>) {
         self.material.add_texture(slot, tex);
     }
+
+    /// Returns the current world-space model matrix for this drawable.
+    pub fn model_matrix(&self) -> &glm::Mat4 {
+        &self.model_matrix
+    }
 }
 
 impl<B: GpuBackend> PartialEq for Drawable<B> {
@@ -835,8 +869,9 @@ impl<B: GpuBackend> PartialOrd for Drawable<B> {
 pub struct IndirectDrawable<B: GpuBackend> {
     id: usize,
     pub(crate) vertex_buffer: Rc<B::Buffer>,
+    pub(crate) vertex_count: u32,
     pub(crate) index_buffer: Rc<B::Buffer>,
-    index_count: u32,
+    pub(crate) index_count: u32,
 
     /// The SSBO filled by the compute shader containing `Vec<glm::Mat4>`
     pub(crate) instance_matrix_buffer: Rc<B::Buffer>,
@@ -855,6 +890,7 @@ impl<B: GpuBackend> Clone for IndirectDrawable<B> {
         Self {
             id: self.id,
             vertex_buffer: self.vertex_buffer.clone(),
+            vertex_count: self.vertex_count,
             index_buffer: self.index_buffer.clone(),
             index_count: self.index_count.clone(),
             instance_matrix_buffer: self.instance_matrix_buffer.clone(),
@@ -876,6 +912,7 @@ impl<B: GpuBackend> IndirectDrawable<B> {
         let Drawable {
             id,
             vertex_buffer,
+            vertex_count,
             index_buffer,
             index_count,
             material,
@@ -887,6 +924,7 @@ impl<B: GpuBackend> IndirectDrawable<B> {
         Self {
             id: id,
             vertex_buffer: vertex_buffer,
+            vertex_count,
             index_buffer: index_buffer,
             index_count: index_count,
             instance_matrix_buffer: Rc::new(instance_matrix_buffer),
@@ -968,6 +1006,40 @@ impl<'a, B: GpuBackend> RenderItem<'a, B> {
             RenderItem::Indirect(indirect_drawable) => {
                 indirect_drawable.draw_indirect(backend, rebind_material)
             }
+        }
+    }
+
+    pub fn vertex_buffer(&self) -> Rc<B::Buffer> {
+        match self {
+            RenderItem::Standard(drawable) => drawable.vertex_buffer.clone(),
+            RenderItem::Indirect(indirect_drawable) => indirect_drawable.vertex_buffer.clone(),
+        }
+    }
+    pub fn index_buffer(&self) -> Rc<B::Buffer> {
+        match self {
+            RenderItem::Standard(drawable) => drawable.index_buffer.clone(),
+            RenderItem::Indirect(indirect_drawable) => indirect_drawable.index_buffer.clone(),
+        }
+    }
+    pub fn vertex_count(&self) -> u32 {
+        match self {
+            RenderItem::Standard(drawable) => drawable.vertex_count,
+            RenderItem::Indirect(indirect_drawable) => indirect_drawable.vertex_count,
+        }
+    }
+    pub fn index_count(&self) -> u32 {
+        match self {
+            RenderItem::Standard(drawable) => drawable.index_count,
+            RenderItem::Indirect(indirect_drawable) => indirect_drawable.index_count,
+        }
+    }
+
+    /// Returns the world-space model matrix for this render item.
+    /// For Indirect drawables, returns identity (no per-instance matrix at this level).
+    pub fn model_matrix(&self) -> glm::Mat4 {
+        match self {
+            RenderItem::Standard(drawable) => *drawable.model_matrix(),
+            RenderItem::Indirect(_) => glm::identity(),
         }
     }
 }

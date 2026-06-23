@@ -50,6 +50,9 @@ pub struct Renderer<B: GpuBackend> {
     camera_pixel_cpu: CameraUniforms,
     skybox_view_proj_cpu: ViewProjUniforms,
     near_far_cpu: NearFarUniforms,
+    // Ray tracing acceleration structures (built once after scene load)
+    blas: Vec<B::AccelerationStructure>,
+    tlas: Option<B::AccelerationStructure>,
 }
 
 impl<B: GpuBackend> Renderer<B> {
@@ -150,6 +153,8 @@ impl<B: GpuBackend> Renderer<B> {
             camera_pixel_cpu,
             skybox_view_proj_cpu,
             near_far_cpu,
+            blas: Vec::new(),
+            tlas: None,
         })
     }
 
@@ -387,6 +392,64 @@ impl<B: GpuBackend> Renderer<B> {
         Ok(())
     }
 
+    /// Build one BLAS per drawable in the current scene.
+    ///
+    /// Safe to call only after the scene is loaded and matrices are built.
+    /// No-op if RT is not supported on this backend.
+    fn build_blas(&mut self) {
+        if !self.backend.has_rt_support() {
+            return;
+        }
+        println!("Building BLAS(es) for Scene");
+
+        let render_items = match self.scene.traverse() {
+            Ok(items) => items,
+            Err(_) => return,
+        };
+        match self
+            .backend
+            .create_acceleration_structures(AccelerationStructureType::Blas, &render_items)
+        {
+            Ok(blas) => {
+                println!("Built {} BLAS(es)", blas.len());
+                self.blas = blas;
+            }
+            Err(e) => {
+                println!("Warning: BLAS build failed: {} (continuing without RT)", e);
+            }
+        }
+    }
+
+    /// Build the single TLAS from all BLASes and their world transforms.
+    ///
+    /// Must be called after `build_blas`. No-op if no BLASes are available.
+    fn build_tlas(&mut self) {
+        if self.blas.is_empty() {
+            return;
+        }
+        println!("Building TLAS for scene");
+        let render_items = match self.scene.traverse() {
+            Ok(items) => items,
+            Err(_) => return,
+        };
+        // Collect world transforms in the same order as traverse() returned items,
+        // which is the same order create_acceleration_structures used.
+        let transforms: Vec<glm::Mat4> = render_items
+            .iter()
+            .map(|item| item.model_matrix())
+            .collect();
+
+        match self.backend.create_tlas(&self.blas, &transforms) {
+            Ok(tlas) => {
+                println!("Built TLAS with {} instances", self.blas.len());
+                self.tlas = Some(tlas);
+            }
+            Err(e) => {
+                println!("Warning: TLAS build failed: {} (continuing without RT)", e);
+            }
+        }
+    }
+
     /// Load a glTF scene file.
     pub fn load_scene(&mut self, scene_file: &str) -> Result<(), import::ImportError> {
         println!("Reading scene file...");
@@ -419,13 +482,18 @@ impl<B: GpuBackend> Renderer<B> {
 
         self.scene.build_matrices(&self.backend);
 
+        // Build ray tracing acceleration structures if supported
+        self.build_blas();
+        self.build_tlas();
+
         // Compute scene-wide half-diagonal from world AABB to size the skybox cube.
         // Falls back to shadow_dist if AABB is empty (e.g. no static meshes).
         let sky_scale = if let Some(root) = self.scene.root() {
             let aabb = root.world_aabb();
             if !aabb.is_empty() {
                 let extent = aabb.max - aabb.min;
-                let half_diag = (extent.x.powi(2) + extent.y.powi(2) + extent.z.powi(2)).sqrt() * 0.5;
+                let half_diag =
+                    (extent.x.powi(2) + extent.y.powi(2) + extent.z.powi(2)).sqrt() * 0.5;
                 half_diag.max(self.shadow_dist)
             } else {
                 self.shadow_dist
@@ -554,7 +622,8 @@ impl<B: GpuBackend> Renderer<B> {
             let aabb = root.world_aabb();
             if !aabb.is_empty() {
                 let extent = aabb.max - aabb.min;
-                let half_diag = (extent.x.powi(2) + extent.y.powi(2) + extent.z.powi(2)).sqrt() * 0.5;
+                let half_diag =
+                    (extent.x.powi(2) + extent.y.powi(2) + extent.z.powi(2)).sqrt() * 0.5;
                 half_diag.max(self.shadow_dist)
             } else {
                 self.shadow_dist

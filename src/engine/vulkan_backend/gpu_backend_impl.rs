@@ -4,18 +4,20 @@ use std::{ffi::CString, mem::offset_of};
 
 use crate::engine::{
     backend::{
-        BlendMode, BufferDesc, BufferUsage, ComputePipelineDesc, GpuBackend, GpuError,
-        GpuErrorKind, GpuRenderTarget, GpuTexture, MaterialProperties, ProceduralShaders,
-        RenderPassDesc, RenderPipelineDesc, RenderTargetDesc, SamplerDesc, ShaderStage, Shaders,
-        TextureDesc, TextureFormat, ViewportDesc, as_bytes,
+        AccelerationStructureType, BlendMode, BufferDesc, BufferUsage, ComputePipelineDesc,
+        GpuBackend, GpuError, GpuErrorKind, GpuRenderTarget, GpuTexture, MaterialProperties,
+        ProceduralShaders, RenderItem, RenderPassDesc, RenderPipelineDesc, RenderTargetDesc,
+        SamplerDesc, ShaderStage, Shaders, TextureDesc, TextureFormat, ViewportDesc, as_bytes,
     },
     compute_push::ComputePushConstants,
+    geometry::Vertex,
     vulkan_backend::{
         CurrentFrame, ENABLE_MARKER, FRAMES_IN_FLIGHT, GAMMA_DEFAULT, PushConstants,
         SHADER_ENTRY_POINT, SpecializationConstants, VulkanBackend,
         buffer::{self, VulkanBuffer},
         create_shader_module,
         egui::{EguiRenderer, build_egui_batches},
+        rt,
         texture::VulkanTexture,
         util::gpu_error_out_of_range,
     },
@@ -92,6 +94,8 @@ impl GpuBackend for VulkanBackend {
     type Pipeline = VulkanPipeline;
 
     type ShaderSource = Vec<Shader>;
+
+    type AccelerationStructure = rt::AccelerationStructure;
 
     fn load_shaders(&self) -> Shaders<Self> {
         let deferred_pre_vtx = Shader {
@@ -208,12 +212,19 @@ impl GpuBackend for VulkanBackend {
         desc: &BufferDesc,
         data: Option<&[u8]>,
     ) -> Result<Self::Buffer, GpuError> {
-        let usage = ash::vk::BufferUsageFlags::TRANSFER_DST | desc.usage.into();
+        let mut usage = ash::vk::BufferUsageFlags::TRANSFER_DST | desc.usage.into();
         let mut flags = ash::vk::MemoryPropertyFlags::DEVICE_LOCAL;
         if desc.usage == BufferUsage::Uniform {
             flags = flags
                 | ash::vk::MemoryPropertyFlags::HOST_VISIBLE
                 | ash::vk::MemoryPropertyFlags::HOST_COHERENT;
+        }
+        if (desc.usage == BufferUsage::Vertex || desc.usage == BufferUsage::Index)
+            && self.device.rt_supported
+        {
+            usage = usage
+                | ash::vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
+                | ash::vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS;
         }
         let mut buffer = self.create_vulkan_buffer(desc.size as u64, usage, flags)?;
 
@@ -2043,6 +2054,627 @@ impl GpuBackend for VulkanBackend {
         unsafe {
             self.device.cmd_end_rendering(command_buffer);
         }
+    }
+
+    // RT
+    fn has_rt_support(&self) -> bool {
+        self.device.rt_supported
+    }
+
+    fn create_acceleration_structures(
+        &self,
+        ty: AccelerationStructureType,
+        render_items: &[RenderItem<'_, Self>],
+    ) -> Result<Vec<Self::AccelerationStructure>, GpuError> {
+        if render_items.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let rt_props = self.rt_properties.as_ref().ok_or_else(|| {
+            GpuError::new(
+                "Ray tracing not supported on this device",
+                GpuErrorKind::Other,
+            )
+        })?;
+
+        let as_ty: ash::vk::AccelerationStructureTypeKHR = ty.into();
+        let as_device = ash::khr::acceleration_structure::Device::new(&self.instance, &self.device);
+
+        // helper struct to collect the necessary data
+        struct ItemData<'a> {
+            geometry: ash::vk::AccelerationStructureGeometryKHR<'a>,
+            range_info: ash::vk::AccelerationStructureBuildRangeInfoKHR,
+            triangle_count: u32,
+            size_info: ash::vk::AccelerationStructureBuildSizesInfoKHR<'a>,
+        }
+
+        let mut items: Vec<ItemData> = Vec::with_capacity(render_items.len());
+
+        for render_item in render_items {
+            let triangle_count = render_item.index_count() / 3;
+
+            let vertex_address = unsafe {
+                self.device
+                    .get_buffer_device_address(&ash::vk::BufferDeviceAddressInfo {
+                        buffer: render_item.vertex_buffer().buffer,
+                        ..Default::default()
+                    })
+            };
+            let index_address = unsafe {
+                self.device
+                    .get_buffer_device_address(&ash::vk::BufferDeviceAddressInfo {
+                        buffer: render_item.index_buffer().buffer,
+                        ..Default::default()
+                    })
+            };
+
+            let geometry_triangles = ash::vk::AccelerationStructureGeometryTrianglesDataKHR {
+                vertex_format: ash::vk::Format::R32G32B32_SFLOAT,
+                vertex_data: ash::vk::DeviceOrHostAddressConstKHR {
+                    device_address: vertex_address,
+                },
+                vertex_stride: std::mem::size_of::<Vertex>() as u64,
+                max_vertex: render_item.vertex_count() - 1,
+                index_type: ash::vk::IndexType::UINT32,
+                index_data: ash::vk::DeviceOrHostAddressConstKHR {
+                    device_address: index_address,
+                },
+                ..Default::default()
+            };
+            let geometry = ash::vk::AccelerationStructureGeometryKHR {
+                geometry_type: ash::vk::GeometryTypeKHR::TRIANGLES,
+                geometry: ash::vk::AccelerationStructureGeometryDataKHR {
+                    triangles: geometry_triangles,
+                },
+                flags: ash::vk::GeometryFlagsKHR::NO_DUPLICATE_ANY_HIT_INVOCATION
+                    | ash::vk::GeometryFlagsKHR::OPAQUE,
+                ..Default::default()
+            };
+            let range_info = ash::vk::AccelerationStructureBuildRangeInfoKHR {
+                primitive_count: triangle_count,
+                ..Default::default()
+            };
+
+            items.push(ItemData {
+                geometry,
+                range_info,
+                triangle_count,
+                size_info: ash::vk::AccelerationStructureBuildSizesInfoKHR::default(),
+            });
+        }
+
+        // Now that items is stable in memory, query sizes via raw pointer into each geometry.
+        for item in &mut items {
+            let probe_info = ash::vk::AccelerationStructureBuildGeometryInfoKHR {
+                ty: as_ty,
+                flags: ash::vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD,
+                mode: ash::vk::BuildAccelerationStructureModeKHR::BUILD,
+                geometry_count: 1,
+                p_geometries: &item.geometry as *const _,
+                ..Default::default()
+            };
+            unsafe {
+                as_device.get_acceleration_structure_build_sizes(
+                    ash::vk::AccelerationStructureBuildTypeKHR::DEVICE,
+                    &probe_info,
+                    &[item.triangle_count],
+                    &mut item.size_info,
+                );
+            }
+        }
+
+        // Allocate a single scratch buffer sized to the largest single AS.
+        // All builds share it sequentially; memory barriers between builds
+        // ensure each build completes before the next reads scratch.
+        let align = rt_props.min_scratch_offset_alignment as u64;
+        let max_scratch_raw = items
+            .iter()
+            .map(|d| d.size_info.build_scratch_size)
+            .max()
+            .unwrap_or(0);
+        let scratch_size = (max_scratch_raw + align - 1) & !(align - 1);
+
+        let mut scratch_alloc_flags = ash::vk::MemoryAllocateFlagsInfo {
+            flags: ash::vk::MemoryAllocateFlags::DEVICE_ADDRESS,
+            ..Default::default()
+        };
+        let (scratch_buf, scratch_mem) = {
+            let create_info = ash::vk::BufferCreateInfo {
+                size: scratch_size,
+                usage: ash::vk::BufferUsageFlags::STORAGE_BUFFER
+                    | ash::vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                sharing_mode: ash::vk::SharingMode::EXCLUSIVE,
+                ..Default::default()
+            };
+            let buf = unsafe { self.device.create_buffer(&create_info, None) }.map_err(|e| {
+                GpuError::new(
+                    format!("Failed to create AS scratch buffer: {e:?}"),
+                    GpuErrorKind::ResourceCreation,
+                )
+            })?;
+            let mem_reqs = unsafe { self.device.get_buffer_memory_requirements(buf) };
+            let alloc_info = ash::vk::MemoryAllocateInfo {
+                allocation_size: mem_reqs.size,
+                memory_type_index: VulkanBackend::find_memory_type(
+                    &self.instance,
+                    self.phys_device,
+                    mem_reqs.memory_type_bits,
+                    ash::vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                )?,
+                p_next: &mut scratch_alloc_flags as *mut _ as *mut _,
+                ..Default::default()
+            };
+            let mem = unsafe { self.device.allocate_memory(&alloc_info, None) }.map_err(|e| {
+                GpuError::new(
+                    format!("Failed to allocate AS scratch memory: {e:?}"),
+                    GpuErrorKind::ResourceCreation,
+                )
+            })?;
+            unsafe { self.device.bind_buffer_memory(buf, mem, 0) }.map_err(|e| {
+                GpuError::new(
+                    format!("Failed to bind AS scratch memory: {e:?}"),
+                    GpuErrorKind::ResourceCreation,
+                )
+            })?;
+            (buf, mem)
+        };
+
+        let scratch_address = unsafe {
+            self.device
+                .get_buffer_device_address(&ash::vk::BufferDeviceAddressInfo {
+                    buffer: scratch_buf,
+                    ..Default::default()
+                })
+        };
+
+        // per-item AS backing buffer + handle creation helper struct
+        struct BuiltItem {
+            accel: ash::vk::AccelerationStructureKHR,
+            as_buf: ash::vk::Buffer,
+            as_mem: ash::vk::DeviceMemory,
+            as_size: ash::vk::DeviceSize,
+        }
+
+        let mut built: Vec<BuiltItem> = Vec::with_capacity(items.len());
+
+        for item in &items {
+            let (as_buf, as_mem) = VulkanBackend::create_buffer(
+                &self.instance,
+                &self.device,
+                self.phys_device,
+                item.size_info.acceleration_structure_size,
+                ash::vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
+                    | ash::vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                ash::vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            )?;
+
+            self.vulkan_handle_tracker.register_buffer(as_buf);
+            self.vulkan_handle_tracker.register_device_memory(as_mem);
+
+            let as_create_info = ash::vk::AccelerationStructureCreateInfoKHR {
+                buffer: as_buf,
+                size: item.size_info.acceleration_structure_size,
+                ty: as_ty,
+                ..Default::default()
+            };
+            let accel = unsafe { as_device.create_acceleration_structure(&as_create_info, None) }
+                .map_err(|e| {
+                GpuError::new(
+                    format!("Failed to create acceleration structure: {e:?}"),
+                    GpuErrorKind::ResourceCreation,
+                )
+            })?;
+
+            self.vulkan_handle_tracker
+                .register_acceleration_structure(accel);
+
+            built.push(BuiltItem {
+                accel,
+                as_buf,
+                as_mem,
+                as_size: item.size_info.acceleration_structure_size,
+            });
+        }
+
+        // Single command buffer: record all builds with memory barriers.
+        let cmd = self.begin_single_time_commands()?;
+
+        let as_build_barrier = ash::vk::MemoryBarrier {
+            src_access_mask: ash::vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
+            dst_access_mask: ash::vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
+            ..Default::default()
+        };
+
+        for (idx, (item, b)) in items.iter().zip(built.iter()).enumerate() {
+            let mut build_info = ash::vk::AccelerationStructureBuildGeometryInfoKHR {
+                ty: as_ty,
+                flags: ash::vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_BUILD,
+                mode: ash::vk::BuildAccelerationStructureModeKHR::BUILD,
+                geometry_count: 1,
+                p_geometries: &item.geometry as *const _,
+                dst_acceleration_structure: b.accel,
+                scratch_data: ash::vk::DeviceOrHostAddressKHR {
+                    device_address: scratch_address,
+                },
+                ..Default::default()
+            };
+
+            unsafe {
+                as_device.cmd_build_acceleration_structures(
+                    cmd,
+                    std::slice::from_ref(&build_info),
+                    &[&[item.range_info]],
+                );
+            }
+
+            // Insert a memory barrier between builds so scratch writes from
+            // this build are visible before the next build reads scratch.
+            if idx + 1 < items.len() {
+                unsafe {
+                    self.device.cmd_pipeline_barrier(
+                        cmd,
+                        ash::vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                        ash::vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                        ash::vk::DependencyFlags::empty(),
+                        &[as_build_barrier],
+                        &[],
+                        &[],
+                    );
+                }
+            }
+
+            // Suppress unused_mut: build_info is mutably declared to allow
+            // the compiler to see the dst/scratch fields as written.
+            let _ = &mut build_info;
+        }
+
+        self.end_single_time_commands(cmd)?;
+
+        // Cleanup scratch, assemble results.
+        unsafe {
+            self.device.destroy_buffer(scratch_buf, None);
+            self.device.free_memory(scratch_mem, None);
+        }
+
+        let results = built
+            .into_iter()
+            .map(|b| rt::AccelerationStructure {
+                handle: b.accel,
+                buffer: VulkanBuffer {
+                    buffer: b.as_buf,
+                    memory: b.as_mem,
+                    mapped: std::ptr::null_mut(),
+                    flags: ash::vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                    size: b.as_size,
+                    device_handle: self.device.device.clone(),
+                    per_frame_copies: None,
+                    vulkan_handle_tracker: self.vulkan_handle_tracker.clone(),
+                    is_storage_buffer: false,
+                },
+            })
+            .collect();
+
+        Ok(results)
+    }
+
+    fn create_tlas(
+        &self,
+        blas: &[Self::AccelerationStructure],
+        transforms: &[glm::Mat4],
+    ) -> Result<Self::AccelerationStructure, GpuError> {
+        assert_eq!(
+            blas.len(),
+            transforms.len(),
+            "create_tlas: blas and transforms slices must have the same length"
+        );
+
+        if blas.is_empty() {
+            return Err(GpuError::new(
+                "create_tlas: cannot build TLAS with zero instances",
+                GpuErrorKind::Other,
+            ));
+        }
+
+        let rt_props = self.rt_properties.as_ref().ok_or_else(|| {
+            GpuError::new(
+                "Ray tracing not supported on this device",
+                GpuErrorKind::Other,
+            )
+        })?;
+
+        let as_device = ash::khr::acceleration_structure::Device::new(&self.instance, &self.device);
+
+        // Build VkAccelerationStructureInstanceKHR array.
+        // VkTransformMatrixKHR is row-major 3x4; glm::Mat4 is column-major.
+        let instances: Vec<ash::vk::AccelerationStructureInstanceKHR> = blas
+            .iter()
+            .zip(transforms.iter())
+            .enumerate()
+            .map(|(i, (b, transform))| {
+                let blas_address = unsafe {
+                    as_device.get_acceleration_structure_device_address(
+                        &ash::vk::AccelerationStructureDeviceAddressInfoKHR {
+                            acceleration_structure: b.handle,
+                            ..Default::default()
+                        },
+                    )
+                };
+
+                // Transpose column-major glm::Mat4 to row-major 3x4, then flatten to [f32; 12]
+                let t = glm::transpose(transform);
+                let m = t.as_slice();
+                let transform_matrix = ash::vk::TransformMatrixKHR {
+                    // Row 0: [m00, m01, m02, m03], Row 1: [m10, m11, m12, m13], Row 2: [m20, m21, m22, m23]
+                    matrix: [
+                        m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11],
+                    ],
+                };
+
+                ash::vk::AccelerationStructureInstanceKHR {
+                    transform: transform_matrix,
+                    instance_custom_index_and_mask: ash::vk::Packed24_8::new(i as u32, 0xFF),
+                    instance_shader_binding_table_record_offset_and_flags: ash::vk::Packed24_8::new(
+                        0,
+                        ash::vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw()
+                            as u8,
+                    ),
+                    acceleration_structure_reference: ash::vk::AccelerationStructureReferenceKHR {
+                        device_handle: blas_address,
+                    },
+                }
+            })
+            .collect();
+
+        // Upload instance data to a device-visible buffer.
+        // Must use HOST_VISIBLE so we can memcpy the instance array in,
+        // with ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR | SHADER_DEVICE_ADDRESS.
+        let instance_data_size = (std::mem::size_of::<ash::vk::AccelerationStructureInstanceKHR>()
+            * instances.len()) as ash::vk::DeviceSize;
+
+        let mut instance_alloc_flags = ash::vk::MemoryAllocateFlagsInfo {
+            flags: ash::vk::MemoryAllocateFlags::DEVICE_ADDRESS,
+            ..Default::default()
+        };
+        let (instance_buf, instance_mem) = {
+            let create_info = ash::vk::BufferCreateInfo {
+                size: instance_data_size,
+                usage: ash::vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
+                    | ash::vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                sharing_mode: ash::vk::SharingMode::EXCLUSIVE,
+                ..Default::default()
+            };
+            let buf = unsafe { self.device.create_buffer(&create_info, None) }.map_err(|e| {
+                GpuError::new(
+                    format!("Failed to create TLAS instance buffer: {e:?}"),
+                    GpuErrorKind::ResourceCreation,
+                )
+            })?;
+            let mem_reqs = unsafe { self.device.get_buffer_memory_requirements(buf) };
+            let alloc_info = ash::vk::MemoryAllocateInfo {
+                allocation_size: mem_reqs.size,
+                memory_type_index: VulkanBackend::find_memory_type(
+                    &self.instance,
+                    self.phys_device,
+                    mem_reqs.memory_type_bits,
+                    ash::vk::MemoryPropertyFlags::HOST_VISIBLE
+                        | ash::vk::MemoryPropertyFlags::HOST_COHERENT,
+                )?,
+                p_next: &mut instance_alloc_flags as *mut _ as *mut _,
+                ..Default::default()
+            };
+            let mem = unsafe { self.device.allocate_memory(&alloc_info, None) }.map_err(|e| {
+                GpuError::new(
+                    format!("Failed to allocate TLAS instance memory: {e:?}"),
+                    GpuErrorKind::ResourceCreation,
+                )
+            })?;
+            unsafe { self.device.bind_buffer_memory(buf, mem, 0) }.map_err(|e| {
+                GpuError::new(
+                    format!("Failed to bind TLAS instance memory: {e:?}"),
+                    GpuErrorKind::ResourceCreation,
+                )
+            })?;
+
+            // Copy instance data
+            let ptr = unsafe {
+                self.device
+                    .map_memory(mem, 0, instance_data_size, ash::vk::MemoryMapFlags::empty())
+            }
+            .map_err(|e| {
+                GpuError::new(
+                    format!("Failed to map TLAS instance memory: {e:?}"),
+                    GpuErrorKind::ResourceCreation,
+                )
+            })?;
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    instances.as_ptr() as *const u8,
+                    ptr as *mut u8,
+                    instance_data_size as usize,
+                );
+                self.device.unmap_memory(mem);
+            }
+
+            (buf, mem)
+        };
+
+        let instance_address = unsafe {
+            self.device
+                .get_buffer_device_address(&ash::vk::BufferDeviceAddressInfo {
+                    buffer: instance_buf,
+                    ..Default::default()
+                })
+        };
+
+        let geometry_instances = ash::vk::AccelerationStructureGeometryInstancesDataKHR {
+            array_of_pointers: ash::vk::FALSE,
+            data: ash::vk::DeviceOrHostAddressConstKHR {
+                device_address: instance_address,
+            },
+            ..Default::default()
+        };
+        let geometry = ash::vk::AccelerationStructureGeometryKHR {
+            geometry_type: ash::vk::GeometryTypeKHR::INSTANCES,
+            geometry: ash::vk::AccelerationStructureGeometryDataKHR {
+                instances: geometry_instances,
+            },
+            ..Default::default()
+        };
+        let range_info = ash::vk::AccelerationStructureBuildRangeInfoKHR {
+            primitive_count: instances.len() as u32,
+            ..Default::default()
+        };
+
+        let probe_info = ash::vk::AccelerationStructureBuildGeometryInfoKHR {
+            ty: ash::vk::AccelerationStructureTypeKHR::TOP_LEVEL,
+            flags: ash::vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
+            mode: ash::vk::BuildAccelerationStructureModeKHR::BUILD,
+            geometry_count: 1,
+            p_geometries: &geometry as *const _,
+            ..Default::default()
+        };
+        let mut size_info = ash::vk::AccelerationStructureBuildSizesInfoKHR::default();
+        unsafe {
+            as_device.get_acceleration_structure_build_sizes(
+                ash::vk::AccelerationStructureBuildTypeKHR::DEVICE,
+                &probe_info,
+                &[instances.len() as u32],
+                &mut size_info,
+            );
+        }
+
+        let align = rt_props.min_scratch_offset_alignment as u64;
+        let scratch_size = (size_info.build_scratch_size + align - 1) & !(align - 1);
+
+        let mut scratch_alloc_flags = ash::vk::MemoryAllocateFlagsInfo {
+            flags: ash::vk::MemoryAllocateFlags::DEVICE_ADDRESS,
+            ..Default::default()
+        };
+        let (scratch_buf, scratch_mem) = {
+            let create_info = ash::vk::BufferCreateInfo {
+                size: scratch_size,
+                usage: ash::vk::BufferUsageFlags::STORAGE_BUFFER
+                    | ash::vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                sharing_mode: ash::vk::SharingMode::EXCLUSIVE,
+                ..Default::default()
+            };
+            let buf = unsafe { self.device.create_buffer(&create_info, None) }.map_err(|e| {
+                GpuError::new(
+                    format!("Failed to create TLAS scratch buffer: {e:?}"),
+                    GpuErrorKind::ResourceCreation,
+                )
+            })?;
+            let mem_reqs = unsafe { self.device.get_buffer_memory_requirements(buf) };
+            let alloc_info = ash::vk::MemoryAllocateInfo {
+                allocation_size: mem_reqs.size,
+                memory_type_index: VulkanBackend::find_memory_type(
+                    &self.instance,
+                    self.phys_device,
+                    mem_reqs.memory_type_bits,
+                    ash::vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                )?,
+                p_next: &mut scratch_alloc_flags as *mut _ as *mut _,
+                ..Default::default()
+            };
+            let mem = unsafe { self.device.allocate_memory(&alloc_info, None) }.map_err(|e| {
+                GpuError::new(
+                    format!("Failed to allocate TLAS scratch memory: {e:?}"),
+                    GpuErrorKind::ResourceCreation,
+                )
+            })?;
+            unsafe { self.device.bind_buffer_memory(buf, mem, 0) }.map_err(|e| {
+                GpuError::new(
+                    format!("Failed to bind TLAS scratch memory: {e:?}"),
+                    GpuErrorKind::ResourceCreation,
+                )
+            })?;
+            (buf, mem)
+        };
+        let scratch_address = unsafe {
+            self.device
+                .get_buffer_device_address(&ash::vk::BufferDeviceAddressInfo {
+                    buffer: scratch_buf,
+                    ..Default::default()
+                })
+        };
+
+        let (as_buf, as_mem) = VulkanBackend::create_buffer(
+            &self.instance,
+            &self.device,
+            self.phys_device,
+            size_info.acceleration_structure_size,
+            ash::vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR
+                | ash::vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            ash::vk::MemoryPropertyFlags::DEVICE_LOCAL,
+        )?;
+
+        self.vulkan_handle_tracker.register_buffer(as_buf);
+        self.vulkan_handle_tracker.register_device_memory(as_mem);
+
+        let as_create_info = ash::vk::AccelerationStructureCreateInfoKHR {
+            buffer: as_buf,
+            size: size_info.acceleration_structure_size,
+            ty: ash::vk::AccelerationStructureTypeKHR::TOP_LEVEL,
+            ..Default::default()
+        };
+        let accel = unsafe { as_device.create_acceleration_structure(&as_create_info, None) }
+            .map_err(|e| {
+                GpuError::new(
+                    format!("Failed to create TLAS: {e:?}"),
+                    GpuErrorKind::ResourceCreation,
+                )
+            })?;
+
+        self.vulkan_handle_tracker
+            .register_acceleration_structure(accel);
+
+        let mut build_info = ash::vk::AccelerationStructureBuildGeometryInfoKHR {
+            ty: ash::vk::AccelerationStructureTypeKHR::TOP_LEVEL,
+            flags: ash::vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
+            mode: ash::vk::BuildAccelerationStructureModeKHR::BUILD,
+            geometry_count: 1,
+            p_geometries: &geometry as *const _,
+            dst_acceleration_structure: accel,
+            scratch_data: ash::vk::DeviceOrHostAddressKHR {
+                device_address: scratch_address,
+            },
+            ..Default::default()
+        };
+
+        let cmd = self.begin_single_time_commands()?;
+        unsafe {
+            as_device.cmd_build_acceleration_structures(
+                cmd,
+                std::slice::from_ref(&build_info),
+                &[&[range_info]],
+            );
+        }
+        self.end_single_time_commands(cmd)?;
+
+        let _ = &mut build_info;
+
+        // Cleanup
+        unsafe {
+            self.device.destroy_buffer(scratch_buf, None);
+            self.device.free_memory(scratch_mem, None);
+            self.device.destroy_buffer(instance_buf, None);
+            self.device.free_memory(instance_mem, None);
+        }
+
+        Ok(rt::AccelerationStructure {
+            handle: accel,
+            buffer: VulkanBuffer {
+                buffer: as_buf,
+                memory: as_mem,
+                mapped: std::ptr::null_mut(),
+                flags: ash::vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                size: size_info.acceleration_structure_size,
+                device_handle: self.device.device.clone(),
+                per_frame_copies: None,
+                vulkan_handle_tracker: self.vulkan_handle_tracker.clone(),
+                is_storage_buffer: false,
+            },
+        })
     }
 }
 
