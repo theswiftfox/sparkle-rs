@@ -8,4 +8,5 @@ public cbuffer PushConstants {
 	public uint tex2;
 	public uint tex3;
 	public uint has_parallax;
+	public uint is_instanced;
 };

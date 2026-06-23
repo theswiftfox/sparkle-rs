@@ -115,7 +115,9 @@ impl Camera for OrbitCamera {
     fn position(&self) -> glm::Vec3 {
         self.eye_position()
     }
-
+    fn focus(&self) -> glm::Vec3 {
+        self.focus
+    }
     fn near_far(&self) -> (f32, f32) {
         (self.near_plane, self.far_plane)
     }

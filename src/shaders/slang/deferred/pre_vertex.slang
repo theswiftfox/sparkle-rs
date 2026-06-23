@@ -24,15 +24,18 @@ struct VS_OUT {
 	float4x4 proj;
 };
 
+[[vk::binding(10, 0)]] StructuredBuffer<float4x4> instanceTransforms;
+
 [shader("vertex")]
-VS_OUT main(VS_IN input) {
+VS_OUT main(VS_IN input, uint instanceID : SV_InstanceID) {
 	VS_OUT output;
-	float4 worldPos = mul(model, float4(input.pos, 1.0));
+	float4x4 M = is_instanced != 0u ? instanceTransforms[instanceID] : model;
+	float4 worldPos = mul(M, float4(input.pos, 1.0));
 	output.worldPos = worldPos;
 	output.pos = mul(proj, mul(view, worldPos));
 	output.txCoord = input.txCoord;
 
-	float3x3 normalMat = transpose((float3x3)model);
+	float3x3 normalMat = transpose((float3x3)M);
 	output.normal = normalize(mul(normalMat, input.normal));
 
 	float3 tangent = normalize(input.tangent - dot(input.tangent, input.normal)*input.normal);

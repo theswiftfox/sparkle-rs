@@ -11,6 +11,7 @@ use crate::{
     app_handler::Window,
     engine::{
         backend::{GpuError, GpuErrorKind, RenderTargetDesc, SamplerDesc, TextureFormat},
+        compute_push::ComputePushConstants,
         settings::{Settings, SyncMode},
         vulkan_backend::texture::VulkanTexture,
     },
@@ -234,8 +235,8 @@ pub(crate) struct PushConstants {
     tex1: u32,
     tex2: u32,
     tex3: u32,
-    tex4: u32,
     has_parallax: u32,
+    is_instanced: u32,
 }
 
 impl Default for PushConstants {
@@ -248,8 +249,8 @@ impl Default for PushConstants {
             tex1: 0,
             tex2: 0,
             tex3: 0,
-            tex4: 0,
             has_parallax: 0,
+            is_instanced: 0,
         }
     }
 }
@@ -376,6 +377,7 @@ pub struct VulkanBackend {
     queue: ash::vk::Queue,
     // graphics_pipeline: ash::vk::Pipeline,
     pipeline_layout: ash::vk::PipelineLayout,
+    compute_pipeline_layout: ash::vk::PipelineLayout,
     command_pool: CommandPool,
     command_buffers: [ash::vk::CommandBuffer; FRAMES_IN_FLIGHT as usize],
     descriptors: Descriptors,
@@ -434,6 +436,8 @@ impl Drop for VulkanBackend {
             // self.device.destroy_pipeline(self.graphics_pipeline, None);
             self.device
                 .destroy_pipeline_layout(self.pipeline_layout, None);
+            self.device
+                .destroy_pipeline_layout(self.compute_pipeline_layout, None);
 
             let emtpy_target =
                 VulkanTexture::null(self.device.clone(), self.vulkan_handle_tracker.clone());
@@ -571,6 +575,7 @@ pub fn initialize(window: Arc<Window>, settings: &Settings) -> Result<VulkanBack
         })?;
 
     let pipeline_layout = create_pipeline_layout(&logical_device, desc_set_layout)?;
+    let compute_pipeline_layout = create_compute_pipeline_layout(&logical_device, desc_set_layout)?;
 
     Ok(VulkanBackend {
         window,
@@ -583,6 +588,7 @@ pub fn initialize(window: Arc<Window>, settings: &Settings) -> Result<VulkanBack
         queue,
         // graphics_pipeline: pipeline,
         pipeline_layout,
+        compute_pipeline_layout,
         command_pool,
         command_buffers,
         descriptors: Descriptors {
@@ -620,6 +626,30 @@ fn create_pipeline_layout(
     unsafe { device.create_pipeline_layout(&create_info, None) }.map_err(|e| {
         GpuError::new(
             format!("Failed to create pipeline layout: {e:?}"),
+            GpuErrorKind::ResourceCreation,
+        )
+    })
+}
+
+fn create_compute_pipeline_layout(
+    device: &LogicalDevice,
+    descriptor_layout: ash::vk::DescriptorSetLayout,
+) -> Result<ash::vk::PipelineLayout, GpuError> {
+    let push_range = ash::vk::PushConstantRange {
+        stage_flags: ash::vk::ShaderStageFlags::COMPUTE,
+        offset: 0,
+        size: std::mem::size_of::<ComputePushConstants>() as u32, // maxInstances + assetOffset + maxHeight + spawn params + scale + tilt + terrainSegmentsF
+    };
+    let create_info = ash::vk::PipelineLayoutCreateInfo {
+        set_layout_count: 1,
+        p_set_layouts: &descriptor_layout,
+        push_constant_range_count: 1,
+        p_push_constant_ranges: &push_range,
+        ..Default::default()
+    };
+    unsafe { device.create_pipeline_layout(&create_info, None) }.map_err(|e| {
+        GpuError::new(
+            format!("Failed to create compute pipeline layout: {e:?}"),
             GpuErrorKind::ResourceCreation,
         )
     })

@@ -328,6 +328,8 @@ pub struct RenderPipelineDesc<'a, ShaderSource> {
 pub struct ComputePipelineDesc<'a, ShaderSource> {
     pub label: &'a str,
     pub shader_source: &'a ShaderSource,
+    /// Value injected as specialization constant 0 (world dimension for scatter shader).
+    pub world_dimension: Option<f32>,
 }
 
 /// Load operation for a render pass attachment.
@@ -460,6 +462,16 @@ pub trait GpuBackend: Sized + 'static {
         buffers: &[(u32, &Self::Buffer)],
         textures: &[(u32, &Self::Texture)],
         work_groups: (u32, u32, u32),
+        max_instances: u32,
+        asset_offset: u32,
+        max_height: f32,
+        spawn_height_min: f32,
+        spawn_height_max: f32,
+        slope_max: f32,
+        scale_min: f32,
+        scale_max: f32,
+        tilt_factor: f32,
+        terrain_segments_f: f32,
     ) -> Result<(), GpuError>;
 
     //  Buffer operations
@@ -889,10 +901,6 @@ impl<B: GpuBackend> IndirectDrawable<B> {
         backend.set_vertex_buffer(&self.vertex_buffer);
         backend.set_index_buffer(&self.index_buffer);
 
-        // 1. Instead of binding a single uniform matrix, bind the matrix array SSBO.
-        // Your instanced vertex shader will use gl_InstanceIndex to index into this array.
-        backend.bind_buffer_to_descriptor(10, &self.instance_matrix_buffer);
-
         if bind_material {
             self.material.bind(backend);
         }
@@ -900,7 +908,8 @@ impl<B: GpuBackend> IndirectDrawable<B> {
             has_parallax: self.material.has_parallax,
         });
 
-        // 2. Execute via the new backend method
+        // Execute indirect draw — instance SSBO (binding 10) is bound once at load time
+        // via execute_compute_one_shot, not per-frame (avoids MoltenVK descriptor race).
         backend.draw_indexed_indirect(&self.indirect_command_buffer, 0, 1);
     }
 }

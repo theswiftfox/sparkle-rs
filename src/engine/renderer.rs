@@ -402,17 +402,16 @@ impl<B: GpuBackend> Renderer<B> {
         });
 
         // Directional light for shadow mapping
-        let shadow_dist = 20.0;
         self.scene.add_light(Light {
             position: glm::vec3(-0.15, -0.5, -0.05).normalize(),
             t: LightType::Directional,
             color: glm::vec3(23.47, 21.31, 20.79),
             radius: 1.0,
             light_proj: glm::ortho_zo(
-                -shadow_dist,
-                shadow_dist,
-                -shadow_dist,
-                shadow_dist,
+                -self.shadow_dist,
+                self.shadow_dist,
+                -self.shadow_dist,
+                self.shadow_dist,
                 1.0,
                 2.5 * self.shadow_dist,
             ),
@@ -420,9 +419,24 @@ impl<B: GpuBackend> Renderer<B> {
 
         self.scene.build_matrices(&self.backend);
 
+        // Compute scene-wide half-diagonal from world AABB to size the skybox cube.
+        // Falls back to shadow_dist if AABB is empty (e.g. no static meshes).
+        let sky_scale = if let Some(root) = self.scene.root() {
+            let aabb = root.world_aabb();
+            if !aabb.is_empty() {
+                let extent = aabb.max - aabb.min;
+                let half_diag = (extent.x.powi(2) + extent.y.powi(2) + extent.z.powi(2)).sqrt() * 0.5;
+                half_diag.max(self.shadow_dist)
+            } else {
+                self.shadow_dist
+            }
+        } else {
+            self.shadow_dist
+        };
+
         // Load skybox cubemap
         println!("Loading skybox...");
-        match Skybox::load(&self.backend) {
+        match Skybox::load(&self.backend, sky_scale) {
             Ok(sky) => {
                 self.skybox = Some(sky);
             }
@@ -439,31 +453,76 @@ impl<B: GpuBackend> Renderer<B> {
 
     /// Load a procedurally generated world.
     pub fn load_procedural_scene(&mut self) -> Result<(), import::ImportError> {
-        use crate::engine::procedural::{load_procedural_world, AssetConfig, ProceduralConfig};
+        use crate::engine::procedural::{
+            AssetConfig, ProceduralConfig, create_pipeline, load_procedural_world,
+        };
 
         let config = ProceduralConfig {
             assets: vec![
                 AssetConfig {
-                    path: "assets/procedural/tree/tree_small_02_4k.gltf".into(),
+                    path: "assets/procedural/tree/tree_lod0.gltf".into(),
+                    max_count: 300,
+                    spawn_height_min: 0.30,
+                    spawn_height_max: 0.65,
+                    slope_max: 0.30,
+                    scale_min: 1.0,
+                    scale_max: 1.4,
+                    tilt_factor: 0.15,
+                },
+                AssetConfig {
+                    path: "assets/procedural/fir_sapling_1k.gltf/fir_lod0.gltf".into(),
+                    max_count: 300,
+                    spawn_height_min: 0.30,
+                    spawn_height_max: 0.65,
+                    slope_max: 0.30,
+                    scale_min: 1.0,
+                    scale_max: 1.4,
+                    tilt_factor: 0.15,
+                },
+                AssetConfig {
+                    path: "assets/procedural/pine_sapling_small_1k.gltf/pine_lod0.gltf".into(),
+                    max_count: 300,
+                    spawn_height_min: 0.30,
+                    spawn_height_max: 0.65,
+                    slope_max: 0.30,
+                    scale_min: 1.0,
+                    scale_max: 1.4,
+                    tilt_factor: 0.15,
+                },
+                // AssetConfig {
+                //     path: "assets/procedural/rocks/rock_lod0.gltf".into(),
+                //     max_count: 200,
+                //     spawn_height_min: 0.45,
+                //     spawn_height_max: 0.79,
+                //     slope_max: 0.85,
+                //     scale_min: 0.5,
+                //     scale_max: 1.8,
+                //     tilt_factor: 0.80,
+                // },
+                AssetConfig {
+                    path: "assets/procedural/grass/grass_lod0.gltf".into(),
                     max_count: 500,
-                },
-                AssetConfig {
-                    path: "assets/procedural/rocks/rock_moss_set_02_2k.gltf".into(),
-                    max_count: 1000,
-                },
-                AssetConfig {
-                    path: "assets/procedural/grass/grass_medium_01_2k.gltf".into(),
-                    max_count: 2000,
+                    spawn_height_min: 0.15,
+                    spawn_height_max: 0.50,
+                    slope_max: 0.20,
+                    scale_min: 0.7,
+                    scale_max: 1.1,
+                    tilt_factor: 0.0,
                 },
             ],
             input_seed: "default".into(),
             terrain_dir: "assets/procedural/terrain".into(),
-            world_dimension: 512.0,
-            terrain_segments: 64,
+            world_dimension: 128.0,
+            terrain_segments: 32,
+            max_height: 30.0,
+            texture_tile_factor: 16.0,
         };
 
+        println!("Creating scatter pipeline...");
+        let pipeline = create_pipeline(&self.backend, config.world_dimension)?;
+
         println!("Generating procedural world...");
-        let sg = load_procedural_world(&self.backend, &config)?;
+        let sg = load_procedural_world(&self.backend, &config, &pipeline)?;
         self.scene = sg;
         self.scene_file = Some("__procedural__".into());
 
@@ -471,7 +530,7 @@ impl<B: GpuBackend> Renderer<B> {
             color: glm::vec3(0.25, 0.25, 0.25),
             ..Light::default()
         });
-        let shadow_dist = 20.0;
+        let shadow_dist = self.shadow_dist;
         self.scene.add_light(Light {
             position: glm::vec3(-0.15, -0.5, -0.05).normalize(),
             t: LightType::Directional,
@@ -489,8 +548,23 @@ impl<B: GpuBackend> Renderer<B> {
 
         self.scene.build_matrices(&self.backend);
 
+        // Compute scene-wide half-diagonal from world AABB to size the skybox cube.
+        // Procedural terrain returns empty AABB, so falls back to shadow_dist.
+        let sky_scale = if let Some(root) = self.scene.root() {
+            let aabb = root.world_aabb();
+            if !aabb.is_empty() {
+                let extent = aabb.max - aabb.min;
+                let half_diag = (extent.x.powi(2) + extent.y.powi(2) + extent.z.powi(2)).sqrt() * 0.5;
+                half_diag.max(self.shadow_dist)
+            } else {
+                self.shadow_dist
+            }
+        } else {
+            self.shadow_dist
+        };
+
         println!("Loading skybox...");
-        match Skybox::load(&self.backend) {
+        match Skybox::load(&self.backend, sky_scale) {
             Ok(sky) => self.skybox = Some(sky),
             Err(e) => println!(
                 "Warning: skybox loading failed: {} (continuing without skybox)",
@@ -704,17 +778,16 @@ impl<B: GpuBackend> Renderer<B> {
         self.scene.add_light(Light::default());
 
         // Directional light
-        let shadow_dist = 20.0;
         self.scene.add_light(Light {
             position: glm::vec3(-0.15, -0.5, -0.05).normalize(),
             t: LightType::Directional,
             color: glm::vec3(23.47, 21.31, 20.79),
             radius: 1.0,
             light_proj: glm::ortho_zo(
-                -shadow_dist,
-                shadow_dist,
-                -shadow_dist,
-                shadow_dist,
+                -self.shadow_dist,
+                self.shadow_dist,
+                -self.shadow_dist,
+                self.shadow_dist,
                 1.0,
                 2.5 * self.shadow_dist,
             ),
@@ -868,13 +941,25 @@ impl<B: GpuBackend> Renderer<B> {
         for mut light in lights {
             if light.t != LightType::Ambient {
                 let dir = light.position * (-1.0) * self.shadow_dist;
-                let mut up = glm::vec3(0.0, 1.0, 0.0);
-                if (up.dot(&dir.normalize()) - 1.0).abs() <= 0.0000001 {
-                    up = glm::vec3(0.0, 0.0, 1.0);
-                }
-                let pos = camera.position();
-                let light_view = glm::look_at(&(pos + dir), &pos, &up);
-                light.light_proj = light.light_proj * light_view;
+                // Use Z-up if light direction is Y-dominant to avoid degenerate look_at.
+                // Threshold 0.99 catches near-parallel (dot > 0.99) and anti-parallel.
+                let dir_norm = dir.normalize();
+                let up = if dir_norm.y.abs() > 0.99 {
+                    glm::vec3(0.0, 0.0, 1.0)
+                } else {
+                    glm::vec3(0.0, 1.0, 0.0)
+                };
+                let focus = camera.focus();
+                let light_view = glm::look_at(&(focus + dir), &focus, &up);
+                // Snap to shadow map texel grid — prevents shadow swimming as camera moves.
+                // Snap in light-VIEW space (world units) so texel_size matches coordinate scale.
+                // rem_euclid avoids sign issues with negative coordinates.
+                let texel_size = (2.0 * self.shadow_dist) / SHADOW_MAP_SIZE as f32;
+                let focus_lv = light_view * glm::vec4(focus.x, focus.y, focus.z, 1.0);
+                let snap_x = focus_lv.x.rem_euclid(texel_size);
+                let snap_y = focus_lv.y.rem_euclid(texel_size);
+                let snap_mat = glm::translation(&glm::vec3(-snap_x, -snap_y, 0.0));
+                light.light_proj = light.light_proj * snap_mat * light_view;
             }
 
             self.backend.cmd_update_buffer(

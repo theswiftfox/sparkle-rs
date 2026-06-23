@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use super::{ErrorCause, SceneGraphError};
 use crate::engine::backend::{Drawable, GpuBackend, IndirectDrawable, RenderItem};
@@ -19,6 +20,7 @@ pub enum NodeData<B: GpuBackend> {
     ProceduralWorld {
         terrain: Drawable<B>,
         instanced_assets: Vec<IndirectDrawable<B>>,
+        heightmap: Rc<B::Texture>,
     },
 }
 
@@ -29,6 +31,7 @@ impl<B: GpuBackend> NodeData<B> {
             NodeData::ProceduralWorld {
                 terrain: _,
                 instanced_assets: _,
+                heightmap: _,
             } => (),
         }
     }
@@ -41,6 +44,7 @@ impl<B: GpuBackend> NodeData<B> {
             NodeData::ProceduralWorld {
                 terrain: _,
                 instanced_assets: _,
+                heightmap: _,
             } => {
                 () // no op for procedural terrain i think
             }
@@ -55,9 +59,11 @@ impl<B: GpuBackend> Clone for NodeData<B> {
             Self::ProceduralWorld {
                 terrain,
                 instanced_assets,
+                heightmap,
             } => Self::ProceduralWorld {
                 terrain: terrain.clone(),
                 instanced_assets: instanced_assets.clone(),
+                heightmap: heightmap.clone(),
             },
         }
     }
@@ -105,6 +111,7 @@ impl<B: GpuBackend> Node<B> {
         name: Option<&str>,
         terrain: Drawable<B>,
         instanced_assets: Vec<IndirectDrawable<B>>,
+        heightmap: Rc<B::Texture>,
     ) -> Node<B> {
         Node {
             uuid: 0,
@@ -114,6 +121,7 @@ impl<B: GpuBackend> Node<B> {
             data: NodeData::ProceduralWorld {
                 terrain,
                 instanced_assets,
+                heightmap,
             },
             children: HashMap::new(),
         }
@@ -168,6 +176,7 @@ impl<B: GpuBackend> Node<B> {
             NodeData::ProceduralWorld {
                 terrain,
                 instanced_assets,
+                heightmap: _,
             } => {
                 let mut drawables = vec![RenderItem::Standard(terrain)];
                 for d in instanced_assets {
@@ -295,6 +304,7 @@ impl<B: GpuBackend> Node<B> {
             NodeData::ProceduralWorld {
                 terrain: _,
                 instanced_assets,
+                heightmap: _,
             } => 1 + instanced_assets.len(),
         }
     }
@@ -313,6 +323,7 @@ impl<B: GpuBackend> Node<B> {
             NodeData::ProceduralWorld {
                 terrain: _,
                 instanced_assets: _,
+                heightmap: _,
             } => {
                 // procedural terrain has no bounding box.
                 ()

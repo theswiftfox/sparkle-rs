@@ -114,17 +114,15 @@ impl<B: GpuBackend> Scenegraph<B> {
         let Some(root) = &self.root else {
             return Err(SceneGraphError::new("", &ErrorCause::Empty));
         };
-        let nodes = root.traverse();
-        if nodes.is_empty() {
-            Err(SceneGraphError::err_empty("Root has no children"))
-        } else {
-            let mut drawables = Vec::new();
-            for node in &nodes {
-                drawables.append(&mut node.get_drawables())
-            }
-            drawables.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            Ok(drawables)
+        let mut drawables = root.get_drawables();
+        for node in &root.traverse() {
+            drawables.append(&mut node.get_drawables());
         }
+        if drawables.is_empty() {
+            return Err(SceneGraphError::err_empty("Scene has no drawables"));
+        }
+        drawables.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        Ok(drawables)
     }
 
     pub fn get_drawables_named(&self, name: &str) -> Option<Vec<RenderItem<'_, B>>> {

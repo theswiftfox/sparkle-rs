@@ -255,6 +255,7 @@ impl App {
                     view_matrix: cam.view_mat(),
                     projection_matrix: cam.projection_mat(),
                     pos: cam.position(),
+                    focus: cam.focus(),
                     near: cam.near_far().0,
                     far: cam.near_far().1,
                 }
@@ -265,6 +266,7 @@ impl App {
                     view_matrix: cam.view_mat(),
                     projection_matrix: cam.projection_mat(),
                     pos: cam.position(),
+                    focus: cam.focus(),
                     near: cam.near_far().0,
                     far: cam.near_far().1,
                 }

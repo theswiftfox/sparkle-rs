@@ -71,7 +71,7 @@ PS_OUT main(PS_IN input) {
 		float3 F0 = lerp(float3(0.04, 0.04, 0.04), alb.rgb, mr.r);
 		float shadowed = shadow(input.worldPos, N, tex3);
 		color += BRDF(
-			cameraPos,
+			normalize(cameraPos - input.worldPos.xyz),
 			N,
 			input.worldPos.xyz,
 			alb.rgb,

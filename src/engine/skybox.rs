@@ -23,7 +23,7 @@ impl<B: GpuBackend> Skybox<B> {
     /// - `assets/sky_box_y_neg.png` (-Y)
     /// - `assets/sky_box_z.png`     (+Z)
     /// - `assets/sky_box_z_neg.png` (-Z)
-    pub fn load(backend: &B) -> Result<Skybox<B>, GpuError> {
+    pub fn load(backend: &B, scale: f32) -> Result<Skybox<B>, GpuError> {
         use super::geometry::Vertex;
 
         // Build unit cube geometry (8 vertices, 36 indices)
@@ -159,10 +159,11 @@ impl<B: GpuBackend> Skybox<B> {
 
         drawable.add_texture(0, Rc::new(cubemap));
 
-        // Apply initial rotation to match skybox face orientation
+        // Apply initial rotation to match skybox face orientation, scaled to scene bounds
+        let s = glm::scaling(&glm::vec3(scale, scale, scale));
         let rot = glm::rotate(&glm::identity(), 4.78, &glm::vec3(0.0, 1.0, 0.0));
         let rot = glm::rotate(&rot, 1.571, &glm::vec3(0.0, 0.0, -1.0));
-        drawable.update_model(backend, &rot);
+        drawable.update_model(backend, &(rot * s));
 
         Ok(Skybox { drawable })
     }

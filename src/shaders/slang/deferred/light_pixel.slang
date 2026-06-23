@@ -47,7 +47,7 @@ PS_OUT main(float4 screenPos : SV_Position) {
 		float3 F0 = lerp(float3(0.04, 0.04, 0.04), albedo.rgb, mr.r);
 		float shadowed = shadow(pos, normal, tex3);
 		color += BRDF(
-			cameraPos,
+			normalize(cameraPos - pos.xyz),
 			normal,
 			pos.xyz,
 			albedo.rgb,

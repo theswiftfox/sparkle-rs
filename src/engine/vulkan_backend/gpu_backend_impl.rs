@@ -5,14 +5,15 @@ use std::{ffi::CString, mem::offset_of};
 use crate::engine::{
     backend::{
         BlendMode, BufferDesc, BufferUsage, ComputePipelineDesc, GpuBackend, GpuError,
-        GpuErrorKind, GpuRenderTarget, GpuTexture, ProceduralShaders, RenderPassDesc,
-        RenderPipelineDesc, RenderTargetDesc, SamplerDesc, ShaderStage, Shaders, TextureDesc,
-        TextureFormat, ViewportDesc,
+        GpuErrorKind, GpuRenderTarget, GpuTexture, MaterialProperties, ProceduralShaders,
+        RenderPassDesc, RenderPipelineDesc, RenderTargetDesc, SamplerDesc, ShaderStage, Shaders,
+        TextureDesc, TextureFormat, ViewportDesc, as_bytes,
     },
+    compute_push::ComputePushConstants,
     vulkan_backend::{
         CurrentFrame, ENABLE_MARKER, FRAMES_IN_FLIGHT, GAMMA_DEFAULT, PushConstants,
         SHADER_ENTRY_POINT, SpecializationConstants, VulkanBackend,
-        buffer::VulkanBuffer,
+        buffer::{self, VulkanBuffer},
         create_shader_module,
         egui::{EguiRenderer, build_egui_batches},
         texture::VulkanTexture,
@@ -219,47 +220,45 @@ impl GpuBackend for VulkanBackend {
         // Per-frame copies prevent GPU data hazards when multiple in-flight
         // frames write to the same uniform buffer via cmd_update_buffer.
         if desc.usage == BufferUsage::Uniform {
-            let copies: Result<Vec<crate::engine::vulkan_backend::buffer::PerFrameCopy>, GpuError> =
-                (1..FRAMES_IN_FLIGHT)
-                    .map(|_| {
-                        let (buf, mem) = VulkanBackend::create_buffer(
-                            &self.instance,
-                            &self.device,
-                            self.phys_device,
-                            desc.size as u64,
-                            usage,
-                            flags,
-                        )?;
-                        let mapped = if crate::engine::vulkan_backend::buffer::host_mappable(flags)
-                        {
-                            unsafe {
-                                self.device.map_memory(
-                                    mem,
-                                    0,
-                                    desc.size as u64,
-                                    ash::vk::MemoryMapFlags::empty(),
-                                )
-                            }
-                            .map_err(|e| {
-                                GpuError::new(
-                                    format!("Failed to map per-frame copy memory: {e:?}"),
-                                    GpuErrorKind::ResourceUpdate,
-                                )
-                            })?
-                        } else {
-                            std::ptr::null_mut()
-                        };
-                        // Register with tracker so cleanup_leftover catches unfreed copies
-                        self.vulkan_handle_tracker.register_buffer(buf);
-                        self.vulkan_handle_tracker.register_device_memory(mem);
+            let copies: Result<Vec<buffer::PerFrameCopy>, GpuError> = (1..FRAMES_IN_FLIGHT)
+                .map(|_| {
+                    let (buf, mem) = VulkanBackend::create_buffer(
+                        &self.instance,
+                        &self.device,
+                        self.phys_device,
+                        desc.size as u64,
+                        usage,
+                        flags,
+                    )?;
+                    let mapped = if buffer::host_mappable(flags) {
+                        unsafe {
+                            self.device.map_memory(
+                                mem,
+                                0,
+                                desc.size as u64,
+                                ash::vk::MemoryMapFlags::empty(),
+                            )
+                        }
+                        .map_err(|e| {
+                            GpuError::new(
+                                format!("Failed to map per-frame copy memory: {e:?}"),
+                                GpuErrorKind::ResourceUpdate,
+                            )
+                        })?
+                    } else {
+                        std::ptr::null_mut()
+                    };
+                    // Register with tracker so cleanup_leftover catches unfreed copies
+                    self.vulkan_handle_tracker.register_buffer(buf);
+                    self.vulkan_handle_tracker.register_device_memory(mem);
 
-                        Ok(crate::engine::vulkan_backend::buffer::PerFrameCopy {
-                            buffer: buf,
-                            memory: mem,
-                            mapped,
-                        })
+                    Ok(buffer::PerFrameCopy {
+                        buffer: buf,
+                        memory: mem,
+                        mapped,
                     })
-                    .collect();
+                })
+                .collect();
             buffer.per_frame_copies = Some(copies?);
         }
 
@@ -634,6 +633,7 @@ impl GpuBackend for VulkanBackend {
             label: desc.label.to_owned(),
             handle: pipeline[0],
             bind_point: ash::vk::PipelineBindPoint::GRAPHICS,
+            layout: self.pipeline_layout,
         })
     }
 
@@ -647,6 +647,21 @@ impl GpuBackend for VulkanBackend {
                 kind: GpuErrorKind::ResourceCreation,
             });
         }
+        // Build specialization constant for world_dimension (constant_id = 0) if provided.
+        let spec_data: f32 = desc.world_dimension.unwrap_or(500.0);
+        let spec_entry = ash::vk::SpecializationMapEntry {
+            constant_id: 0,
+            offset: 0,
+            size: std::mem::size_of::<f32>(),
+        };
+        let spec_info = ash::vk::SpecializationInfo {
+            map_entry_count: if desc.world_dimension.is_some() { 1 } else { 0 },
+            p_map_entries: &spec_entry,
+            data_size: std::mem::size_of::<f32>(),
+            p_data: &spec_data as *const f32 as *const std::ffi::c_void,
+            ..Default::default()
+        };
+
         let shader_module = desc
             .shader_source
             .iter()
@@ -658,15 +673,16 @@ impl GpuBackend for VulkanBackend {
                     stage: source.stage,
                     module,
                     p_name: SHADER_ENTRY_POINT.as_ptr(),
+                    p_specialization_info: &spec_info,
                     ..Default::default()
                 })
             })
             .collect::<Result<Vec<_>, GpuError>>()?[0];
-        println!("Compiled shader {} to module", desc.label,);
+        println!("Compiled shader {} to module", desc.label);
 
         let pipeline_info = ash::vk::ComputePipelineCreateInfo {
             stage: shader_module,
-            layout: self.pipeline_layout,
+            layout: self.compute_pipeline_layout,
             ..Default::default()
         };
 
@@ -679,7 +695,7 @@ impl GpuBackend for VulkanBackend {
         }
         .map_err(|e| {
             GpuError::new(
-                format!("Failed to create graphics pipeline: {e:?}"),
+                format!("Failed to create compute pipeline: {e:?}"),
                 GpuErrorKind::ResourceCreation,
             )
         })?;
@@ -696,7 +712,8 @@ impl GpuBackend for VulkanBackend {
         Ok(VulkanPipeline {
             label: desc.label.to_owned(),
             handle: pipeline[0],
-            bind_point: ash::vk::PipelineBindPoint::GRAPHICS,
+            bind_point: ash::vk::PipelineBindPoint::COMPUTE,
+            layout: self.compute_pipeline_layout,
         })
     }
 
@@ -1434,7 +1451,7 @@ impl GpuBackend for VulkanBackend {
             1 => pending_push.tex1 = target.descriptor_index,
             2 => pending_push.tex2 = target.descriptor_index,
             3 => pending_push.tex3 = target.descriptor_index,
-            4 => pending_push.tex4 = target.descriptor_index,
+            // 4 => pending_push.tex4 = target.descriptor_index,
             _ => {}
         }
 
@@ -1609,6 +1626,7 @@ impl GpuBackend for VulkanBackend {
         };
 
         unsafe {
+            pending_push.is_instanced = 1;
             self.device.cmd_push_constants(
                 command_buffer,
                 self.pipeline_layout,
@@ -1631,6 +1649,7 @@ impl GpuBackend for VulkanBackend {
         // pass-wide or will be overwritten by the next material bind.
         pending_push.model = PushConstants::default().model;
         pending_push.has_parallax = 0;
+        pending_push.is_instanced = 0;
     }
 
     fn execute_compute_one_shot(
@@ -1639,12 +1658,37 @@ impl GpuBackend for VulkanBackend {
         buffers: &[(u32, &Self::Buffer)],
         textures: &[(u32, &Self::Texture)],
         work_groups: (u32, u32, u32),
+        max_instances: u32,
+        asset_offset: u32,
+        max_height: f32,
+        spawn_height_min: f32,
+        spawn_height_max: f32,
+        slope_max: f32,
+        scale_min: f32,
+        scale_max: f32,
+        tilt_factor: f32,
+        terrain_segments_f: f32,
     ) -> Result<(), GpuError> {
         let cmdbuff = self.begin_single_time_commands()?;
         for (binding, buffer) in buffers {
             self.bind_buffer_to_descriptor(*binding, buffer);
         }
         for (binding, texture) in textures {
+            if texture.current_layout.get() != ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL {
+                self.transition_image_layout(
+                    cmdbuff,
+                    texture.image,
+                    texture.current_layout.get(),
+                    ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    ash::vk::ImageAspectFlags::COLOR,
+                    1,
+                    texture.mip_levels,
+                )?;
+                texture
+                    .current_layout
+                    .set(ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+            }
+
             let info0 = ash::vk::DescriptorImageInfo {
                 sampler: texture.sampler,
                 image_view: texture.image_view,
@@ -1671,6 +1715,39 @@ impl GpuBackend for VulkanBackend {
         }
 
         unsafe {
+            self.device.cmd_bind_descriptor_sets(
+                cmdbuff,
+                ash::vk::PipelineBindPoint::COMPUTE,
+                pipeline.layout,
+                0,
+                &[self.descriptors.sets[0]],
+                &[],
+            );
+        }
+
+        unsafe {
+            let push = ComputePushConstants {
+                max_instances,
+                asset_offset,
+                max_height,
+                spawn_height_min,
+                spawn_height_max,
+                slope_max,
+                scale_min,
+                scale_max,
+                tilt_factor,
+                terrain_segments_f,
+            };
+            self.device.cmd_push_constants(
+                cmdbuff,
+                pipeline.layout,
+                ash::vk::ShaderStageFlags::COMPUTE,
+                0,
+                as_bytes(std::slice::from_ref(&push)),
+            );
+        }
+
+        unsafe {
             self.device
                 .cmd_dispatch(cmdbuff, work_groups.0, work_groups.1, work_groups.2);
         }
@@ -1679,9 +1756,11 @@ impl GpuBackend for VulkanBackend {
             .iter()
             .map(|(_, b)| ash::vk::BufferMemoryBarrier2 {
                 src_stage_mask: ash::vk::PipelineStageFlags2::COMPUTE_SHADER,
-                dst_stage_mask: ash::vk::PipelineStageFlags2::VERTEX_SHADER,
+                dst_stage_mask: ash::vk::PipelineStageFlags2::DRAW_INDIRECT
+                    | ash::vk::PipelineStageFlags2::VERTEX_SHADER,
                 src_access_mask: ash::vk::AccessFlags2::SHADER_WRITE,
-                dst_access_mask: ash::vk::AccessFlags2::INDIRECT_COMMAND_READ,
+                dst_access_mask: ash::vk::AccessFlags2::INDIRECT_COMMAND_READ
+                    | ash::vk::AccessFlags2::SHADER_STORAGE_READ,
                 buffer: b.buffer,
                 offset: 0,
                 size: b.size,
@@ -1706,13 +1785,13 @@ impl GpuBackend for VulkanBackend {
         let Some(CurrentFrame { pending_push, .. }) = &mut self.current_frame else {
             return;
         };
-        let data = crate::engine::backend::as_bytes(std::slice::from_ref(model));
+        let data = as_bytes(std::slice::from_ref(model));
         pending_push.model.copy_from_slice(unsafe {
             std::slice::from_raw_parts(data.as_ptr() as *const f32, 16)
         });
     }
 
-    fn set_material_properties(&mut self, props: crate::engine::backend::MaterialProperties) {
+    fn set_material_properties(&mut self, props: MaterialProperties) {
         let Some(CurrentFrame { pending_push, .. }) = &mut self.current_frame else {
             return;
         };
@@ -1971,4 +2050,5 @@ pub struct VulkanPipeline {
     label: String,
     handle: ash::vk::Pipeline,
     bind_point: ash::vk::PipelineBindPoint,
+    layout: ash::vk::PipelineLayout,
 }

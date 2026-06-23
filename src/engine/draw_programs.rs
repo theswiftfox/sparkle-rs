@@ -474,7 +474,7 @@ impl<B: GpuBackend> DeferredPassLight<B> {
 
 // ShadowPass
 
-const SHADOW_MAP_SIZE: u32 = 2048;
+pub const SHADOW_MAP_SIZE: u32 = 2048;
 
 /// Shadow mapping pass: renders the scene from the light's perspective into a depth map.
 ///

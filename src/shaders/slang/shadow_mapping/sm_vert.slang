@@ -16,12 +16,17 @@ struct VS_OUT {
 	uint tex1;
 	uint tex2;
 	uint tex3;
+	uint has_parallax;
+	uint is_instanced;
 };
 
+[[vk::binding(10, 0)]] StructuredBuffer<float4x4> instanceTransforms;
+
 [shader("vertex")]
-VS_OUT main(VS_IN input) {
+VS_OUT main(VS_IN input, uint instanceID : SV_InstanceID) {
 	VS_OUT output;
-	float4 worldPos = mul(model, float4(input.pos, 1.0));
+	float4x4 M = is_instanced != 0u ? instanceTransforms[instanceID] : model;
+	float4 worldPos = mul(M, float4(input.pos, 1.0));
 	output.pos = mul(lightSpaceMatrix, worldPos);
 
 	return output;

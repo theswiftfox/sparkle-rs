@@ -200,56 +200,25 @@ impl<'a, B: GpuBackend> GltfImporter<'a, B> {
                         }
                     }
 
-                    // 1. Extract MR texture pixels and classify the material BEFORE importing
-                    //    so we can decide whether to generate height maps from normal maps.
-                    let material_classification = match pbr.metallic_roughness_texture() {
-                        Some(info) => {
-                            let tx = info.texture();
-                            let img = tx.source();
-                            let img_raw = &self.images[img.index()];
-                            let (width, height) = (img_raw.width, img_raw.height);
-
-                            let rgba_pixels: Vec<u8> = match img_raw.format {
-                                gltf::image::Format::R8G8B8 => convert_3ch_to_4ch_img(&img_raw),
-                                gltf::image::Format::R8G8B8A8 => img_raw.pixels.to_vec(),
-                                _ => Vec::new(),
-                            };
-
-                            if !rgba_pixels.is_empty() {
-                                Some(classify_gltf_material(width, height, &rgba_pixels))
-                            } else {
-                                None
-                            }
-                        }
-                        None => None,
-                    };
-
-                    let classification =
-                        material_classification.unwrap_or(MaterialClassification {
-                            parallax_enabled: false,
-                            roughness_factor_override: 0.0,
-                        });
-
                     // Load textures: albedo, metallic-roughness, normal map
                     let (tex_color, transparent) = match alb {
                         Some(info) => {
                             let tx = info.texture();
-                            self.import_texture(tx, true, false)
+                            self.import_texture(tx, true)
                         }
                         None => (self.missing_tex.clone(), false),
                     };
                     let tex_mr = match pbr.metallic_roughness_texture() {
                         Some(info) => {
                             let tx = info.texture();
-                            self.import_texture(tx, true, false).0
+                            self.import_texture(tx, true).0
                         }
                         None => self.missing_tex.clone(),
                     };
                     let tex_norm = match mat.normal_texture() {
                         Some(info) => {
                             let tx = info.texture();
-                            self.import_texture(tx, false, classification.parallax_enabled)
-                                .0
+                            self.import_texture(tx, false).0
                         }
                         None => self.flat_normal_tex.clone(),
                     };
@@ -376,7 +345,6 @@ impl<'a, B: GpuBackend> GltfImporter<'a, B> {
                     drawable.add_texture(0, tex_color);
                     drawable.add_texture(1, tex_mr);
                     drawable.add_texture(2, tex_norm);
-                    drawable.set_parallax(classification.parallax_enabled);
                     if mat.double_sided() {
                         drawable.set_double_sided(true);
                     }
@@ -405,7 +373,6 @@ impl<'a, B: GpuBackend> GltfImporter<'a, B> {
         &mut self,
         gltf_tex: gltf::Texture,
         srgb: bool,
-        generate_height: bool,
     ) -> (Rc<B::Texture>, bool) {
         let index = gltf_tex.index();
         if let Some((tex, transparent)) = self.texture_buffer.get(&index) {
@@ -427,14 +394,6 @@ impl<'a, B: GpuBackend> GltfImporter<'a, B> {
             gltf::image::Format::R8G8B8 => {
                 // Pad 3-channel RGB to 4-channel RGBA (alpha = 255)
                 image_data = convert_3ch_to_4ch_img(img_raw);
-                if generate_height {
-                    let height_map =
-                        generate_height_map(img_raw.width, img_raw.height, &image_data);
-                    for (idx, v) in height_map.into_iter().enumerate() {
-                        let i = idx * 4 + 3;
-                        image_data[i] = v;
-                    }
-                }
                 let fmt = if srgb {
                     TextureFormat::Rgba8UnormSrgb
                 } else {
@@ -448,14 +407,6 @@ impl<'a, B: GpuBackend> GltfImporter<'a, B> {
                     if img_raw.pixels[i] < 255 {
                         transparent = true;
                         break;
-                    }
-                }
-                if generate_height {
-                    let height_map =
-                        generate_height_map(img_raw.width, img_raw.height, &image_data);
-                    for (idx, v) in height_map.into_iter().enumerate() {
-                        let i = idx * 4 + 3;
-                        image_data[i] = v;
                     }
                 }
                 let fmt = if srgb {
@@ -500,100 +451,6 @@ impl<'a, B: GpuBackend> GltfImporter<'a, B> {
         self.texture_buffer
             .insert(index, (tex.clone(), transparent));
         (tex, transparent)
-    }
-}
-
-fn generate_height_map(width: u32, height: u32, img_data: &[u8]) -> Vec<u8> {
-    let mut raw_depths = vec![0f32; (width * height) as usize];
-
-    // 1. Calculate raw slope variance
-    for y in 0..height {
-        for x in 0..width {
-            let idx = ((y * width + x) * 4) as usize;
-            let nx = (img_data[idx] as f32 / 255.0) * 2.0 - 1.0;
-            let ny = (img_data[idx + 1] as f32 / 255.0) * 2.0 - 1.0;
-
-            // Measure steepness
-            let slope = (nx.powi(2) + ny.powi(2)).sqrt();
-            raw_depths[(y * width + x) as usize] = slope;
-        }
-    }
-
-    let mut final_map = vec![0u8; (width * height) as usize];
-
-    // 2. Stronger 5x5 Smoothing Filter to wipe out pixel noise completely
-    for y in 2..(height - 2) {
-        for x in 2..(width - 2) {
-            let mut sum = 0.0f32;
-            let mut count = 0.0f32;
-
-            for ky in -2..=2 {
-                for kx in -2..=2 {
-                    let sample_idx = ((y as i32 + ky) * width as i32 + (x as i32 + kx)) as usize;
-                    sum += raw_depths[sample_idx];
-                    count += 1.0;
-                }
-            }
-
-            let averaged_slope = sum / count;
-
-            // 3. Add a slight contrast curve so subtle noise stays completely flat (0)
-            let mut normalized_depth = averaged_slope.powi(2) * 2.0;
-            if normalized_depth < 0.05 {
-                normalized_depth = 0.0;
-            } // Threshold gate
-
-            final_map[(y * width + x) as usize] = (normalized_depth.clamp(0.0, 1.0) * 255.0) as u8;
-        }
-    }
-
-    final_map
-}
-
-struct MaterialClassification {
-    parallax_enabled: bool,
-    roughness_factor_override: f32,
-}
-
-fn classify_gltf_material(
-    width: u32,
-    height: u32,
-    roughness_rgba8: &[u8],
-) -> MaterialClassification {
-    let total_pixels = (width * height) as f32;
-    let mut sum_roughness = 0.0f32;
-
-    // 1. Calculate the Arithmetic Mean of the Roughness channel
-    // Remember: glTF packs Roughness directly into the GREEN channel (idx + 1)
-    for y in 0..height {
-        for x in 0..width {
-            let idx = ((y * width + x) * 4) as usize;
-            let r_val = roughness_rgba8[idx + 1] as f32 / 255.0; // [0.0 - 1.0]
-            sum_roughness += r_val;
-        }
-    }
-    let mean_roughness = sum_roughness / total_pixels;
-
-    // 2. Calculate the Variance / Standard Deviation of the texture channel
-    let mut sum_variance = 0.0f32;
-    for y in 0..height {
-        for x in 0..width {
-            let idx = ((y * width + x) * 4) as usize;
-            let r_val = roughness_rgba8[idx + 1] as f32 / 255.0;
-            sum_variance += (r_val - mean_roughness).powi(2);
-        }
-    }
-    let standard_deviation = (sum_variance / total_pixels).sqrt();
-
-    // 3. THE CLASSIFIER RULE EXECUTOR:
-    // If a texture is uniformly dead matte (High Mean, Extremely Low Standard Deviation),
-    // it belongs to a fabric layer (like Sponza curtains) or soft fuzz.
-    // If it has micro-detail variances (High Standard Deviation), it belongs to stone/metal tiles.
-    let is_fabric = mean_roughness > 0.80 && standard_deviation < 0.08;
-
-    MaterialClassification {
-        parallax_enabled: !is_fabric, // Enable parallax only if it's NOT fabric
-        roughness_factor_override: mean_roughness,
     }
 }
 

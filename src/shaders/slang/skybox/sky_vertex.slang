@@ -28,7 +28,6 @@ struct VS_OUT {
 VS_OUT main(VS_IN input) {
     VS_OUT output = (VS_OUT)0;
 
-	float4x4 view = float4x4(1.0);
     output.pos = mul(proj, mul(view, mul(model, float4(input.pos, 1.0)))).xyww;
     output.texCoord = input.pos;
 

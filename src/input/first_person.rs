@@ -57,6 +57,10 @@ impl Camera for FPSController {
     fn position(&self) -> glm::Vec3 {
         self.pos
     }
+    fn focus(&self) -> glm::Vec3 {
+        // FPS camera: shadow anchor = player position (eye = focus)
+        self.pos
+    }
     fn near_far(&self) -> (f32, f32) {
         (self.near_plane, self.far_plane)
     }

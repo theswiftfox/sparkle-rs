@@ -1,4 +1,5 @@
 pub mod backend;
+pub mod compute_push;
 pub mod draw_programs;
 pub mod geometry;
 pub mod procedural;
