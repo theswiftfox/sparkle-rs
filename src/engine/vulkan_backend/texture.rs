@@ -204,21 +204,32 @@ impl VulkanBackend {
     ) -> Result<VulkanTexture, GpuError> {
         let format: ash::vk::Format = info.format.into();
 
-        let (base_usage, aspect_mask) = if info.format == TextureFormat::Depth32Float {
-            (
-                ash::vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
-                ash::vk::ImageAspectFlags::DEPTH,
-            )
-        } else if info.format == TextureFormat::Depth24Stencil8 {
-            (
-                ash::vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
-                ash::vk::ImageAspectFlags::DEPTH | ash::vk::ImageAspectFlags::STENCIL,
-            )
-        } else {
-            (
-                ash::vk::ImageUsageFlags::COLOR_ATTACHMENT,
+        let (image_usage, aspect_mask) = match info.usage {
+            crate::engine::backend::RenderTargetUsage::Color => (
+                ash::vk::ImageUsageFlags::COLOR_ATTACHMENT | ash::vk::ImageUsageFlags::SAMPLED,
                 ash::vk::ImageAspectFlags::COLOR,
-            )
+            ),
+            crate::engine::backend::RenderTargetUsage::Depth => {
+                if info.format == TextureFormat::Depth24Stencil8 {
+                    (
+                        ash::vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
+                            | ash::vk::ImageUsageFlags::SAMPLED,
+                        ash::vk::ImageAspectFlags::DEPTH | ash::vk::ImageAspectFlags::STENCIL,
+                    )
+                } else {
+                    (
+                        ash::vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
+                            | ash::vk::ImageUsageFlags::SAMPLED,
+                        ash::vk::ImageAspectFlags::DEPTH,
+                    )
+                }
+            }
+            crate::engine::backend::RenderTargetUsage::Storage => (
+                ash::vk::ImageUsageFlags::STORAGE
+                    | ash::vk::ImageUsageFlags::TRANSFER_SRC
+                    | ash::vk::ImageUsageFlags::SAMPLED,
+                ash::vk::ImageAspectFlags::COLOR,
+            ),
         };
 
         let (rt, rt_mem) = Self::create_image(
@@ -230,7 +241,7 @@ impl VulkanBackend {
             format,
             1,
             ash::vk::ImageTiling::OPTIMAL,
-            base_usage | ash::vk::ImageUsageFlags::SAMPLED,
+            image_usage,
             ash::vk::MemoryPropertyFlags::DEVICE_LOCAL,
         )?;
 

@@ -369,11 +369,7 @@ impl<'a, B: GpuBackend> GltfImporter<'a, B> {
     /// Import a glTF texture into a backend texture resource.
     /// Returns `(texture, is_transparent)`.
     /// Caches textures by glTF index to avoid duplicate GPU uploads.
-    fn import_texture(
-        &mut self,
-        gltf_tex: gltf::Texture,
-        srgb: bool,
-    ) -> (Rc<B::Texture>, bool) {
+    fn import_texture(&mut self, gltf_tex: gltf::Texture, srgb: bool) -> (Rc<B::Texture>, bool) {
         let index = gltf_tex.index();
         if let Some((tex, transparent)) = self.texture_buffer.get(&index) {
             return (tex.clone(), *transparent);

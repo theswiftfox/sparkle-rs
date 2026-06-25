@@ -7,7 +7,8 @@ use crate::engine::{
         AccelerationStructureType, BlendMode, BufferDesc, BufferUsage, ComputePipelineDesc,
         GpuBackend, GpuError, GpuErrorKind, GpuRenderTarget, GpuTexture, MaterialProperties,
         ProceduralShaders, RenderItem, RenderPassDesc, RenderPipelineDesc, RenderTargetDesc,
-        SamplerDesc, ShaderStage, Shaders, TextureDesc, TextureFormat, ViewportDesc, as_bytes,
+        RenderTargetUsage, RtShaders, SamplerDesc, ShaderStage, Shaders, TextureDesc,
+        TextureFormat, ViewportDesc, as_bytes,
     },
     compute_push::ComputePushConstants,
     geometry::Vertex,
@@ -17,7 +18,7 @@ use crate::engine::{
         buffer::{self, VulkanBuffer},
         create_shader_module,
         egui::{EguiRenderer, build_egui_batches},
-        rt,
+        rt::{self, IDX_CHIT, IDX_MISS, IDX_MISS_SHADOW, IDX_RAYGEN},
         texture::VulkanTexture,
         util::gpu_error_out_of_range,
     },
@@ -645,6 +646,7 @@ impl GpuBackend for VulkanBackend {
             handle: pipeline[0],
             bind_point: ash::vk::PipelineBindPoint::GRAPHICS,
             layout: self.pipeline_layout,
+            sbt: None,
         })
     }
 
@@ -725,6 +727,7 @@ impl GpuBackend for VulkanBackend {
             handle: pipeline[0],
             bind_point: ash::vk::PipelineBindPoint::COMPUTE,
             layout: self.compute_pipeline_layout,
+            sbt: None,
         })
     }
 
@@ -1462,7 +1465,7 @@ impl GpuBackend for VulkanBackend {
             1 => pending_push.tex1 = target.descriptor_index,
             2 => pending_push.tex2 = target.descriptor_index,
             3 => pending_push.tex3 = target.descriptor_index,
-            // 4 => pending_push.tex4 = target.descriptor_index,
+            4 => pending_push.tex4 = target.descriptor_index,
             _ => {}
         }
 
@@ -2061,7 +2064,7 @@ impl GpuBackend for VulkanBackend {
         self.device.rt_supported
     }
 
-    fn create_acceleration_structures(
+    fn create_blas(
         &self,
         ty: AccelerationStructureType,
         render_items: &[RenderItem<'_, Self>],
@@ -2070,12 +2073,12 @@ impl GpuBackend for VulkanBackend {
             return Ok(vec![]);
         }
 
-        let rt_props = self.rt_properties.as_ref().ok_or_else(|| {
-            GpuError::new(
+        let Some(rt::RtFeature { properties, .. }) = &self.rt_feature else {
+            return Err(GpuError::new(
                 "Ray tracing not supported on this device",
                 GpuErrorKind::Other,
-            )
-        })?;
+            ));
+        };
 
         let as_ty: ash::vk::AccelerationStructureTypeKHR = ty.into();
         let as_device = ash::khr::acceleration_structure::Device::new(&self.instance, &self.device);
@@ -2108,6 +2111,14 @@ impl GpuBackend for VulkanBackend {
                     })
             };
 
+            println!(
+                "[BLAS] item vertex_addr=0x{:016x} index_addr=0x{:016x} verts={} tris={}",
+                vertex_address,
+                index_address,
+                render_item.vertex_count(),
+                triangle_count
+            );
+
             let geometry_triangles = ash::vk::AccelerationStructureGeometryTrianglesDataKHR {
                 vertex_format: ash::vk::Format::R32G32B32_SFLOAT,
                 vertex_data: ash::vk::DeviceOrHostAddressConstKHR {
@@ -2132,7 +2143,9 @@ impl GpuBackend for VulkanBackend {
             };
             let range_info = ash::vk::AccelerationStructureBuildRangeInfoKHR {
                 primitive_count: triangle_count,
-                ..Default::default()
+                primitive_offset: 0,
+                first_vertex: 0,
+                transform_offset: 0,
             };
 
             items.push(ItemData {
@@ -2161,12 +2174,16 @@ impl GpuBackend for VulkanBackend {
                     &mut item.size_info,
                 );
             }
+            println!(
+                "[BLAS] size_info: as_size={} scratch_size={}",
+                item.size_info.acceleration_structure_size, item.size_info.build_scratch_size
+            );
         }
 
         // Allocate a single scratch buffer sized to the largest single AS.
         // All builds share it sequentially; memory barriers between builds
         // ensure each build completes before the next reads scratch.
-        let align = rt_props.min_scratch_offset_alignment as u64;
+        let align = properties.min_scratch_offset_alignment as u64;
         let max_scratch_raw = items
             .iter()
             .map(|d| d.size_info.build_scratch_size)
@@ -2281,7 +2298,8 @@ impl GpuBackend for VulkanBackend {
 
         let as_build_barrier = ash::vk::MemoryBarrier {
             src_access_mask: ash::vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
-            dst_access_mask: ash::vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
+            dst_access_mask: ash::vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR
+                | ash::vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
             ..Default::default()
         };
 
@@ -2375,12 +2393,15 @@ impl GpuBackend for VulkanBackend {
             ));
         }
 
-        let rt_props = self.rt_properties.as_ref().ok_or_else(|| {
-            GpuError::new(
+        let Some(rt::RtFeature { properties, .. }) = &self.rt_feature else {
+            return Err(GpuError::new(
                 "Ray tracing not supported on this device",
                 GpuErrorKind::Other,
-            )
-        })?;
+            ));
+        };
+
+        println!("First Transform: {:?}", transforms.first().unwrap());
+        println!("Last Transform: {:?}", transforms.last().unwrap());
 
         let as_device = ash::khr::acceleration_structure::Device::new(&self.instance, &self.device);
 
@@ -2401,14 +2422,22 @@ impl GpuBackend for VulkanBackend {
                 };
 
                 // Transpose column-major glm::Mat4 to row-major 3x4, then flatten to [f32; 12]
-                let t = glm::transpose(transform);
-                let m = t.as_slice();
+                let m = transform.as_slice();
                 let transform_matrix = ash::vk::TransformMatrixKHR {
-                    // Row 0: [m00, m01, m02, m03], Row 1: [m10, m11, m12, m13], Row 2: [m20, m21, m22, m23]
                     matrix: [
-                        m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11],
+                        m[0], m[4], m[8], m[12], // row 0
+                        m[1], m[5], m[9], m[13], // row 1
+                        m[2], m[6], m[10], m[14], // row 2
                     ],
                 };
+
+                println!(
+                    "[TLAS] instance {} blas_addr=0x{:016x} transform=[{:.3},{:.3},{:.3},{:.3} | {:.3},{:.3},{:.3},{:.3} | {:.3},{:.3},{:.3},{:.3}]",
+                    i, blas_address,
+                    m[0], m[4], m[8], m[12],
+                    m[1], m[5], m[9], m[13],
+                    m[2], m[6], m[10], m[14],
+                );
 
                 ash::vk::AccelerationStructureInstanceKHR {
                     transform: transform_matrix,
@@ -2543,7 +2572,7 @@ impl GpuBackend for VulkanBackend {
             );
         }
 
-        let align = rt_props.min_scratch_offset_alignment as u64;
+        let align = properties.min_scratch_offset_alignment as u64;
         let scratch_size = (size_info.build_scratch_size + align - 1) & !(align - 1);
 
         let mut scratch_alloc_flags = ash::vk::MemoryAllocateFlagsInfo {
@@ -2676,6 +2705,411 @@ impl GpuBackend for VulkanBackend {
             },
         })
     }
+
+    fn create_rt_pipeline(
+        &self,
+        shaders: &crate::engine::backend::RtShaders<Self>,
+    ) -> Result<Self::Pipeline, GpuError> {
+        let Some(rt_feature) = &self.rt_feature else {
+            return Err(GpuError {
+                message: "Raytracing is not supported!".into(),
+                kind: GpuErrorKind::Other,
+            });
+        };
+
+        let raygen_module = create_shader_module(
+            shaders.raygen[0].code,
+            &self.device,
+            shaders.raygen[0].label,
+        )?;
+        let miss_module =
+            create_shader_module(shaders.miss[0].code, &self.device, shaders.miss[0].label)?;
+        let miss_shadow_module = create_shader_module(
+            shaders.miss_shadow[0].code,
+            &self.device,
+            shaders.miss_shadow[0].label,
+        )?;
+        let chit_module = create_shader_module(
+            shaders.closest_hit[0].code,
+            &self.device,
+            shaders.closest_hit[0].label,
+        )?;
+
+        let stages = [
+            ash::vk::PipelineShaderStageCreateInfo {
+                stage: ash::vk::ShaderStageFlags::RAYGEN_KHR,
+                module: raygen_module,
+                p_name: SHADER_ENTRY_POINT.as_ptr(),
+                ..Default::default()
+            },
+            ash::vk::PipelineShaderStageCreateInfo {
+                stage: ash::vk::ShaderStageFlags::MISS_KHR,
+                module: miss_module,
+                p_name: SHADER_ENTRY_POINT.as_ptr(),
+                ..Default::default()
+            },
+            ash::vk::PipelineShaderStageCreateInfo {
+                stage: ash::vk::ShaderStageFlags::MISS_KHR,
+                module: miss_shadow_module,
+                p_name: SHADER_ENTRY_POINT.as_ptr(),
+                ..Default::default()
+            },
+            ash::vk::PipelineShaderStageCreateInfo {
+                stage: ash::vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+                module: chit_module,
+                p_name: SHADER_ENTRY_POINT.as_ptr(),
+                ..Default::default()
+            },
+        ];
+
+        let groups = [
+            // group 0: raygen
+            ash::vk::RayTracingShaderGroupCreateInfoKHR {
+                ty: ash::vk::RayTracingShaderGroupTypeKHR::GENERAL,
+                general_shader: IDX_RAYGEN,
+                closest_hit_shader: ash::vk::SHADER_UNUSED_KHR,
+                any_hit_shader: ash::vk::SHADER_UNUSED_KHR,
+                intersection_shader: ash::vk::SHADER_UNUSED_KHR,
+                ..Default::default()
+            },
+            // group 1: primary miss
+            ash::vk::RayTracingShaderGroupCreateInfoKHR {
+                ty: ash::vk::RayTracingShaderGroupTypeKHR::GENERAL,
+                general_shader: IDX_MISS,
+                closest_hit_shader: ash::vk::SHADER_UNUSED_KHR,
+                any_hit_shader: ash::vk::SHADER_UNUSED_KHR,
+                intersection_shader: ash::vk::SHADER_UNUSED_KHR,
+                ..Default::default()
+            },
+            // group 2: shadow miss
+            ash::vk::RayTracingShaderGroupCreateInfoKHR {
+                ty: ash::vk::RayTracingShaderGroupTypeKHR::GENERAL,
+                general_shader: IDX_MISS_SHADOW,
+                closest_hit_shader: ash::vk::SHADER_UNUSED_KHR,
+                any_hit_shader: ash::vk::SHADER_UNUSED_KHR,
+                intersection_shader: ash::vk::SHADER_UNUSED_KHR,
+                ..Default::default()
+            },
+            // group 3: hit group (closest-hit fires shadow sub-ray)
+            ash::vk::RayTracingShaderGroupCreateInfoKHR {
+                ty: ash::vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP,
+                general_shader: ash::vk::SHADER_UNUSED_KHR,
+                closest_hit_shader: IDX_CHIT,
+                any_hit_shader: ash::vk::SHADER_UNUSED_KHR,
+                intersection_shader: ash::vk::SHADER_UNUSED_KHR,
+                ..Default::default()
+            },
+        ];
+
+        let create_info = ash::vk::RayTracingPipelineCreateInfoKHR {
+            stage_count: stages.len() as u32,
+            p_stages: stages.as_ptr(),
+            group_count: groups.len() as u32,
+            p_groups: groups.as_ptr(),
+            max_pipeline_ray_recursion_depth: 2, // primary ray + shadow sub-ray
+            layout: rt_feature.pipeline_layout,
+            ..Default::default()
+        };
+
+        let pipelines = unsafe {
+            rt_feature.pipeline_loader.create_ray_tracing_pipelines(
+                ash::vk::DeferredOperationKHR::null(),
+                ash::vk::PipelineCache::null(),
+                &[create_info],
+                None,
+            )
+        }
+        .map_err(|e| {
+            GpuError::new(
+                format!("Raytracing pipeline creation failed: {e:?}"),
+                GpuErrorKind::ResourceCreation,
+            )
+        })?;
+
+        let pipeline = if pipelines.len() == 0 {
+            return Err(GpuError::new(
+                "Create RT pipelines returned 0 pipelines.",
+                GpuErrorKind::Other,
+            ));
+        } else {
+            pipelines[0]
+        };
+
+        unsafe {
+            self.device.destroy_shader_module(raygen_module, None);
+            self.device.destroy_shader_module(miss_module, None);
+            self.device.destroy_shader_module(miss_shadow_module, None);
+            self.device.destroy_shader_module(chit_module, None);
+        }
+
+        self.vulkan_handle_tracker.register_pipeline(pipeline);
+
+        let sbt = self.create_sbt(
+            &rt_feature.pipeline_loader,
+            pipeline,
+            &rt_feature.properties,
+        )?;
+
+        Ok(VulkanPipeline {
+            label: "Raytracing Pipeline".into(),
+            handle: pipeline,
+            bind_point: ash::vk::PipelineBindPoint::RAY_TRACING_KHR,
+            layout: rt_feature.pipeline_layout,
+            sbt: Some(sbt),
+        })
+    }
+
+    fn create_rt_output_target(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> Result<Self::RenderTarget, GpuError> {
+        self.create_render_target(&RenderTargetDesc {
+            width,
+            height,
+            format: TextureFormat::R16g16b16a16Float,
+            sampler: SamplerDesc::default(),
+            usage: RenderTargetUsage::Storage,
+        })
+    }
+
+    fn dispatch_rays(
+        &mut self,
+        pipeline: &Self::Pipeline,
+        tlas: &Self::AccelerationStructure,
+        output: &Self::RenderTarget,
+        light_buffer: &Self::Buffer,
+        width: u32,
+        height: u32,
+        number_of_lights: u32,
+    ) {
+        let Some(CurrentFrame {
+            command_buffer,
+            idx,
+            ..
+        }) = self.current_frame
+        else {
+            eprintln!("[dispatch_rays] No active frame");
+            return;
+        };
+        let Some(rt) = &self.rt_feature else {
+            eprintln!("[dispatch_rays] RT feature not available");
+            return;
+        };
+        let sbt = match &pipeline.sbt {
+            Some(s) => s,
+            None => {
+                eprintln!("[dispatch_rays] Pipeline has no SBT");
+                return;
+            }
+        };
+
+        // Extract the per-frame output texture
+        let output_tex = match output {
+            RenderTarget::Texture(trt) => &trt.targets[idx],
+            RenderTarget::Swapchain(_) => {
+                eprintln!("[dispatch_rays] RT output must be a TextureRenderTarget");
+                return;
+            }
+        };
+
+        // Transition storage image UNDEFINED → GENERAL
+        println!(
+            "[dispatch_rays] dispatching {}x{} num_lights={}",
+            width, height, number_of_lights
+        );
+        if let Err(e) = self.transition_image_layout(
+            command_buffer,
+            output_tex.image,
+            output_tex.current_layout.get(),
+            ash::vk::ImageLayout::GENERAL,
+            ash::vk::ImageAspectFlags::COLOR,
+            1,
+            1,
+        ) {
+            eprintln!("[dispatch_rays] Layout transition failed: {e:?}");
+            return;
+        }
+        output_tex.current_layout.set(ash::vk::ImageLayout::GENERAL);
+
+        // Barrier: ensure light buffer transfer is visible to RT shaders
+        let light_barrier = ash::vk::BufferMemoryBarrier2 {
+            src_stage_mask: ash::vk::PipelineStageFlags2::TRANSFER,
+            dst_stage_mask: ash::vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR,
+            src_access_mask: ash::vk::AccessFlags2::TRANSFER_WRITE,
+            dst_access_mask: ash::vk::AccessFlags2::SHADER_READ,
+            buffer: light_buffer.frame_buffer(idx),
+            offset: 0,
+            size: ash::vk::WHOLE_SIZE,
+            ..Default::default()
+        };
+        let barrier_info = ash::vk::DependencyInfo {
+            buffer_memory_barrier_count: 1,
+            p_buffer_memory_barriers: &light_barrier,
+            ..Default::default()
+        };
+        unsafe {
+            self.device
+                .cmd_pipeline_barrier2(command_buffer, &barrier_info);
+        }
+
+        // Bind the RT pipeline
+        unsafe {
+            self.device.cmd_bind_pipeline(
+                command_buffer,
+                ash::vk::PipelineBindPoint::RAY_TRACING_KHR,
+                pipeline.handle,
+            );
+        }
+
+        // Bind set 0 (bindless) using RT pipeline layout
+        unsafe {
+            self.device.cmd_bind_descriptor_sets(
+                command_buffer,
+                ash::vk::PipelineBindPoint::RAY_TRACING_KHR,
+                rt.pipeline_layout,
+                0,
+                &[self.descriptors.sets[idx]],
+                &[],
+            );
+        }
+
+        // Push-write set 1: TLAS (binding 0) + storage image (binding 1) + light buffer (binding 2)
+        let tlas_write_ext = ash::vk::WriteDescriptorSetAccelerationStructureKHR {
+            acceleration_structure_count: 1,
+            p_acceleration_structures: &tlas.handle,
+            ..Default::default()
+        };
+        let tlas_write = ash::vk::WriteDescriptorSet {
+            p_next: &tlas_write_ext as *const _ as *const _,
+            dst_binding: 0,
+            dst_array_element: 0,
+            descriptor_count: 1,
+            descriptor_type: ash::vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
+            ..Default::default()
+        };
+        let image_info = ash::vk::DescriptorImageInfo {
+            image_view: output_tex.image_view,
+            image_layout: ash::vk::ImageLayout::GENERAL,
+            sampler: ash::vk::Sampler::null(),
+        };
+        let image_write = ash::vk::WriteDescriptorSet {
+            dst_binding: 1,
+            dst_array_element: 0,
+            descriptor_count: 1,
+            descriptor_type: ash::vk::DescriptorType::STORAGE_IMAGE,
+            p_image_info: &image_info,
+            ..Default::default()
+        };
+        let light_buf_info = ash::vk::DescriptorBufferInfo {
+            buffer: light_buffer.frame_buffer(idx),
+            offset: 0,
+            range: light_buffer.size,
+        };
+        let light_buf_write = ash::vk::WriteDescriptorSet {
+            dst_binding: 2,
+            dst_array_element: 0,
+            descriptor_count: 1,
+            descriptor_type: ash::vk::DescriptorType::STORAGE_BUFFER,
+            p_buffer_info: &light_buf_info,
+            ..Default::default()
+        };
+        let writes = [tlas_write, image_write, light_buf_write];
+        unsafe {
+            self.push_descriptor.cmd_push_descriptor_set(
+                command_buffer,
+                ash::vk::PipelineBindPoint::RAY_TRACING_KHR,
+                rt.pipeline_layout,
+                1,
+                &writes,
+            );
+        }
+
+        // Push RT constants: frame_index, width, height, number_of_lights
+        #[repr(C)]
+        struct RtPushConstants {
+            frame_index: u32,
+            width: u32,
+            height: u32,
+            number_of_lights: u32,
+        }
+        let pc = RtPushConstants {
+            frame_index: idx as u32,
+            width,
+            height,
+            number_of_lights,
+        };
+        unsafe {
+            self.device.cmd_push_constants(
+                command_buffer,
+                rt.pipeline_layout,
+                ash::vk::ShaderStageFlags::RAYGEN_KHR
+                    | ash::vk::ShaderStageFlags::MISS_KHR
+                    | ash::vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+                0,
+                std::slice::from_raw_parts(
+                    &pc as *const RtPushConstants as *const u8,
+                    std::mem::size_of::<RtPushConstants>(),
+                ),
+            );
+        }
+
+        // Dispatch rays
+        unsafe {
+            rt.pipeline_loader.cmd_trace_rays(
+                command_buffer,
+                &sbt.regions.raygen,
+                &sbt.regions.miss,
+                &sbt.regions.hit,
+                &sbt.regions.callable,
+                width,
+                height,
+                1,
+            );
+        }
+
+        // Transition storage image GENERAL → SHADER_READ_ONLY_OPTIMAL so deferred_light can sample it
+        if let Err(e) = self.transition_image_layout(
+            command_buffer,
+            output_tex.image,
+            ash::vk::ImageLayout::GENERAL,
+            ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            ash::vk::ImageAspectFlags::COLOR,
+            1,
+            1,
+        ) {
+            eprintln!("[dispatch_rays] Post-trace layout transition failed: {e:?}");
+            return;
+        }
+        output_tex
+            .current_layout
+            .set(ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+    }
+
+    fn load_rt_shaders(&self) -> RtShaders<Self> {
+        RtShaders {
+            raygen: vec![Shader {
+                label: "RT raygen",
+                stage: ash::vk::ShaderStageFlags::RAYGEN_KHR,
+                code: include_bytes!("../../shaders/spv/rt/raygen.spv"),
+            }],
+            miss: vec![Shader {
+                label: "RT Miss",
+                stage: ash::vk::ShaderStageFlags::MISS_KHR,
+                code: include_bytes!("../../shaders/spv/rt/miss.spv"),
+            }],
+            miss_shadow: vec![Shader {
+                label: "RT raygen",
+                stage: ash::vk::ShaderStageFlags::MISS_KHR,
+                code: include_bytes!("../../shaders/spv/rt/miss_shadow.spv"),
+            }],
+            closest_hit: vec![Shader {
+                label: "RT raygen",
+                stage: ash::vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+                code: include_bytes!("../../shaders/spv/rt/closest_hit.spv"),
+            }],
+        }
+    }
 }
 
 pub struct VulkanPipeline {
@@ -2683,4 +3117,5 @@ pub struct VulkanPipeline {
     handle: ash::vk::Pipeline,
     bind_point: ash::vk::PipelineBindPoint,
     layout: ash::vk::PipelineLayout,
+    sbt: Option<rt::RtSbt>,
 }

@@ -1,15 +1,8 @@
 import color_utils;
+import push_constants;
 
 [[vk::binding(6, 0)]]
 Sampler2D<float4> blendTex[] : register(t0);
-
-[[vk::push_constant]] cbuffer PushConstants {
-	float4x4 model;
-	uint tex0;
-	uint tex1;
-	uint tex2;
-	uint tex3;
-};
 
 [vk::constant_id(0)] uint isHdr = false;
 [vk::constant_id(1)] float gamma = 2.2;

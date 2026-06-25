@@ -30,6 +30,8 @@ use super::geometry::{Light, LightType};
 pub(crate) struct ViewProjUniforms {
     pub view: glm::Mat4,
     pub proj: glm::Mat4,
+    pub inv_view: glm::Mat4,
+    pub inv_proj: glm::Mat4,
 }
 
 /// Camera position and SSAO toggle — used by lighting pixel shaders.
@@ -232,6 +234,7 @@ impl<B: GpuBackend> ForwardPass<B> {
             height: resolution.1,
             format: TextureFormat::R16g16b16a16Float,
             sampler: SamplerDesc::default(),
+            usage: RenderTargetUsage::Color,
         })?;
 
         Ok(ForwardPass {
@@ -248,6 +251,7 @@ impl<B: GpuBackend> ForwardPass<B> {
             height: resolution.1,
             format: TextureFormat::R16g16b16a16Float,
             sampler: SamplerDesc::default(),
+            usage: RenderTargetUsage::Color,
         })?;
         Ok(())
     }
@@ -339,18 +343,21 @@ impl<B: GpuBackend> DeferredPassPre<B> {
             height: resolution.1,
             format: TextureFormat::Rgba32Float,
             sampler: SamplerDesc::default(),
+            usage: RenderTargetUsage::Color,
         })?;
         let normal_roughness_target = backend.create_render_target(&RenderTargetDesc {
             width: resolution.0,
             height: resolution.1,
             format: TextureFormat::R16g16b16a16Float,
             sampler: SamplerDesc::default(),
+            usage: RenderTargetUsage::Color,
         })?;
         let albedo_metallic_target = backend.create_render_target(&RenderTargetDesc {
             width: resolution.0,
             height: resolution.1,
             format: TextureFormat::R16g16b16a16Float,
             sampler: SamplerDesc::default(),
+            usage: RenderTargetUsage::Color,
         })?;
 
         Ok(DeferredPassPre {
@@ -369,18 +376,21 @@ impl<B: GpuBackend> DeferredPassPre<B> {
             height: resolution.1,
             format: TextureFormat::Rgba32Float,
             sampler: SamplerDesc::default(),
+            usage: RenderTargetUsage::Color,
         })?;
         self.normal_roughness_target = backend.create_render_target(&RenderTargetDesc {
             width: resolution.0,
             height: resolution.1,
             format: TextureFormat::R16g16b16a16Float,
             sampler: SamplerDesc::default(),
+            usage: RenderTargetUsage::Color,
         })?;
         self.albedo_metallic_target = backend.create_render_target(&RenderTargetDesc {
             width: resolution.0,
             height: resolution.1,
             format: TextureFormat::R16g16b16a16Float,
             sampler: SamplerDesc::default(),
+            usage: RenderTargetUsage::Color,
         })?;
         Ok(())
     }
@@ -448,6 +458,7 @@ impl<B: GpuBackend> DeferredPassLight<B> {
             height: resolution.1,
             format: TextureFormat::R16g16b16a16Float,
             sampler: SamplerDesc::default(),
+            usage: RenderTargetUsage::Color,
         })?;
 
         Ok(DeferredPassLight {
@@ -467,6 +478,7 @@ impl<B: GpuBackend> DeferredPassLight<B> {
             height: resolution.1,
             format: TextureFormat::R16g16b16a16Float,
             sampler: SamplerDesc::default(),
+            usage: RenderTargetUsage::Color,
         })?;
         Ok(())
     }
@@ -547,6 +559,7 @@ impl<B: GpuBackend> ShadowPass<B> {
                 filter: FilterMode::Linear,
                 compare: Some(CompareFunc::LessEqual),
             },
+            usage: RenderTargetUsage::Depth,
         })?;
 
         let shadow_viewport = ViewportDesc {

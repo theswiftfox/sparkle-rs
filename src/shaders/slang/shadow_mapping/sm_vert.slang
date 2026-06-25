@@ -1,3 +1,5 @@
+import push_constants;
+
 struct VS_IN {
 	float3 pos			: POSITION;
 };
@@ -8,16 +10,6 @@ struct VS_OUT {
 
 [[vk::binding(3, 0)]] cbuffer FrameConsts : register(b0) {
 	float4x4 lightSpaceMatrix;
-};
-
-[[vk::push_constant]] cbuffer PushConstants {
-	float4x4 model;
-	uint tex0;
-	uint tex1;
-	uint tex2;
-	uint tex3;
-	uint has_parallax;
-	uint is_instanced;
 };
 
 [[vk::binding(10, 0)]] StructuredBuffer<float4x4> instanceTransforms;

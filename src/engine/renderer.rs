@@ -22,6 +22,9 @@ use crate::input::Camera;
 use std::rc::Rc;
 use std::time::Instant;
 
+/// Maximum number of lights supported by the RT shadow pipeline.
+const MAX_RT_LIGHTS: usize = 8;
+
 pub struct Renderer<B: GpuBackend> {
     settings: Settings,
     scene: Scenegraph<B>,
@@ -53,6 +56,10 @@ pub struct Renderer<B: GpuBackend> {
     // Ray tracing acceleration structures (built once after scene load)
     blas: Vec<B::AccelerationStructure>,
     tlas: Option<B::AccelerationStructure>,
+    // Ray tracing pipeline and output
+    rt_pipeline: Option<B::Pipeline>,
+    rt_output: Option<B::RenderTarget>,
+    rt_light_buffer: Option<B::Buffer>,
 }
 
 impl<B: GpuBackend> Renderer<B> {
@@ -112,6 +119,8 @@ impl<B: GpuBackend> Renderer<B> {
         let view_proj_cpu = ViewProjUniforms {
             view: identity,
             proj: identity,
+            inv_view: identity,
+            inv_proj: identity,
         };
         let camera_pixel_cpu = CameraUniforms {
             camera_pos: glm::Vec3::zeros(),
@@ -120,6 +129,8 @@ impl<B: GpuBackend> Renderer<B> {
         let skybox_view_proj_cpu = ViewProjUniforms {
             view: identity,
             proj: identity,
+            inv_view: identity,
+            inv_proj: identity,
         };
         let near_far_cpu = NearFarUniforms {
             near_plane: 0.1,
@@ -155,6 +166,9 @@ impl<B: GpuBackend> Renderer<B> {
             near_far_cpu,
             blas: Vec::new(),
             tlas: None,
+            rt_pipeline: None,
+            rt_output: None,
+            rt_light_buffer: None,
         })
     }
 
@@ -288,6 +302,7 @@ impl<B: GpuBackend> Renderer<B> {
 
         // Update shared UBOs
         self.view_proj_cpu.proj = proj;
+        self.view_proj_cpu.inv_proj = glm::inverse(&proj);
         self.backend.update_buffer(
             &self.ubo_view_proj,
             as_bytes(std::slice::from_ref(&self.view_proj_cpu)),
@@ -323,6 +338,12 @@ impl<B: GpuBackend> Renderer<B> {
         if let Some(ref mut fwd) = self.forward_program {
             if let Err(e) = fwd.resize(&self.backend, resolution) {
                 eprintln!("Failed to resize forward target: {}", e);
+            }
+        }
+        if self.rt_output.is_some() {
+            match self.backend.create_rt_output_target(width, height) {
+                Ok(rt) => self.rt_output = Some(rt),
+                Err(e) => eprintln!("Failed to resize RT output target: {}", e),
             }
         }
     }
@@ -388,6 +409,23 @@ impl<B: GpuBackend> Renderer<B> {
         )?);
         println!("  skybox: OK");
 
+        // Ray tracing pipeline (optional, requires hardware support)
+        if self.backend.has_rt_support() {
+            let rt_shaders = self.backend.load_rt_shaders();
+            self.rt_pipeline = Some(self.backend.create_rt_pipeline(&rt_shaders)?);
+            self.rt_output =
+                Some(self.backend.create_rt_output_target(resolution.0, resolution.1)?);
+            self.rt_light_buffer = Some(self.backend.create_buffer(
+                &BufferDesc {
+                    label: "rt_light_array".to_string(),
+                    usage: BufferUsage::Storage,
+                    size: std::mem::size_of::<GpuLight>() * MAX_RT_LIGHTS,
+                },
+                None,
+            )?);
+            println!("  rt_pipeline: OK");
+        }
+
         println!("All draw programs initialized.");
         Ok(())
     }
@@ -408,7 +446,7 @@ impl<B: GpuBackend> Renderer<B> {
         };
         match self
             .backend
-            .create_acceleration_structures(AccelerationStructureType::Blas, &render_items)
+            .create_blas(AccelerationStructureType::Blas, &render_items)
         {
             Ok(blas) => {
                 println!("Built {} BLAS(es)", blas.len());
@@ -466,7 +504,7 @@ impl<B: GpuBackend> Renderer<B> {
 
         // Directional light for shadow mapping
         self.scene.add_light(Light {
-            position: glm::vec3(-0.15, -0.5, -0.05).normalize(),
+            position: glm::vec3(-1.0, -0.3, 0.1).normalize(),
             t: LightType::Directional,
             color: glm::vec3(23.47, 21.31, 20.79),
             radius: 1.0,
@@ -600,7 +638,7 @@ impl<B: GpuBackend> Renderer<B> {
         });
         let shadow_dist = self.shadow_dist;
         self.scene.add_light(Light {
-            position: glm::vec3(-0.15, -0.5, -0.05).normalize(),
+            position: glm::vec3(-1.0, -0.3, 0.1).normalize(),
             t: LightType::Directional,
             color: glm::vec3(23.47, 21.31, 20.79),
             radius: 1.0,
@@ -848,7 +886,7 @@ impl<B: GpuBackend> Renderer<B> {
 
         // Directional light
         self.scene.add_light(Light {
-            position: glm::vec3(-0.15, -0.5, -0.05).normalize(),
+            position: glm::vec3(-1.0, -0.3, 0.1).normalize(),
             t: LightType::Directional,
             color: glm::vec3(23.47, 21.31, 20.79),
             radius: 1.0,
@@ -921,6 +959,7 @@ impl<B: GpuBackend> Renderer<B> {
 
         // Update shared UBOs (bindings 0, 1, 4)
         self.view_proj_cpu.view = view;
+        self.view_proj_cpu.inv_view = glm::inverse(&view);
         self.backend.update_buffer(
             &self.ubo_view_proj,
             as_bytes(std::slice::from_ref(&self.view_proj_cpu)),
@@ -1007,6 +1046,35 @@ impl<B: GpuBackend> Renderer<B> {
         let lights = self.scene.get_lights().clone();
         let mut first_light = true;
 
+        // RT shadow: dispatch once before the light loop for all non-ambient lights
+        let use_rt = self.rt_pipeline.is_some()
+            && self.tlas.is_some()
+            && self.rt_output.is_some()
+            && self.rt_light_buffer.is_some();
+        if use_rt {
+            let rt_lights: Vec<GpuLight> = lights
+                .iter()
+                .filter(|l| l.t != LightType::Ambient)
+                .map(|l| GpuLight::from_light(l))
+                .collect();
+            let num_rt_lights = rt_lights.len() as u32;
+            if num_rt_lights > 0 {
+                self.backend.cmd_update_buffer(
+                    self.rt_light_buffer.as_ref().unwrap(),
+                    as_bytes(&rt_lights),
+                );
+                self.backend.dispatch_rays(
+                    self.rt_pipeline.as_ref().unwrap(),
+                    self.tlas.as_ref().unwrap(),
+                    self.rt_output.as_ref().unwrap(),
+                    self.rt_light_buffer.as_ref().unwrap(),
+                    viewport.width as u32,
+                    viewport.height as u32,
+                    num_rt_lights,
+                );
+            }
+        }
+
         for mut light in lights {
             if light.t != LightType::Ambient {
                 let dir = light.position * (-1.0) * self.shadow_dist;
@@ -1036,51 +1104,60 @@ impl<B: GpuBackend> Renderer<B> {
                 as_bytes(std::slice::from_ref(&GpuLight::from_light(&light))),
             );
 
-            // 1. Shadow Mapping for this light
-            if let Some(ref mut shadow) = self.shadow_program {
-                if light.t != LightType::Ambient {
-                    self.backend.cmd_update_buffer(
-                        &self.ubo_shadow_light_space,
-                        as_bytes(std::slice::from_ref(&LightSpaceUniforms {
-                            light_space_matrix: light.light_proj,
-                        })),
-                    );
+            // 1. Shadow Mapping for this light (skip when RT shadows are active)
+            if !use_rt {
+                if let Some(ref mut shadow) = self.shadow_program {
+                    if light.t != LightType::Ambient {
+                        self.backend.cmd_update_buffer(
+                            &self.ubo_shadow_light_space,
+                            as_bytes(std::slice::from_ref(&LightSpaceUniforms {
+                                light_space_matrix: light.light_proj,
+                            })),
+                        );
 
-                    self.backend
-                        .bind_uniform(ShaderStage::Vertex, 0, &self.ubo_shadow_light_space);
-                    self.backend.begin_event("Shadow Mapping");
-                    self.backend.begin_render_pass(&RenderPassDesc {
-                        label: "shadow",
-                        color_targets: vec![],
-                        depth_target: Some(DepthAttachment {
-                            target: shadow.shadow_map(),
-                            load_op: LoadOp::Clear, // Always clear for the specific light's map
-                            clear_depth: 1.0,
-                            write_enabled: true,
-                        }),
-                    });
-                    self.backend.set_viewport(shadow.viewport());
-                    shadow.prepare_draw(&mut self.backend);
-                    if let Ok(drawables) = self.scene.traverse() {
-                        let mut last_ds: Option<bool> = None;
-                        for drawable in drawables {
-                            let ds = drawable.is_double_sided();
-                            if last_ds != Some(ds) {
-                                shadow.set_pipeline_for(&mut self.backend, ds);
-                                last_ds = Some(ds);
+                        self.backend
+                            .bind_uniform(ShaderStage::Vertex, 0, &self.ubo_shadow_light_space);
+                        self.backend.begin_event("Shadow Mapping");
+                        self.backend.begin_render_pass(&RenderPassDesc {
+                            label: "shadow",
+                            color_targets: vec![],
+                            depth_target: Some(DepthAttachment {
+                                target: shadow.shadow_map(),
+                                load_op: LoadOp::Clear, // Always clear for the specific light's map
+                                clear_depth: 1.0,
+                                write_enabled: true,
+                            }),
+                        });
+                        self.backend.set_viewport(shadow.viewport());
+                        shadow.prepare_draw(&mut self.backend);
+                        if let Ok(drawables) = self.scene.traverse() {
+                            let mut last_ds: Option<bool> = None;
+                            for drawable in drawables {
+                                let ds = drawable.is_double_sided();
+                                if last_ds != Some(ds) {
+                                    shadow.set_pipeline_for(&mut self.backend, ds);
+                                    last_ds = Some(ds);
+                                }
+                                drawable.draw(&mut self.backend, false);
                             }
-                            drawable.draw(&mut self.backend, false);
                         }
+                        self.backend.end_render_pass();
+                        self.backend.end_event();
                     }
-                    self.backend.end_render_pass();
-                    self.backend.end_event();
                 }
             }
 
             // Bind shared inputs for lighting and transparency
-            if let Some(ref sp) = self.shadow_program {
-                self.backend
-                    .bind_render_target_as_texture(3, sp.shadow_map());
+            if !use_rt {
+                if let Some(ref sp) = self.shadow_program {
+                    self.backend
+                        .bind_render_target_as_texture(3, sp.shadow_map());
+                }
+            }
+            if use_rt {
+                if let Some(ref rt_out) = self.rt_output {
+                    self.backend.bind_render_target_as_texture(4, rt_out);
+                }
             }
             if let Some(ref dp) = self.deferred_program_pre {
                 self.backend

@@ -211,12 +211,20 @@ pub struct TextureDesc {
     pub generate_mipmaps: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderTargetUsage {
+    Color,   // color attachment + sampled
+    Depth,   // depth/stencil attachment + sampled
+    Storage, // storage + transfer_src + sampled (RT output)
+}
+
 /// Description for creating a render target (usable as both render attachment and shader input).
 pub struct RenderTargetDesc {
     pub width: u32,
     pub height: u32,
     pub format: TextureFormat,
     pub sampler: SamplerDesc,
+    pub usage: RenderTargetUsage,
 }
 
 /// Description for creating a GPU buffer.
@@ -592,7 +600,7 @@ pub trait GpuBackend: Sized + 'static {
     // raytracing
     fn has_rt_support(&self) -> bool;
 
-    fn create_acceleration_structures(
+    fn create_blas(
         &self,
         ty: AccelerationStructureType,
         render_items: &[RenderItem<'_, Self>],
@@ -607,6 +615,31 @@ pub trait GpuBackend: Sized + 'static {
         blas: &[Self::AccelerationStructure],
         transforms: &[glm::Mat4],
     ) -> Result<Self::AccelerationStructure, GpuError>;
+
+    /// create the raytracing pipeline
+    fn create_rt_pipeline(&self, shaders: &RtShaders<Self>) -> Result<Self::Pipeline, GpuError>;
+
+    /// create a render target for the RT output
+    fn create_rt_output_target(
+        &self,
+        width: u32,
+        height: u32,
+    ) -> Result<Self::RenderTarget, GpuError>;
+
+    /// call the RT pipeline on the given tlas
+    fn dispatch_rays(
+        &mut self,
+        pipeline: &Self::Pipeline,
+        tlas: &Self::AccelerationStructure,
+        output: &Self::RenderTarget,
+        light_buffer: &Self::Buffer,
+        width: u32,
+        height: u32,
+        number_of_lights: u32,
+    );
+
+    /// load compiled RT shader sources (raygen, miss, closest_hit)
+    fn load_rt_shaders(&self) -> RtShaders<Self>;
 }
 
 pub struct Shaders<B: GpuBackend> {
@@ -626,6 +659,13 @@ pub struct ProceduralShaders<B: GpuBackend> {
 pub enum AccelerationStructureType {
     Blas,
     Tlas,
+}
+
+pub struct RtShaders<B: GpuBackend> {
+    pub raygen: B::ShaderSource,
+    pub miss: B::ShaderSource,
+    pub miss_shadow: B::ShaderSource,
+    pub closest_hit: B::ShaderSource,
 }
 
 // Material
@@ -781,7 +821,7 @@ impl<B: GpuBackend> Drawable<B> {
         Ok(Drawable {
             id: DRAWABLE_ID.fetch_add(1, Ordering::SeqCst),
             vertex_buffer: Rc::new(vertex_buffer),
-            vertex_count: vertex_data.len() as u32,
+            vertex_count: vertices.len() as u32,
             index_buffer: Rc::new(index_buffer),
             index_count: indices.len() as u32,
             model_buffer: Rc::new(model_buffer),
@@ -1039,7 +1079,7 @@ impl<'a, B: GpuBackend> RenderItem<'a, B> {
     pub fn model_matrix(&self) -> glm::Mat4 {
         match self {
             RenderItem::Standard(drawable) => *drawable.model_matrix(),
-            RenderItem::Indirect(_) => glm::identity(),
+            RenderItem::Indirect(ind) => glm::identity(),
         }
     }
 }

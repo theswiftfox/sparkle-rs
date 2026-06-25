@@ -46,7 +46,7 @@ public float3 BRDF(
 	float3 L = light0.type == DIRECTIONAL ?
 		normalize(-light0.position) : light0.position - position;
 	float distance = length(L);
-	float attenuation = light0.radius / (distance * distance);
+	float attenuation = light0.type == DIRECTIONAL ? 1.0 : light0.radius / (distance * distance);
 	float3 radiance = light0.color * attenuation;
 
 	L = normalize(L);

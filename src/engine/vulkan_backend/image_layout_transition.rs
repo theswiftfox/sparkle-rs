@@ -171,6 +171,30 @@ impl VulkanBackend {
                 src_stage_mask = ash::vk::PipelineStageFlags2::TOP_OF_PIPE;
                 dst_stage_mask = ash::vk::PipelineStageFlags2::FRAGMENT_SHADER;
             }
+            (ash::vk::ImageLayout::UNDEFINED, ash::vk::ImageLayout::GENERAL) => {
+                src_access_mask = ash::vk::AccessFlags2::empty();
+                dst_access_mask = ash::vk::AccessFlags2::SHADER_WRITE;
+                src_stage_mask = ash::vk::PipelineStageFlags2::TOP_OF_PIPE;
+                dst_stage_mask = ash::vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR;
+            }
+            (
+                ash::vk::ImageLayout::GENERAL,
+                ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            ) => {
+                src_access_mask = ash::vk::AccessFlags2::SHADER_WRITE;
+                dst_access_mask = ash::vk::AccessFlags2::SHADER_READ;
+                src_stage_mask = ash::vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR;
+                dst_stage_mask = ash::vk::PipelineStageFlags2::FRAGMENT_SHADER;
+            }
+            (
+                ash::vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                ash::vk::ImageLayout::GENERAL,
+            ) => {
+                src_access_mask = ash::vk::AccessFlags2::SHADER_READ;
+                dst_access_mask = ash::vk::AccessFlags2::SHADER_WRITE;
+                src_stage_mask = ash::vk::PipelineStageFlags2::FRAGMENT_SHADER;
+                dst_stage_mask = ash::vk::PipelineStageFlags2::RAY_TRACING_SHADER_KHR;
+            }
             _ => {
                 // panic!("Invalid layout transition {old_layout:?} -> {new_layout:?}");
                 return Err(GpuError::new(

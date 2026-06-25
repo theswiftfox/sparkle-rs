@@ -22,6 +22,8 @@ struct VS_OUT {
 [[vk::binding(0, 0)]] cbuffer FrameConsts : register(b0) {
 	float4x4 view;
 	float4x4 proj;
+	float4x4 inv_view;
+	float4x4 inv_proj;
 };
 
 [[vk::binding(10, 0)]] StructuredBuffer<float4x4> instanceTransforms;

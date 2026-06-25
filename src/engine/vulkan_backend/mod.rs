@@ -10,7 +10,9 @@ use std::{
 use crate::{
     app_handler::Window,
     engine::{
-        backend::{GpuError, GpuErrorKind, RenderTargetDesc, SamplerDesc, TextureFormat},
+        backend::{
+            GpuError, GpuErrorKind, RenderTargetDesc, RenderTargetUsage, SamplerDesc, TextureFormat,
+        },
         compute_push::ComputePushConstants,
         settings::{Settings, SyncMode},
         vulkan_backend::texture::VulkanTexture,
@@ -44,10 +46,11 @@ const REQUIRED_EXTS: [&CStr; 3] = [
     // ash::vk::EXT_HDR_METADATA_NAME,
 ];
 
-const RT_EXTS: [&CStr; 3] = [
+const RT_EXTS: [&CStr; 4] = [
     ash::vk::KHR_ACCELERATION_STRUCTURE_NAME,
     ash::vk::KHR_RAY_TRACING_PIPELINE_NAME,
     ash::vk::KHR_DEFERRED_HOST_OPERATIONS_NAME,
+    ash::vk::KHR_PUSH_DESCRIPTOR_NAME,
 ];
 
 const FRAMES_IN_FLIGHT: u32 = 2u32;
@@ -243,6 +246,7 @@ pub(crate) struct PushConstants {
     tex1: u32,
     tex2: u32,
     tex3: u32,
+    tex4: u32,
     has_parallax: u32,
     is_instanced: u32,
 }
@@ -257,6 +261,7 @@ impl Default for PushConstants {
             tex1: 0,
             tex2: 0,
             tex3: 0,
+            tex4: u32::MAX,
             has_parallax: 0,
             is_instanced: 0,
         }
@@ -413,12 +418,13 @@ pub struct VulkanBackend {
     descriptors: Descriptors,
     sync_objects: SyncObjects,
     khr_sync: ash::khr::synchronization2::Device,
+    push_descriptor: ash::khr::push_descriptor::Device,
     frame_idx: usize,
     current_frame: Option<CurrentFrame>,
     texture_registry: RefCell<TextureRegistry>,
     egui_renderer: Option<egui::EguiRenderer>,
     vulkan_handle_tracker: VulkanHandleTracker,
-    rt_properties: Option<rt::RtDeviceProperties>,
+    rt_feature: Option<rt::RtFeature>,
 }
 
 impl Drop for VulkanBackend {
@@ -469,6 +475,14 @@ impl Drop for VulkanBackend {
                 .destroy_pipeline_layout(self.pipeline_layout, None);
             self.device
                 .destroy_pipeline_layout(self.compute_pipeline_layout, None);
+
+            // Destroy RT feature layouts
+            if let Some(rt) = &self.rt_feature {
+                self.device
+                    .destroy_pipeline_layout(rt.pipeline_layout, None);
+                self.device
+                    .destroy_descriptor_set_layout(rt.descriptor_layout, None);
+            }
 
             let emtpy_target =
                 VulkanTexture::null(self.device.clone(), self.vulkan_handle_tracker.clone());
@@ -544,6 +558,7 @@ pub fn initialize(window: Arc<Window>, settings: &Settings) -> Result<VulkanBack
     }
 
     let (physical_device, rt_props) = get_physical_device(&instance)?;
+
     let rt_supported = rt_props.is_some();
     println!("Physical device selected successfully");
 
@@ -601,10 +616,26 @@ pub fn initialize(window: Arc<Window>, settings: &Settings) -> Result<VulkanBack
     let sync_objects = create_sync_objs(&logical_device, &swapchain)?;
 
     let khr_sync = ash::khr::synchronization2::Device::new(&instance, &logical_device);
+    let push_descriptor = ash::khr::push_descriptor::Device::new(&instance, &logical_device);
 
     let desc_pool = create_descriptor_pool(&logical_device)?;
 
     let desc_set_layout = create_descriptor_set_layout(&logical_device)?;
+
+    let rt_feature = if let Some(props) = rt_props {
+        let loader = ash::khr::ray_tracing_pipeline::Device::new(&instance, &logical_device);
+        let desc_layout = rt::create_rt_descriptor_layout(&logical_device)?;
+        let layout = rt::create_pipeline_layout(&logical_device, desc_set_layout, desc_layout)?;
+
+        Some(rt::RtFeature {
+            pipeline_loader: loader,
+            properties: props,
+            pipeline_layout: layout,
+            descriptor_layout: desc_layout,
+        })
+    } else {
+        None
+    };
 
     let desc_sets = create_descriptor_sets(&logical_device, desc_pool, desc_set_layout)?
         .try_into()
@@ -639,12 +670,13 @@ pub fn initialize(window: Arc<Window>, settings: &Settings) -> Result<VulkanBack
         },
         sync_objects,
         khr_sync,
+        push_descriptor,
         frame_idx: 0,
         current_frame: None,
         texture_registry: RefCell::new(TextureRegistry::new()),
         egui_renderer: None,
         vulkan_handle_tracker: vk_handle_tracker,
-        rt_properties: rt_props,
+        rt_feature,
     })
 }
 
@@ -748,7 +780,9 @@ fn create_descriptor_set_layout(
             binding: 0,
             descriptor_type: ash::vk::DescriptorType::UNIFORM_BUFFER,
             descriptor_count: 1,
-            stage_flags: ash::vk::ShaderStageFlags::VERTEX | ash::vk::ShaderStageFlags::FRAGMENT,
+            stage_flags: ash::vk::ShaderStageFlags::VERTEX
+                | ash::vk::ShaderStageFlags::FRAGMENT
+                | ash::vk::ShaderStageFlags::RAYGEN_KHR,
             ..Default::default()
         },
         ash::vk::DescriptorSetLayoutBinding {
@@ -835,6 +869,15 @@ fn create_descriptor_set_layout(
             stage_flags: ash::vk::ShaderStageFlags::COMPUTE,
             ..Default::default()
         },
+        // Binding 13: RT lights array (STORAGE_BUFFER) — closest-hit shader
+        ash::vk::DescriptorSetLayoutBinding {
+            binding: 13,
+            descriptor_type: ash::vk::DescriptorType::STORAGE_BUFFER,
+            descriptor_count: 1,
+            stage_flags: ash::vk::ShaderStageFlags::RAYGEN_KHR
+                | ash::vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+            ..Default::default()
+        },
     ];
 
     let binding_flags = ash::vk::DescriptorBindingFlags::PARTIALLY_BOUND
@@ -886,7 +929,7 @@ fn create_descriptor_pool(device: &LogicalDevice) -> Result<ash::vk::DescriptorP
     };
     let storage_pool_infos = ash::vk::DescriptorPoolSize {
         ty: ash::vk::DescriptorType::STORAGE_BUFFER,
-        descriptor_count: 2 * FRAMES_IN_FLIGHT,
+        descriptor_count: 3 * FRAMES_IN_FLIGHT, // bindings 10, 11, 13
     };
     let pool_sizes = [
         uniform_pool_info,
@@ -1376,6 +1419,7 @@ fn create_swapchain_and_depth_buffer(
         height: swap_extent.height,
         format: TextureFormat::Depth32Float,
         sampler: SamplerDesc::default(),
+        usage: RenderTargetUsage::Depth,
     };
     let depth_targets = (0..FRAMES_IN_FLIGHT)
         .map(|_| {

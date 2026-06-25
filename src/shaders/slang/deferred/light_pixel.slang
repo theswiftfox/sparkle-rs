@@ -1,6 +1,7 @@
 import light;
 import pbr;
 import shadow;
+import push_constants;
 
 struct PS_OUT {
 	float4 color : SV_Target;
@@ -13,15 +14,6 @@ Sampler2D<float4> gbuffer[] : register(t0);
 	float3 cameraPos;
 	uint ssao;
 }
-
-[[vk::push_constant]] cbuffer PushConstants {
-	float4x4 model;
-	uint tex0;
-	uint tex1;
-	uint tex2;
-	uint tex3;
-	uint tex4;
-};
 
 [shader("pixel")]
 PS_OUT main(float4 screenPos : SV_Position) {
@@ -45,16 +37,20 @@ PS_OUT main(float4 screenPos : SV_Position) {
 	float3 color = 0.0;
 	if (light0.type != AMBIENT) {
 		float3 F0 = lerp(float3(0.04, 0.04, 0.04), albedo.rgb, mr.r);
-		float shadowed = shadow(pos, normal, tex3);
-		color += BRDF(
-			normalize(cameraPos - pos.xyz),
-			normal,
-			pos.xyz,
-			albedo.rgb,
-			F0,
-			mr.r,
-			mr.g,
-		) * shadowed;
+		float shadowed = (tex4 != ~0u)
+			? gbuffer[tex4].Load(texPos).r
+			: shadow(pos, normal, tex3);
+		// float shadowed = gbuffer[tex4].Load(texPos).r;
+		// color = BRDF(
+		// 	normalize(cameraPos - pos.xyz),
+		// 	normal,
+		// 	pos.xyz,
+		// 	albedo.rgb,
+		// 	F0,
+		// 	mr.r,
+		// 	mr.g,
+		// ) * shadowed;
+		color = gbuffer[tex4].Load(texPos).rgb;
 	} else {
 		float ambientOcclusion = 1.0;
 		float3 ambient = 0.15 * albedo.rgb * ambientOcclusion;

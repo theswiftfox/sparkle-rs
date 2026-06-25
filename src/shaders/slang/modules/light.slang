@@ -21,7 +21,7 @@ public struct Light {
 public float3 blinn_phong(float3 view_pos, float3 world_pos, float3 normal, float3 albedo, float metallic, float shadowed) {
 	float3 L = light0.type == DIRECTIONAL ? normalize(-light0.position) : light0.position - view_pos;
     float distance = length(L);
-	float attenuation = 1.0 / (distance * distance);
+	float attenuation = light0.type == DIRECTIONAL ? 1.0 : 1.0 / (distance * distance);
 	float3 radiance = light0.color * attenuation;
 
     float3 ld = normalize(L);
