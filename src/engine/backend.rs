@@ -1079,7 +1079,7 @@ impl<'a, B: GpuBackend> RenderItem<'a, B> {
     pub fn model_matrix(&self) -> glm::Mat4 {
         match self {
             RenderItem::Standard(drawable) => *drawable.model_matrix(),
-            RenderItem::Indirect(ind) => glm::identity(),
+            RenderItem::Indirect(_ind) => glm::identity(),
         }
     }
 }

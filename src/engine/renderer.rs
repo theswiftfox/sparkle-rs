@@ -413,8 +413,10 @@ impl<B: GpuBackend> Renderer<B> {
         if self.backend.has_rt_support() {
             let rt_shaders = self.backend.load_rt_shaders();
             self.rt_pipeline = Some(self.backend.create_rt_pipeline(&rt_shaders)?);
-            self.rt_output =
-                Some(self.backend.create_rt_output_target(resolution.0, resolution.1)?);
+            self.rt_output = Some(
+                self.backend
+                    .create_rt_output_target(resolution.0, resolution.1)?,
+            );
             self.rt_light_buffer = Some(self.backend.create_buffer(
                 &BufferDesc {
                     label: "rt_light_array".to_string(),
@@ -504,7 +506,7 @@ impl<B: GpuBackend> Renderer<B> {
 
         // Directional light for shadow mapping
         self.scene.add_light(Light {
-            position: glm::vec3(-1.0, -0.3, 0.1).normalize(),
+            position: glm::vec3(-0.20, -0.8, 0.1).normalize(),
             t: LightType::Directional,
             color: glm::vec3(23.47, 21.31, 20.79),
             radius: 1.0,
@@ -1115,8 +1117,11 @@ impl<B: GpuBackend> Renderer<B> {
                             })),
                         );
 
-                        self.backend
-                            .bind_uniform(ShaderStage::Vertex, 0, &self.ubo_shadow_light_space);
+                        self.backend.bind_uniform(
+                            ShaderStage::Vertex,
+                            0,
+                            &self.ubo_shadow_light_space,
+                        );
                         self.backend.begin_event("Shadow Mapping");
                         self.backend.begin_render_pass(&RenderPassDesc {
                             label: "shadow",

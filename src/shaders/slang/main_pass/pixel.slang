@@ -70,18 +70,17 @@ PS_OUT main(PS_IN input) {
 	if (light0.type != AMBIENT) {
 		float3 F0 = lerp(float3(0.04, 0.04, 0.04), alb.rgb, mr.r);
 		float shadowed = (tex4 != ~0u) ?
-				textures[tex4].Load(int3(int2(input.txCoord), 0)).r
+				textures[tex4].Load(int3(int2(input.pos.xy), 0)).r
 				:shadow(input.worldPos, N, tex3);
-		// color = BRDF(
-		// 	normalize(cameraPos - input.worldPos.xyz),
-		// 	N,
-		// 	input.worldPos.xyz,
-		// 	alb.rgb,
-		// 	F0,
-		// 	mr.r,
-		// 	mr.g
-		// ) * shadowed;
-		color = shadowed;
+		color += BRDF(
+			normalize(cameraPos - input.worldPos.xyz),
+			N,
+			input.worldPos.xyz,
+			alb.rgb,
+			F0,
+			mr.r,
+			mr.g
+		) * shadowed;
 	} else {
 		float3 ambient = 0.15 * alb.rgb * ambientOcclusion;
 		color = ambient;

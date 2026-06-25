@@ -535,7 +535,7 @@ impl GpuBackend for VulkanBackend {
                         ash::vk::BlendFactor::ONE,
                         ash::vk::BlendFactor::ONE,
                         ash::vk::BlendFactor::ONE,
-                        ash::vk::BlendFactor::ONE,
+                        ash::vk::BlendFactor::ZERO,
                     ),
                     BlendMode::Alpha => (
                         ash::vk::TRUE,
@@ -547,6 +547,8 @@ impl GpuBackend for VulkanBackend {
                 };
                 ash::vk::PipelineColorBlendAttachmentState {
                     blend_enable: enable,
+                    color_blend_op: ash::vk::BlendOp::ADD,
+                    alpha_blend_op: ash::vk::BlendOp::ADD,
                     src_color_blend_factor: src_color,
                     dst_color_blend_factor: dst_color,
                     src_alpha_blend_factor: src_alpha,
@@ -2914,10 +2916,10 @@ impl GpuBackend for VulkanBackend {
         };
 
         // Transition storage image UNDEFINED → GENERAL
-        println!(
-            "[dispatch_rays] dispatching {}x{} num_lights={}",
-            width, height, number_of_lights
-        );
+        // println!(
+        //     "[dispatch_rays] dispatching {}x{} num_lights={}",
+        //     width, height, number_of_lights
+        // );
         if let Err(e) = self.transition_image_layout(
             command_buffer,
             output_tex.image,

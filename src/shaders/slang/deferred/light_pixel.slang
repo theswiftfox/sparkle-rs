@@ -40,17 +40,15 @@ PS_OUT main(float4 screenPos : SV_Position) {
 		float shadowed = (tex4 != ~0u)
 			? gbuffer[tex4].Load(texPos).r
 			: shadow(pos, normal, tex3);
-		// float shadowed = gbuffer[tex4].Load(texPos).r;
-		// color = BRDF(
-		// 	normalize(cameraPos - pos.xyz),
-		// 	normal,
-		// 	pos.xyz,
-		// 	albedo.rgb,
-		// 	F0,
-		// 	mr.r,
-		// 	mr.g,
-		// ) * shadowed;
-		color = gbuffer[tex4].Load(texPos).rgb;
+		color += BRDF(
+			normalize(cameraPos - pos.xyz),
+			normal,
+			pos.xyz,
+			albedo.rgb,
+			F0,
+			mr.r,
+			mr.g,
+		) * shadowed;
 	} else {
 		float ambientOcclusion = 1.0;
 		float3 ambient = 0.15 * albedo.rgb * ambientOcclusion;

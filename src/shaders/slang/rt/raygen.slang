@@ -45,12 +45,12 @@ void main() {
     float3 direction = normalize(mul(inv_view, float4(viewDir, 0.0)).xyz);
 
     // Limit printf to exactly ONE pixel thread at the center of the screen
-    if (launchIndex.x == launchDim.x / 2 && launchIndex.y == launchDim.y / 2) {
-        printf("NDC: %f, %f | Ray Origin: %f, %f, %f | Ray Dir: %f, %f, %f\n", 
-               ndc.x, ndc.y, 
-               origin.x, origin.y, origin.z, 
-               direction.x, direction.y, direction.z);
-    }
+    // if (launchIndex.x == launchDim.x / 2 && launchIndex.y == launchDim.y / 2) {
+    //     printf("NDC: %f, %f | Ray Origin: %f, %f, %f | Ray Dir: %f, %f, %f\n", 
+    //            ndc.x, ndc.y, 
+    //            origin.x, origin.y, origin.z, 
+    //            direction.x, direction.y, direction.z);
+    // }
 
     RayDesc ray;
     ray.Origin = origin;
@@ -72,11 +72,11 @@ void main() {
         payload
     );
 
-    // outImage[launchIndex] = float4(payload.visibility, 0.0, 0.0, 0.0);
+    outImage[launchIndex] = float4(payload.visibility, 0.0, 0.0, 0.0);
     // Temporary Raygen test right after TraceRay:
-    if (payload.visibility == 1.0) {
-        outImage[launchIndex] = float4(0.0, 0.0, 1.0, 1.0); // Blue = Missed everything!
-    } else {
-        outImage[launchIndex] = float4(1.0, 0.0, 0.0, 1.0); // Red = Hit geometry!
-    }
+    // if (payload.visibility == 1.0) {
+    //     outImage[launchIndex] = float4(0.0, 0.0, 1.0, 1.0); // Blue = Missed everything!
+    // } else {
+    //     outImage[launchIndex] = float4(1.0, 0.0, 0.0, 1.0); // Red = Hit geometry!
+    // }
 }
