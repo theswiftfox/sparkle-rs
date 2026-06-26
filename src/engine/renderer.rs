@@ -613,25 +613,25 @@ impl<B: GpuBackend> Renderer<B> {
         // shadow cone spread — kept small for a tight torch penumbra.
         // Color is warm amber at moderate HDR intensity
         // todo: fix area lights
-        // let fire_color = glm::vec3(8.0, 4.0, 1.0);
-        // let fire_radius = 0.50;
-        // let fire_penumbra = 0.3;
-        // let fire_y = 1.1;
-        // for (x, z) in [
-        //     (-4.96_f32, 1.164_f32),
-        //     (-4.96, -1.9),
-        //     (3.896, 1.164),
-        //     (3.896, -1.9),
-        // ] {
-        //     self.scene.add_light(Light {
-        //         position: glm::vec3(x, fire_y, z),
-        //         t: LightType::Area,
-        //         color: fire_color,
-        //         radius: fire_radius,
-        //         penumbra_radius: fire_penumbra,
-        //         ..Light::default()
-        //     });
-        // }
+        let fire_color = glm::vec3(8.0, 4.0, 1.0);
+        let fire_radius = 0.50;
+        let fire_penumbra = 0.3;
+        let fire_y = 1.1;
+        for (x, z) in [
+            // (-4.96_f32, 1.164_f32),
+            // (-4.96, -1.9),
+            (3.896, 1.164),
+            // (3.896, -1.9),
+        ] {
+            self.scene.add_light(Light {
+                position: glm::vec3(x, fire_y, z),
+                t: LightType::Area,
+                color: fire_color,
+                radius: fire_radius,
+                penumbra_radius: fire_penumbra,
+                ..Light::default()
+            });
+        }
 
         self.scene.build_matrices(&self.backend);
 
