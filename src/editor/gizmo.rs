@@ -501,3 +501,58 @@ pub fn draw_orientation_gizmo(ctx: &egui::Context, view: &glm::Mat4) -> Orientat
 
     result
 }
+
+/// Draws a visual marker (💡 emoji) for a selected point light.
+/// Only renders if the light is an Area light and its position is in front of the camera.
+pub fn draw_selected_light_marker(
+    ctx: &egui::Context,
+    light: &crate::engine::geometry::Light,
+    view: &glm::Mat4,
+    proj: &glm::Mat4,
+    viewport_rect: egui::Rect,
+) {
+    use crate::engine::geometry::LightType;
+
+    // Only draw for Area lights (point lights)
+    if light.t != LightType::Area {
+        return;
+    }
+
+    // Project light position to screen space
+    let screen_pos = match project_to_screen(
+        &light.position,
+        view,
+        proj,
+        viewport_rect.width(),
+        viewport_rect.height(),
+    ) {
+        Some(pos) => pos,
+        None => return, // Light is behind camera
+    };
+
+    // Offset by viewport position to get absolute screen coordinates
+    let final_pos = egui::pos2(
+        screen_pos.x + viewport_rect.min.x,
+        screen_pos.y + viewport_rect.min.y,
+    );
+
+    // Check if position is within viewport bounds
+    if !viewport_rect.contains(final_pos) {
+        return; // Light is outside viewport
+    }
+
+    // Get painter on foreground layer
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        egui::Id::new("light_marker"),
+    ));
+
+    // Draw the light bulb emoji
+    painter.text(
+        final_pos,
+        egui::Align2::CENTER_CENTER,
+        "💡",
+        egui::FontId::proportional(24.0), // Font size
+        egui::Color32::WHITE,
+    );
+}

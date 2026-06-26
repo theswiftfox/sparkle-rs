@@ -130,7 +130,7 @@ void main(inout HitPayload payload, in BuiltInTriangleIntersectionAttributes att
                 shadowRay.Origin = biasedOrigin;
                 shadowRay.Direction = sampleL;
                 shadowRay.TMin = 0.001;
-                shadowRay.TMax = light.radius;
+                shadowRay.TMax = dist;
 
                 ShadowPayload sp;
                 sp.shadowed = true;

@@ -23,7 +23,7 @@ use std::rc::Rc;
 use std::time::Instant;
 
 /// Maximum number of lights supported by the RT shadow pipeline.
-const MAX_RT_LIGHTS: usize = 8;
+const MAX_RT_LIGHTS: usize = 12;
 
 pub struct Renderer<B: GpuBackend> {
     settings: Settings,
@@ -503,10 +503,8 @@ impl<B: GpuBackend> Renderer<B> {
             .map(|item| item.model_matrix())
             .collect();
 
-        let object_types: Vec<ObjType> = render_items
-            .iter()
-            .map(|item| item.object_type())
-            .collect();
+        let object_types: Vec<ObjType> =
+            render_items.iter().map(|item| item.object_type()).collect();
 
         // Build per-instance albedo indices for the any-hit material SSBO.
         let albedo_indices: Vec<u32> = render_items
@@ -546,7 +544,8 @@ impl<B: GpuBackend> Renderer<B> {
 
         // Create the per-instance material SSBO.
         // Uploaded once at TLAS build time; stays valid as long as TLAS is live.
-        let mat_buf_size = (std::mem::size_of::<InstanceMaterial>() * instance_materials.len()).max(4);
+        let mat_buf_size =
+            (std::mem::size_of::<InstanceMaterial>() * instance_materials.len()).max(4);
         match self.backend.create_buffer(
             &BufferDesc {
                 label: "rt_instance_materials".to_string(),
@@ -557,7 +556,9 @@ impl<B: GpuBackend> Renderer<B> {
         ) {
             Ok(buf) => self.rt_material_buffer = Some(buf),
             Err(e) => {
-                println!("Warning: RT material buffer creation failed: {e} (any-hit will fall back to opaque)");
+                println!(
+                    "Warning: RT material buffer creation failed: {e} (any-hit will fall back to opaque)"
+                );
             }
         }
 
@@ -604,6 +605,32 @@ impl<B: GpuBackend> Renderer<B> {
                 2.5 * self.shadow_dist,
             ),
         });
+
+        // Fire holder lights — 4 wall-mounted brackets along the inner arcade.
+        // `radius` controls brightness/attenuation (radius / dist²).
+        // `penumbra_radius` controls the physical size of the light source for RT
+        // shadow cone spread — kept small for a tight torch penumbra.
+        // Color is warm amber at moderate HDR intensity
+        // todo: fix area lights
+        // let fire_color = glm::vec3(8.0, 4.0, 1.0);
+        // let fire_radius = 5.0;
+        // let fire_penumbra = 0.3;
+        // let fire_y = 1.1;
+        // for (x, z) in [
+        //     (-4.96_f32, 1.164_f32),
+        //     (-4.96, -1.9),
+        //     (3.896, 1.164),
+        //     (3.896, -1.9),
+        // ] {
+        //     self.scene.add_light(Light {
+        //         position: glm::vec3(x, fire_y, z),
+        //         t: LightType::Area,
+        //         color: fire_color,
+        //         radius: fire_radius,
+        //         penumbra_radius: fire_penumbra,
+        //         ..Light::default()
+        //     });
+        // }
 
         self.scene.build_matrices(&self.backend);
 

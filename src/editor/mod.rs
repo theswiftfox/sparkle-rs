@@ -79,6 +79,8 @@ pub struct Editor {
 
     /// Currently selected node name (None = nothing selected).
     selected_node: Option<String>,
+    /// Currently selected light index (None = no light selected).
+    selected_light: Option<usize>,
 
     /// State for the transform gizmo (active axis, drag start transform, etc.).
     gizmo_state: gizmo::GizmoState,
@@ -117,6 +119,7 @@ impl Editor {
             pending_mode_toggle: false,
             pending_camera_commands: Vec::new(),
             selected_node: None,
+            selected_light: None,
             gizmo_state: gizmo::GizmoState::new(),
             undo_stack: undo::UndoStack::new(),
             gizmo_was_dragging: false,
@@ -146,6 +149,16 @@ impl Editor {
     /// Set the selected node
     pub fn set_selected_node(&mut self, name: Option<String>) {
         self.selected_node = name;
+    }
+
+    /// Get the selected light index
+    pub fn selected_light(&self) -> Option<usize> {
+        self.selected_light
+    }
+
+    /// Set the selected light index
+    pub fn set_selected_light(&mut self, idx: Option<usize>) {
+        self.selected_light = idx;
     }
 
     /// Run the UI for one frame.
@@ -212,6 +225,7 @@ impl Editor {
         let mut pending_undo = false;
         let mut pending_redo = false;
         let mut selected_node = self.selected_node.clone();
+        let mut selected_light = self.selected_light;
 
         // Panel visibility flags
         let mut show_hierarchy = self.show_hierarchy;
@@ -307,6 +321,7 @@ impl Editor {
                     ctx,
                     &mut show_lights,
                     scene_lights,
+                    &mut selected_light,
                     &mut light_edits,
                     &mut light_adds,
                     &mut light_removes,
@@ -383,6 +398,20 @@ impl Editor {
                         }
                     }
                 }
+
+                // Draw light marker for selected light
+                if let Some(light_idx) = selected_light {
+                    if let Some(light) = scene_lights.get(light_idx) {
+                        let screen_rect = ctx.content_rect();
+                        gizmo::draw_selected_light_marker(
+                            ctx,
+                            light,
+                            &cam_view,
+                            &cam_proj,
+                            screen_rect,
+                        );
+                    }
+                }
             }
 
             // Viewport picking
@@ -419,6 +448,7 @@ impl Editor {
         self.pending_quit = pending_quit;
         self.pending_mode_toggle = toggle_mode;
         self.selected_node = selected_node;
+        self.selected_light = selected_light;
         self.show_hierarchy = show_hierarchy;
         self.show_inspector = show_inspector;
         self.show_lights = show_lights;
@@ -479,6 +509,21 @@ impl Editor {
 
         // Light removes (in reverse order)
         light_removes.sort_unstable();
+        
+        // Adjust selected_light if lights are being removed
+        if let Some(sel_idx) = self.selected_light {
+            if light_removes.contains(&sel_idx) {
+                // Selected light is being removed, clear selection
+                self.selected_light = None;
+            } else {
+                // Adjust index if lights before it were removed
+                let removed_before = light_removes.iter().filter(|&&idx| idx < sel_idx).count();
+                if removed_before > 0 {
+                    self.selected_light = Some(sel_idx - removed_before);
+                }
+            }
+        }
+        
         for idx in light_removes.into_iter().rev() {
             self.pending_edits
                 .push(EditCommand::RemoveLight { index: idx });

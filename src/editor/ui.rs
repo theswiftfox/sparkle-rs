@@ -339,6 +339,7 @@ pub fn draw_light_window(
     ctx: &egui::Context,
     open: &mut bool,
     lights: &[Light],
+    selected_light: &mut Option<usize>,
     light_edits: &mut Vec<(usize, Light)>,
     light_adds: &mut Vec<Light>,
     light_removes: &mut Vec<usize>,
@@ -375,10 +376,22 @@ pub fn draw_light_window(
                         LightType::Area => "Area",
                     };
 
+                    let is_selected = *selected_light == Some(idx);
+
                     egui::CollapsingHeader::new(format!("Light {} ({})", idx, type_label))
                         .id_salt(format!("light_{}", idx))
-                        .default_open(false)
+                        .default_open(is_selected)
                         .show(ui, |ui| {
+                            // Selection UI at the top
+                            ui.horizontal(|ui| {
+                                if is_selected {
+                                    ui.label(egui::RichText::new("● Selected").color(egui::Color32::YELLOW));
+                                } else if ui.button("Select").clicked() {
+                                    *selected_light = Some(idx);
+                                }
+                            });
+                            ui.separator();
+
                             // Light type selector
                             ui.horizontal(|ui| {
                                 ui.label("Type:");
