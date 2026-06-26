@@ -595,6 +595,7 @@ pub fn initialize(window: Arc<Window>, settings: &Settings) -> Result<VulkanBack
         sync_mode,
         settings.hdr_preferred,
         vk_handle_tracker.clone(),
+        ash::vk::SwapchainKHR::null(),
     )?;
     println!("Swapchain and depth buffer created successfully");
 
@@ -1268,6 +1269,7 @@ fn create_swapchain_and_depth_buffer(
     sync_mode: SyncMode,
     hdr_preferred: bool,
     vk_handle_tracker: VulkanHandleTracker,
+    old_swapchain: ash::vk::SwapchainKHR,
 ) -> Result<(Swapchain, [VulkanTexture; FRAMES_IN_FLIGHT as usize]), GpuError> {
     println!("Querying surface capabilities and formats...");
     let surface_khr = ash::khr::surface::Instance::new(context, instance);
@@ -1342,6 +1344,7 @@ fn create_swapchain_and_depth_buffer(
         composite_alpha: ash::vk::CompositeAlphaFlagsKHR::OPAQUE,
         present_mode,
         clipped: ash::vk::TRUE,
+        old_swapchain,
         ..Default::default()
     };
 

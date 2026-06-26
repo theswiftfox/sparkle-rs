@@ -773,6 +773,7 @@ impl VulkanBackend {
             old.sync_mode,
             old.surface_format.is_hdr,
             self.vulkan_handle_tracker.clone(),
+            old.swapchain,
         )?;
 
         std::mem::swap(&mut self.swapchain, &mut new_swapchain);

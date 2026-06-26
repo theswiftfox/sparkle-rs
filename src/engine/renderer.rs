@@ -60,6 +60,8 @@ pub struct Renderer<B: GpuBackend> {
     rt_pipeline: Option<B::Pipeline>,
     rt_output: Option<B::RenderTarget>,
     rt_light_buffer: Option<B::Buffer>,
+    /// Whether to use ray tracing when available. Defaults to `true`.
+    use_ray_tracing: bool,
 }
 
 impl<B: GpuBackend> Renderer<B> {
@@ -169,6 +171,7 @@ impl<B: GpuBackend> Renderer<B> {
             rt_pipeline: None,
             rt_output: None,
             rt_light_buffer: None,
+            use_ray_tracing: true,
         })
     }
 
@@ -186,6 +189,14 @@ impl<B: GpuBackend> Renderer<B> {
 
     pub fn settings_mut(&mut self) -> &mut Settings {
         &mut self.settings
+    }
+
+    pub fn use_ray_tracing(&self) -> bool {
+        self.use_ray_tracing
+    }
+
+    pub fn set_use_ray_tracing(&mut self, val: bool) {
+        self.use_ray_tracing = val;
     }
 
     // - Scene data accessors for editor-
@@ -509,7 +520,7 @@ impl<B: GpuBackend> Renderer<B> {
             position: glm::vec3(-0.20, -0.8, 0.1).normalize(),
             t: LightType::Directional,
             color: glm::vec3(23.47, 21.31, 20.79),
-            radius: 1.0,
+            radius: 0.10,
             light_proj: glm::ortho_zo(
                 -self.shadow_dist,
                 self.shadow_dist,
@@ -1049,7 +1060,8 @@ impl<B: GpuBackend> Renderer<B> {
         let mut first_light = true;
 
         // RT shadow: dispatch once before the light loop for all non-ambient lights
-        let use_rt = self.rt_pipeline.is_some()
+        let use_rt = self.use_ray_tracing
+            && self.rt_pipeline.is_some()
             && self.tlas.is_some()
             && self.rt_output.is_some()
             && self.rt_light_buffer.is_some();

@@ -214,6 +214,9 @@ fn vk_render_loop(channels: RenderChannels, settings: Settings, procedural_mode:
         // Apply edit commands from main thread UI
         apply_edit_commands(frame.edit_commands, &mut renderer);
 
+        // Apply RT toggle from UI
+        renderer.set_use_ray_tracing(frame.use_ray_tracing);
+
         // Check quit from editor (if any quit command was sent)
         // Note: quit is now primarily handled on main thread via pending_quit
 
@@ -244,6 +247,7 @@ fn vk_render_loop(channels: RenderChannels, settings: Settings, procedural_mode:
             gpu_time_ms: None, // TODO: Add GPU timestamp queries
             scene_tree: renderer.scene_tree(),
             scene_lights: renderer.lights().clone(),
+            rt_supported: renderer.backend().has_rt_support(),
         };
         // Use try_send - if channel is full (main thread hasn't consumed), it will overwrite
         // This matches our "latest only" semantics

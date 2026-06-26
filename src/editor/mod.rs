@@ -174,6 +174,8 @@ impl Editor {
         _delta_t: f32,
         render_frame_time_ms: f32,
         scene: &SceneSnapshot,
+        rt_supported: bool,
+        use_ray_tracing: &mut bool,
     ) -> (egui::FullOutput, EditCommands) {
         self.mode = mode;
         self.pending_edits.clear();
@@ -215,6 +217,9 @@ impl Editor {
         let mut show_hierarchy = self.show_hierarchy;
         let mut show_inspector = self.show_inspector;
         let mut show_lights = self.show_lights;
+
+        // RT toggle (local copy; written back to caller at end)
+        let mut use_ray_tracing_local = *use_ray_tracing;
 
         // Undo state for the Edit menu
         let can_undo = self.undo_stack.can_undo();
@@ -280,6 +285,8 @@ impl Editor {
                     &mut show_hierarchy,
                     &mut show_inspector,
                     &mut show_lights,
+                    rt_supported,
+                    &mut use_ray_tracing_local,
                 );
 
                 // Floating panels (only when visible)
@@ -415,6 +422,7 @@ impl Editor {
         self.show_hierarchy = show_hierarchy;
         self.show_inspector = show_inspector;
         self.show_lights = show_lights;
+        *use_ray_tracing = use_ray_tracing_local;
         self.pending_save = pending_save;
         self.pending_load = pending_load;
 

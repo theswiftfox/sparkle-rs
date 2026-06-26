@@ -31,6 +31,8 @@ pub fn draw_hamburger_menu(
     show_hierarchy: &mut bool,
     show_inspector: &mut bool,
     show_lights: &mut bool,
+    rt_supported: bool,
+    use_ray_tracing: &mut bool,
 ) {
     egui::Area::new(egui::Id::new("hamburger_area"))
         .fixed_pos(egui::pos2(8.0, 8.0))
@@ -93,6 +95,14 @@ pub fn draw_hamburger_menu(
                             ui.checkbox(show_hierarchy, "  Hierarchy  (H)");
                             ui.checkbox(show_inspector, "  Inspector  (I)");
                             ui.checkbox(show_lights, "  Lights  (J)");
+                            ui.separator();
+
+                            //  Render
+                            ui.label(egui::RichText::new("Render").strong());
+                            ui.add_enabled(
+                                rt_supported,
+                                egui::Checkbox::new(use_ray_tracing, "  Ray Tracing"),
+                            );
                             ui.separator();
 
                             if ui.button("  Toggle Play Mode  (F1)").clicked() {

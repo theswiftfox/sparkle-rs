@@ -53,6 +53,8 @@ pub struct FrameData {
     pub pending_scene_load: Option<String>,
     /// Quit requested from UI
     pub pending_quit: bool,
+    /// Whether ray tracing should be used (toggled by the user)
+    pub use_ray_tracing: bool,
 }
 
 /// Sent from render thread back to main thread (rare events).
@@ -81,6 +83,8 @@ pub struct RenderFrameInfo {
     pub scene_tree: Option<NodeInfo>,
     /// Current lights in the scene
     pub scene_lights: Vec<Light>,
+    /// Whether the GPU supports ray tracing
+    pub rt_supported: bool,
 }
 
 // Mouse state tracking
@@ -139,6 +143,10 @@ pub struct App {
 
     // Engine settings (shared with FPS controller)
     settings: Settings,
+    /// Whether ray tracing is enabled (user toggle, default on)
+    use_ray_tracing: bool,
+    /// Whether the GPU supports ray tracing (reported by render thread)
+    rt_supported: bool,
 }
 
 /// Render-thread channel endpoints returned by App::new().
@@ -207,6 +215,8 @@ impl App {
             camera_near,
             camera_far,
             settings,
+            use_ray_tracing: true,
+            rt_supported: false,
         };
 
         let channels = RenderChannels {
@@ -687,6 +697,7 @@ impl ApplicationHandler for App {
         // The channel has capacity 1, so the render thread overwrites if we haven't consumed yet
         let mut got_render_info = false;
         while let Ok(info) = self.render_info_receiver.try_recv() {
+            self.rt_supported = info.rt_supported;
             self.scene_snapshot = SceneSnapshot {
                 tree: info.scene_tree.clone(),
                 lights: info.scene_lights.clone(),
@@ -739,6 +750,8 @@ impl ApplicationHandler for App {
             delta_t,
             render_frame_time_ms,
             &self.scene_snapshot,
+            self.rt_supported,
+            &mut self.use_ray_tracing,
         );
 
         // Check for quit from editor
@@ -789,6 +802,7 @@ impl ApplicationHandler for App {
             render_frame_time_ms,
             pending_scene_load,
             pending_quit: false, // We already handled quit above
+            use_ray_tracing: self.use_ray_tracing,
         };
 
         // Send to render thread (non-blocking with bounded channel)
