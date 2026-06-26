@@ -825,7 +825,9 @@ fn create_descriptor_set_layout(
             binding: 6,
             descriptor_type: ash::vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
             descriptor_count: MAX_BINDLESS_TEXTURES,
-            stage_flags: ash::vk::ShaderStageFlags::VERTEX | ash::vk::ShaderStageFlags::FRAGMENT,
+            stage_flags: ash::vk::ShaderStageFlags::VERTEX
+                | ash::vk::ShaderStageFlags::FRAGMENT
+                | ash::vk::ShaderStageFlags::ANY_HIT_KHR,
             ..Default::default()
         },
         ash::vk::DescriptorSetLayoutBinding {

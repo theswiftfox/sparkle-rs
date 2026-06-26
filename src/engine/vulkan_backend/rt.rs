@@ -1,5 +1,5 @@
 use crate::engine::{
-    backend::{AccelerationStructureType, GpuError, GpuErrorKind},
+    backend::{AccelerationStructureType, GpuAccelerationStructure, GpuError, GpuErrorKind},
     vulkan_backend::{VulkanBackend, buffer::VulkanBuffer},
 };
 
@@ -7,6 +7,7 @@ pub const IDX_RAYGEN: u32 = 0;
 pub const IDX_MISS: u32 = 1;
 pub const IDX_MISS_SHADOW: u32 = 2;
 pub const IDX_CHIT: u32 = 3;
+pub const IDX_AHIT: u32 = 4;
 
 pub struct RtFeature {
     pub pipeline_loader: ash::khr::ray_tracing_pipeline::Device,
@@ -38,6 +39,22 @@ pub struct RtSbt {
 pub struct AccelerationStructure {
     pub(super) handle: ash::vk::AccelerationStructureKHR,
     pub(super) buffer: VulkanBuffer,
+    /// Device addresses of the vertex buffer used to build this BLAS.
+    /// Used by the any-hit shader to read UVs for alpha-cutout testing.
+    /// `0` if not applicable (e.g. for TLAS).
+    pub(super) vertex_device_address: u64,
+    /// Device address of the index buffer used to build this BLAS.
+    pub(super) index_device_address: u64,
+}
+
+impl GpuAccelerationStructure for AccelerationStructure {
+    fn vertex_device_address(&self) -> u64 {
+        self.vertex_device_address
+    }
+
+    fn index_device_address(&self) -> u64 {
+        self.index_device_address
+    }
 }
 
 impl Into<ash::vk::AccelerationStructureTypeKHR> for AccelerationStructureType {
@@ -74,6 +91,15 @@ pub fn create_rt_descriptor_layout(
             stage_flags: ash::vk::ShaderStageFlags::ALL,
             ..Default::default()
         },
+        // Binding 3: per-instance material index buffer (albedo bindless index per TLAS instance)
+        // Used by the any-hit shader for alpha-cutout transparency.
+        ash::vk::DescriptorSetLayoutBinding {
+            binding: 3,
+            descriptor_type: ash::vk::DescriptorType::STORAGE_BUFFER,
+            descriptor_count: 1,
+            stage_flags: ash::vk::ShaderStageFlags::ANY_HIT_KHR,
+            ..Default::default()
+        },
     ];
 
     let create_info = ash::vk::DescriptorSetLayoutCreateInfo {
@@ -101,7 +127,8 @@ pub fn create_pipeline_layout(
     let push_range = ash::vk::PushConstantRange {
         stage_flags: ash::vk::ShaderStageFlags::RAYGEN_KHR
             | ash::vk::ShaderStageFlags::MISS_KHR
-            | ash::vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+            | ash::vk::ShaderStageFlags::CLOSEST_HIT_KHR
+            | ash::vk::ShaderStageFlags::ANY_HIT_KHR,
         offset: 0,
         size: 16, // frame_index: u32, width: u32, height: u32, number_of_lights: u32
     };
@@ -138,15 +165,15 @@ impl VulkanBackend {
         // each region is aligned to base_alignment; raygen stride must equal its region size
         let region_size = align_up(handle_stride, base_alignment);
 
-        let total_size = region_size * 4; // raygen + primary miss + shadow miss + hit
+        let total_size = region_size * 5; // raygen + primary miss + shadow miss + opaque hit + transparent hit
 
         // query raw handles from the driver
         let handles_raw = unsafe {
             pipeline_loader.get_ray_tracing_shader_group_handles(
                 pipeline,
                 0,
-                4,
-                (handle_size * 4) as usize,
+                5,
+                (handle_size * 5) as usize,
             )
         }
         .map_err(|e| {
@@ -191,8 +218,10 @@ impl VulkanBackend {
             std::ptr::copy_nonoverlapping(handles_raw.as_ptr().add(hs), mapped.add(rs), hs);
             // shadow miss at offset 2 * region_size
             std::ptr::copy_nonoverlapping(handles_raw.as_ptr().add(hs * 2), mapped.add(rs * 2), hs);
-            // hit at offset 3 * region_size
+            // opaque hit at offset 3 * region_size
             std::ptr::copy_nonoverlapping(handles_raw.as_ptr().add(hs * 3), mapped.add(rs * 3), hs);
+            // transparent hit at offset 4 * region_size
+            std::ptr::copy_nonoverlapping(handles_raw.as_ptr().add(hs * 4), mapped.add(rs * 4), hs);
         }
 
         let base_addr = unsafe {
@@ -216,10 +245,12 @@ impl VulkanBackend {
                 stride: region_size,
                 size: region_size * 2,
             },
+            // hit region covers opaque hit (index 0) and transparent hit (index 1)
+            // The instance SBT record offset selects which entry is used per-instance.
             hit: ash::vk::StridedDeviceAddressRegionKHR {
                 device_address: base_addr + region_size * 3,
                 stride: region_size,
-                size: region_size,
+                size: region_size * 2,
             },
             callable: ash::vk::StridedDeviceAddressRegionKHR::default(),
         };

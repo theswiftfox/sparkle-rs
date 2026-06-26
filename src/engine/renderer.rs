@@ -60,6 +60,9 @@ pub struct Renderer<B: GpuBackend> {
     rt_pipeline: Option<B::Pipeline>,
     rt_output: Option<B::RenderTarget>,
     rt_light_buffer: Option<B::Buffer>,
+    /// Per-instance material SSBO: one u32 albedo bindless index per TLAS instance.
+    /// Uploaded once at TLAS build time; read by the any-hit shader for alpha cutout.
+    rt_material_buffer: Option<B::Buffer>,
     /// Whether to use ray tracing when available. Defaults to `true`.
     use_ray_tracing: bool,
 }
@@ -171,6 +174,7 @@ impl<B: GpuBackend> Renderer<B> {
             rt_pipeline: None,
             rt_output: None,
             rt_light_buffer: None,
+            rt_material_buffer: None,
             use_ray_tracing: true,
         })
     }
@@ -335,7 +339,13 @@ impl<B: GpuBackend> Renderer<B> {
     pub fn resize(&mut self, width: u32, height: u32) {
         self.backend.resize(width, height);
 
-        let resolution = (width, height);
+        // The swapchain extent is ultimately decided by the surface (clamped to its
+        // capabilities, or forced to `current_extent` on platforms like Windows). Use the
+        // backend's actual post-recreation resolution for every resolution-dependent
+        // render target so they exactly match the swapchain — otherwise the G-buffer,
+        // forward, and RT targets can end up sized to a stale request and only cover part
+        // of the screen.
+        let resolution = self.backend.resolution();
         if let Some(ref mut dp) = self.deferred_program_pre {
             if let Err(e) = dp.resize(&self.backend, resolution) {
                 eprintln!("Failed to resize deferred pre targets: {}", e);
@@ -352,7 +362,10 @@ impl<B: GpuBackend> Renderer<B> {
             }
         }
         if self.rt_output.is_some() {
-            match self.backend.create_rt_output_target(width, height) {
+            match self
+                .backend
+                .create_rt_output_target(resolution.0, resolution.1)
+            {
                 Ok(rt) => self.rt_output = Some(rt),
                 Err(e) => eprintln!("Failed to resize RT output target: {}", e),
             }
@@ -490,7 +503,68 @@ impl<B: GpuBackend> Renderer<B> {
             .map(|item| item.model_matrix())
             .collect();
 
-        match self.backend.create_tlas(&self.blas, &transforms) {
+        let object_types: Vec<ObjType> = render_items
+            .iter()
+            .map(|item| item.object_type())
+            .collect();
+
+        // Build per-instance albedo indices for the any-hit material SSBO.
+        let albedo_indices: Vec<u32> = render_items
+            .iter()
+            .map(|item| item.material().albedo_bindless_index())
+            .collect();
+
+        // Per-instance material data for the any-hit shader:
+        // { albedo_tex_idx: u32, _pad: u32, vertex_addr: u64, index_addr: u64 }
+        // Laid out as 4×u32 = 16 bytes per instance to avoid alignment issues.
+        #[repr(C)]
+        struct InstanceMaterial {
+            albedo_tex_idx: u32,
+            _pad: u32,
+            vertex_addr_lo: u32,
+            vertex_addr_hi: u32,
+            index_addr_lo: u32,
+            index_addr_hi: u32,
+        }
+        let instance_materials: Vec<InstanceMaterial> = self
+            .blas
+            .iter()
+            .zip(albedo_indices.iter())
+            .map(|(blas, &albedo_idx)| {
+                let va = blas.vertex_device_address();
+                let ia = blas.index_device_address();
+                InstanceMaterial {
+                    albedo_tex_idx: albedo_idx,
+                    _pad: 0,
+                    vertex_addr_lo: (va & 0xFFFF_FFFF) as u32,
+                    vertex_addr_hi: (va >> 32) as u32,
+                    index_addr_lo: (ia & 0xFFFF_FFFF) as u32,
+                    index_addr_hi: (ia >> 32) as u32,
+                }
+            })
+            .collect();
+
+        // Create the per-instance material SSBO.
+        // Uploaded once at TLAS build time; stays valid as long as TLAS is live.
+        let mat_buf_size = (std::mem::size_of::<InstanceMaterial>() * instance_materials.len()).max(4);
+        match self.backend.create_buffer(
+            &BufferDesc {
+                label: "rt_instance_materials".to_string(),
+                usage: BufferUsage::Storage,
+                size: mat_buf_size,
+            },
+            Some(as_bytes(&instance_materials)),
+        ) {
+            Ok(buf) => self.rt_material_buffer = Some(buf),
+            Err(e) => {
+                println!("Warning: RT material buffer creation failed: {e} (any-hit will fall back to opaque)");
+            }
+        }
+
+        match self
+            .backend
+            .create_tlas(&self.blas, &transforms, &object_types, &albedo_indices)
+        {
             Ok(tlas) => {
                 println!("Built TLAS with {} instances", self.blas.len());
                 self.tlas = Some(tlas);
@@ -1064,7 +1138,8 @@ impl<B: GpuBackend> Renderer<B> {
             && self.rt_pipeline.is_some()
             && self.tlas.is_some()
             && self.rt_output.is_some()
-            && self.rt_light_buffer.is_some();
+            && self.rt_light_buffer.is_some()
+            && self.rt_material_buffer.is_some();
         if use_rt {
             let rt_lights: Vec<GpuLight> = lights
                 .iter()
@@ -1082,6 +1157,7 @@ impl<B: GpuBackend> Renderer<B> {
                     self.tlas.as_ref().unwrap(),
                     self.rt_output.as_ref().unwrap(),
                     self.rt_light_buffer.as_ref().unwrap(),
+                    self.rt_material_buffer.as_ref().unwrap(),
                     viewport.width as u32,
                     viewport.height as u32,
                     num_rt_lights,

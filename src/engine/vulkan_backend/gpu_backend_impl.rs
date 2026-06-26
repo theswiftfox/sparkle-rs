@@ -6,9 +6,9 @@ use crate::engine::{
     backend::{
         AccelerationStructureType, BlendMode, BufferDesc, BufferUsage, ComputePipelineDesc,
         GpuBackend, GpuError, GpuErrorKind, GpuRenderTarget, GpuTexture, MaterialProperties,
-        ProceduralShaders, RenderItem, RenderPassDesc, RenderPipelineDesc, RenderTargetDesc,
-        RenderTargetUsage, RtShaders, SamplerDesc, ShaderStage, Shaders, TextureDesc,
-        TextureFormat, ViewportDesc, as_bytes,
+        ObjType, ProceduralShaders, RenderItem, RenderPassDesc, RenderPipelineDesc,
+        RenderTargetDesc, RenderTargetUsage, RtShaders, SamplerDesc, ShaderStage, Shaders,
+        TextureDesc, TextureFormat, ViewportDesc, as_bytes,
     },
     compute_push::ComputePushConstants,
     geometry::Vertex,
@@ -18,7 +18,7 @@ use crate::engine::{
         buffer::{self, VulkanBuffer},
         create_shader_module,
         egui::{EguiRenderer, build_egui_batches},
-        rt::{self, IDX_CHIT, IDX_MISS, IDX_MISS_SHADOW, IDX_RAYGEN},
+        rt::{self, IDX_AHIT, IDX_CHIT, IDX_MISS, IDX_MISS_SHADOW, IDX_RAYGEN},
         texture::VulkanTexture,
         util::gpu_error_out_of_range,
     },
@@ -71,6 +71,13 @@ impl GpuTexture for RenderTarget {
         match self {
             RenderTarget::Texture(tex) => tex.id,
             RenderTarget::Swapchain(tex) => tex.id,
+        }
+    }
+
+    fn bindless_index(&self) -> u32 {
+        match self {
+            RenderTarget::Texture(tex) => tex.targets[0].descriptor_index,
+            RenderTarget::Swapchain(tex) => tex.descriptor_index,
         }
     }
 }
@@ -1157,6 +1164,14 @@ impl GpuBackend for VulkanBackend {
             ..Default::default()
         };
 
+        // The command buffer for this frame has already been submitted, so the frame
+        // is logically complete regardless of the present outcome. Clear current_frame
+        // now so that the early-return swapchain-recreation paths below cannot leave a
+        // stale frame in place — otherwise the next begin_frame() would short-circuit on
+        // its `current_frame.is_some()` guard and record into a command buffer that was
+        // never reset/re-begun.
+        self.current_frame = None;
+
         match unsafe {
             self.swapchain
                 .fn_ptr
@@ -1186,7 +1201,6 @@ impl GpuBackend for VulkanBackend {
                 ));
             }
         }
-        self.current_frame = None;
         Ok(())
     }
 
@@ -2091,6 +2105,8 @@ impl GpuBackend for VulkanBackend {
             range_info: ash::vk::AccelerationStructureBuildRangeInfoKHR,
             triangle_count: u32,
             size_info: ash::vk::AccelerationStructureBuildSizesInfoKHR<'a>,
+            vertex_device_address: u64,
+            index_device_address: u64,
         }
 
         let mut items: Vec<ItemData> = Vec::with_capacity(render_items.len());
@@ -2134,13 +2150,21 @@ impl GpuBackend for VulkanBackend {
                 },
                 ..Default::default()
             };
+            // Transparent geometry must NOT carry the OPAQUE flag so the any-hit shader
+            // is invoked for alpha-cutout testing. Opaque geometry keeps OPAQUE for the
+            // fast path (any-hit skipped entirely by the driver).
+            let geom_flags = if render_item.object_type() == ObjType::Transparent {
+                ash::vk::GeometryFlagsKHR::NO_DUPLICATE_ANY_HIT_INVOCATION
+            } else {
+                ash::vk::GeometryFlagsKHR::NO_DUPLICATE_ANY_HIT_INVOCATION
+                    | ash::vk::GeometryFlagsKHR::OPAQUE
+            };
             let geometry = ash::vk::AccelerationStructureGeometryKHR {
                 geometry_type: ash::vk::GeometryTypeKHR::TRIANGLES,
                 geometry: ash::vk::AccelerationStructureGeometryDataKHR {
                     triangles: geometry_triangles,
                 },
-                flags: ash::vk::GeometryFlagsKHR::NO_DUPLICATE_ANY_HIT_INVOCATION
-                    | ash::vk::GeometryFlagsKHR::OPAQUE,
+                flags: geom_flags,
                 ..Default::default()
             };
             let range_info = ash::vk::AccelerationStructureBuildRangeInfoKHR {
@@ -2155,6 +2179,8 @@ impl GpuBackend for VulkanBackend {
                 range_info,
                 triangle_count,
                 size_info: ash::vk::AccelerationStructureBuildSizesInfoKHR::default(),
+                vertex_device_address: vertex_address,
+                index_device_address: index_address,
             });
         }
 
@@ -2252,6 +2278,8 @@ impl GpuBackend for VulkanBackend {
             as_buf: ash::vk::Buffer,
             as_mem: ash::vk::DeviceMemory,
             as_size: ash::vk::DeviceSize,
+            vertex_device_address: u64,
+            index_device_address: u64,
         }
 
         let mut built: Vec<BuiltItem> = Vec::with_capacity(items.len());
@@ -2292,6 +2320,8 @@ impl GpuBackend for VulkanBackend {
                 as_buf,
                 as_mem,
                 as_size: item.size_info.acceleration_structure_size,
+                vertex_device_address: item.vertex_device_address,
+                index_device_address: item.index_device_address,
             });
         }
 
@@ -2371,6 +2401,8 @@ impl GpuBackend for VulkanBackend {
                     vulkan_handle_tracker: self.vulkan_handle_tracker.clone(),
                     is_storage_buffer: false,
                 },
+                vertex_device_address: b.vertex_device_address,
+                index_device_address: b.index_device_address,
             })
             .collect();
 
@@ -2381,11 +2413,18 @@ impl GpuBackend for VulkanBackend {
         &self,
         blas: &[Self::AccelerationStructure],
         transforms: &[glm::Mat4],
+        object_types: &[ObjType],
+        _albedo_indices: &[u32],
     ) -> Result<Self::AccelerationStructure, GpuError> {
         assert_eq!(
             blas.len(),
             transforms.len(),
             "create_tlas: blas and transforms slices must have the same length"
+        );
+        assert_eq!(
+            blas.len(),
+            object_types.len(),
+            "create_tlas: blas and object_types slices must have the same length"
         );
 
         if blas.is_empty() {
@@ -2412,8 +2451,9 @@ impl GpuBackend for VulkanBackend {
         let instances: Vec<ash::vk::AccelerationStructureInstanceKHR> = blas
             .iter()
             .zip(transforms.iter())
+            .zip(object_types.iter())
             .enumerate()
-            .map(|(i, (b, transform))| {
+            .map(|(i, ((b, transform), obj_type))| {
                 let blas_address = unsafe {
                     as_device.get_acceleration_structure_device_address(
                         &ash::vk::AccelerationStructureDeviceAddressInfoKHR {
@@ -2441,11 +2481,17 @@ impl GpuBackend for VulkanBackend {
                     m[2], m[6], m[10], m[14],
                 );
 
+                // SBT hit group offset:
+                //   0 = opaque hit group (closest-hit only, fast path)
+                //   1 = transparent hit group (closest-hit + any-hit, alpha cutout)
+                let sbt_offset = if *obj_type == ObjType::Transparent { 1u32 } else { 0u32 };
+
                 ash::vk::AccelerationStructureInstanceKHR {
                     transform: transform_matrix,
+                    // custom_index = i (used by any-hit to index into the material SSBO)
                     instance_custom_index_and_mask: ash::vk::Packed24_8::new(i as u32, 0xFF),
                     instance_shader_binding_table_record_offset_and_flags: ash::vk::Packed24_8::new(
-                        0,
+                        sbt_offset,
                         ash::vk::GeometryInstanceFlagsKHR::TRIANGLE_FACING_CULL_DISABLE.as_raw()
                             as u8,
                     ),
@@ -2705,6 +2751,8 @@ impl GpuBackend for VulkanBackend {
                 vulkan_handle_tracker: self.vulkan_handle_tracker.clone(),
                 is_storage_buffer: false,
             },
+            vertex_device_address: 0,
+            index_device_address: 0,
         })
     }
 
@@ -2736,7 +2784,18 @@ impl GpuBackend for VulkanBackend {
             &self.device,
             shaders.closest_hit[0].label,
         )?;
+        let ahit_module = create_shader_module(
+            shaders.any_hit[0].code,
+            &self.device,
+            shaders.any_hit[0].label,
+        )?;
 
+        // Stage indices in the stages array:
+        //   0 = raygen
+        //   1 = primary miss
+        //   2 = shadow miss
+        //   3 = closest-hit
+        //   4 = any-hit
         let stages = [
             ash::vk::PipelineShaderStageCreateInfo {
                 stage: ash::vk::ShaderStageFlags::RAYGEN_KHR,
@@ -2759,6 +2818,12 @@ impl GpuBackend for VulkanBackend {
             ash::vk::PipelineShaderStageCreateInfo {
                 stage: ash::vk::ShaderStageFlags::CLOSEST_HIT_KHR,
                 module: chit_module,
+                p_name: SHADER_ENTRY_POINT.as_ptr(),
+                ..Default::default()
+            },
+            ash::vk::PipelineShaderStageCreateInfo {
+                stage: ash::vk::ShaderStageFlags::ANY_HIT_KHR,
+                module: ahit_module,
                 p_name: SHADER_ENTRY_POINT.as_ptr(),
                 ..Default::default()
             },
@@ -2792,12 +2857,21 @@ impl GpuBackend for VulkanBackend {
                 intersection_shader: ash::vk::SHADER_UNUSED_KHR,
                 ..Default::default()
             },
-            // group 3: hit group (closest-hit fires shadow sub-ray)
+            // group 3: opaque hit group — closest-hit only, no any-hit (fast path)
             ash::vk::RayTracingShaderGroupCreateInfoKHR {
                 ty: ash::vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP,
                 general_shader: ash::vk::SHADER_UNUSED_KHR,
                 closest_hit_shader: IDX_CHIT,
                 any_hit_shader: ash::vk::SHADER_UNUSED_KHR,
+                intersection_shader: ash::vk::SHADER_UNUSED_KHR,
+                ..Default::default()
+            },
+            // group 4: transparent hit group — closest-hit + any-hit (alpha cutout)
+            ash::vk::RayTracingShaderGroupCreateInfoKHR {
+                ty: ash::vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP,
+                general_shader: ash::vk::SHADER_UNUSED_KHR,
+                closest_hit_shader: IDX_CHIT,
+                any_hit_shader: IDX_AHIT,
                 intersection_shader: ash::vk::SHADER_UNUSED_KHR,
                 ..Default::default()
             },
@@ -2842,6 +2916,7 @@ impl GpuBackend for VulkanBackend {
             self.device.destroy_shader_module(miss_module, None);
             self.device.destroy_shader_module(miss_shadow_module, None);
             self.device.destroy_shader_module(chit_module, None);
+            self.device.destroy_shader_module(ahit_module, None);
         }
 
         self.vulkan_handle_tracker.register_pipeline(pipeline);
@@ -2881,6 +2956,7 @@ impl GpuBackend for VulkanBackend {
         tlas: &Self::AccelerationStructure,
         output: &Self::RenderTarget,
         light_buffer: &Self::Buffer,
+        material_buffer: &Self::Buffer,
         width: u32,
         height: u32,
         number_of_lights: u32,
@@ -2976,7 +3052,7 @@ impl GpuBackend for VulkanBackend {
             );
         }
 
-        // Push-write set 1: TLAS (binding 0) + storage image (binding 1) + light buffer (binding 2)
+        // Push-write set 1: TLAS (binding 0) + storage image (binding 1) + light buffer (binding 2) + material buffer (binding 3)
         let tlas_write_ext = ash::vk::WriteDescriptorSetAccelerationStructureKHR {
             acceleration_structure_count: 1,
             p_acceleration_structures: &tlas.handle,
@@ -3016,7 +3092,20 @@ impl GpuBackend for VulkanBackend {
             p_buffer_info: &light_buf_info,
             ..Default::default()
         };
-        let writes = [tlas_write, image_write, light_buf_write];
+        let mat_buf_info = ash::vk::DescriptorBufferInfo {
+            buffer: material_buffer.frame_buffer(idx),
+            offset: 0,
+            range: material_buffer.size,
+        };
+        let mat_buf_write = ash::vk::WriteDescriptorSet {
+            dst_binding: 3,
+            dst_array_element: 0,
+            descriptor_count: 1,
+            descriptor_type: ash::vk::DescriptorType::STORAGE_BUFFER,
+            p_buffer_info: &mat_buf_info,
+            ..Default::default()
+        };
+        let writes = [tlas_write, image_write, light_buf_write, mat_buf_write];
         unsafe {
             self.push_descriptor.cmd_push_descriptor_set(
                 command_buffer,
@@ -3047,7 +3136,8 @@ impl GpuBackend for VulkanBackend {
                 rt.pipeline_layout,
                 ash::vk::ShaderStageFlags::RAYGEN_KHR
                     | ash::vk::ShaderStageFlags::MISS_KHR
-                    | ash::vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+                    | ash::vk::ShaderStageFlags::CLOSEST_HIT_KHR
+                    | ash::vk::ShaderStageFlags::ANY_HIT_KHR,
                 0,
                 std::slice::from_raw_parts(
                     &pc as *const RtPushConstants as *const u8,
@@ -3109,6 +3199,11 @@ impl GpuBackend for VulkanBackend {
                 label: "RT raygen",
                 stage: ash::vk::ShaderStageFlags::CLOSEST_HIT_KHR,
                 code: include_bytes!("../../shaders/spv/rt/closest_hit.spv"),
+            }],
+            any_hit: vec![Shader {
+                label: "RT Any Hit",
+                stage: ash::vk::ShaderStageFlags::ANY_HIT_KHR,
+                code: include_bytes!("../../shaders/spv/rt/any_hit.spv"),
             }],
         }
     }

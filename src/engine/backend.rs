@@ -379,10 +379,20 @@ pub trait GpuTexture: Sized + Clone {
     fn height(&self) -> u32;
     fn format(&self) -> TextureFormat;
     fn id(&self) -> usize;
+    /// Index into the global bindless descriptor array, or `u32::MAX` if not registered.
+    fn bindless_index(&self) -> u32;
 }
 
 /// A GPU texture that can be used as both a render target output and a shader input.
 pub trait GpuRenderTarget: GpuTexture {}
+
+/// Trait for a GPU acceleration structure (BLAS or TLAS).
+pub trait GpuAccelerationStructure {
+    /// Device address of the vertex buffer (for BLAS instances only; `0` for TLAS).
+    fn vertex_device_address(&self) -> u64;
+    /// Device address of the index buffer (for BLAS instances only; `0` for TLAS).
+    fn index_device_address(&self) -> u64;
+}
 
 /// A GPU buffer (vertex, index, or uniform).
 pub trait GpuBuffer: Sized {
@@ -420,7 +430,7 @@ pub trait GpuBackend: Sized + 'static {
     type Buffer: GpuBuffer;
     type Pipeline;
     type ShaderSource;
-    type AccelerationStructure;
+    type AccelerationStructure: GpuAccelerationStructure;
 
     /// load shaders
     fn load_shaders(&self) -> Shaders<Self>;
@@ -608,12 +618,16 @@ pub trait GpuBackend: Sized + 'static {
 
     /// Build a top-level acceleration structure from a set of BLAS instances.
     ///
-    /// `blas` and `transforms` must have the same length.
-    /// Each entry pairs a BLAS with its world-space transform matrix.
+    /// `blas`, `transforms`, and `albedo_indices` must all have the same length.
+    /// Each entry pairs a BLAS with its world-space transform and the bindless albedo
+    /// texture index for that instance (used by the any-hit shader for alpha cutout).
+    /// Pass `u32::MAX` for instances with no albedo texture.
     fn create_tlas(
         &self,
         blas: &[Self::AccelerationStructure],
         transforms: &[glm::Mat4],
+        object_types: &[ObjType],
+        albedo_indices: &[u32],
     ) -> Result<Self::AccelerationStructure, GpuError>;
 
     /// create the raytracing pipeline
@@ -633,6 +647,7 @@ pub trait GpuBackend: Sized + 'static {
         tlas: &Self::AccelerationStructure,
         output: &Self::RenderTarget,
         light_buffer: &Self::Buffer,
+        material_buffer: &Self::Buffer,
         width: u32,
         height: u32,
         number_of_lights: u32,
@@ -666,6 +681,7 @@ pub struct RtShaders<B: GpuBackend> {
     pub miss: B::ShaderSource,
     pub miss_shadow: B::ShaderSource,
     pub closest_hit: B::ShaderSource,
+    pub any_hit: B::ShaderSource,
 }
 
 // Material
@@ -721,6 +737,15 @@ impl<B: GpuBackend> Material<B> {
 
     pub fn set_parallax(&mut self, parallax: bool) {
         self.has_parallax = parallax;
+    }
+
+    /// Returns the bindless descriptor index for the albedo texture (slot 0),
+    /// or `u32::MAX` if no albedo texture is registered.
+    pub fn albedo_bindless_index(&self) -> u32 {
+        self.textures
+            .get(&0)
+            .map(|t| t.bindless_index())
+            .unwrap_or(u32::MAX)
     }
 }
 

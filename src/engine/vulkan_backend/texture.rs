@@ -51,6 +51,10 @@ impl GpuTexture for VulkanTexture {
     fn id(&self) -> usize {
         self.id
     }
+
+    fn bindless_index(&self) -> u32 {
+        self.descriptor_index
+    }
 }
 
 impl VulkanTexture {
