@@ -111,7 +111,7 @@ void main(inout HitPayload payload, in BuiltInTriangleIntersectionAttributes att
             float3 tangent   = normalize(cross(up, L));
             float3 bitangent = cross(L, tangent);
 
-            float softRadius = light.radius / max(dist, 0.001);
+            float softRadius = light.penumbra_radius / max(dist, 0.001);
 
             float lightVisibility = 0.0;
             for (int s = 0; s < shadowSamples; s++) {
@@ -130,7 +130,7 @@ void main(inout HitPayload payload, in BuiltInTriangleIntersectionAttributes att
                 shadowRay.Origin = biasedOrigin;
                 shadowRay.Direction = sampleL;
                 shadowRay.TMin = 0.001;
-                shadowRay.TMax = dist;
+                shadowRay.TMax = length(samplePos - hitPos);
 
                 ShadowPayload sp;
                 sp.shadowed = true;

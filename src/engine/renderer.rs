@@ -44,7 +44,7 @@ pub struct Renderer<B: GpuBackend> {
     // Shared UBO buffers bound permanently to descriptor set bindings 0-5
     ubo_view_proj: B::Buffer,          // binding 0, ViewProjUniforms (128B)
     ubo_camera_pixel: B::Buffer,       // binding 1, CameraUniforms (16B)
-    ubo_light_data: B::Buffer,         // binding 2, GpuLight (96B)
+    ubo_light_data: B::Buffer,         // binding 2, GpuLight (128B)
     ubo_shadow_light_space: B::Buffer, // binding 3, LightSpaceUniforms (64B)
     ubo_skybox_view_proj: B::Buffer,   // binding 4, ViewProjUniforms (128B)
     ubo_near_far: B::Buffer,           // binding 5, NearFarUniforms (16B)
@@ -596,6 +596,7 @@ impl<B: GpuBackend> Renderer<B> {
             t: LightType::Directional,
             color: glm::vec3(23.47, 21.31, 20.79),
             radius: 0.10,
+            penumbra_radius: 0.0,
             light_proj: glm::ortho_zo(
                 -self.shadow_dist,
                 self.shadow_dist,
@@ -613,7 +614,7 @@ impl<B: GpuBackend> Renderer<B> {
         // Color is warm amber at moderate HDR intensity
         // todo: fix area lights
         // let fire_color = glm::vec3(8.0, 4.0, 1.0);
-        // let fire_radius = 5.0;
+        // let fire_radius = 0.50;
         // let fire_penumbra = 0.3;
         // let fire_y = 1.1;
         // for (x, z) in [
@@ -756,6 +757,7 @@ impl<B: GpuBackend> Renderer<B> {
             t: LightType::Directional,
             color: glm::vec3(23.47, 21.31, 20.79),
             radius: 1.0,
+            penumbra_radius: 0.0,
             light_proj: glm::ortho_zo(
                 -shadow_dist,
                 shadow_dist,
@@ -1004,6 +1006,7 @@ impl<B: GpuBackend> Renderer<B> {
             t: LightType::Directional,
             color: glm::vec3(23.47, 21.31, 20.79),
             radius: 1.0,
+            penumbra_radius: 0.0,
             light_proj: glm::ortho_zo(
                 -self.shadow_dist,
                 self.shadow_dist,

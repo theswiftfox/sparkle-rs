@@ -11,6 +11,10 @@ public struct Light {
     public uint type;
 	public float3 color;
     public float radius;
+    /// Physical radius of the light source for RT shadow cone spread.
+    /// Decoupled from `radius` (attenuation) so both can be tuned independently.
+    public float penumbra_radius;
+    public float3 _pad;        // explicit padding to 16-byte align before lightSpace
 	public float4x4 lightSpace;
 };
 

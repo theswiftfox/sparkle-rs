@@ -92,7 +92,13 @@ pub struct Light {
     pub position: glm::Vec3,
     pub t: LightType,
     pub color: glm::Vec3,
+    /// Attenuation scale for Area lights: `attenuation = radius / dist²`.
     pub radius: f32,
+    /// Physical radius of the light source used for RT shadow cone spread.
+    /// Independent of `radius` so brightness and penumbra width can be tuned
+    /// separately. Only used by the RT closest-hit shader; ignored for
+    /// Ambient and Directional lights.
+    pub penumbra_radius: f32,
     pub light_proj: glm::Mat4,
 }
 
@@ -103,6 +109,7 @@ impl Default for Light {
             t: LightType::Ambient,
             color: glm::zero(),
             radius: 0.0,
+            penumbra_radius: 0.0,
             light_proj: glm::identity(),
         }
     }

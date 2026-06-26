@@ -358,6 +358,7 @@ pub fn draw_light_window(
                         t: LightType::Directional,
                         color: glm::vec3(1.0, 1.0, 1.0),
                         radius: 1.0,
+                        penumbra_radius: 0.0,
                         light_proj: glm::identity(),
                     });
                 }

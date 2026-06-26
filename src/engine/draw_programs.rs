@@ -59,12 +59,17 @@ pub(crate) struct LightSpaceUniforms {
     pub light_space_matrix: glm::Mat4,
 }
 
-/// GPU-side light data, matching the shader cbuffer layout.
+/// GPU-side light data, matching the shader cbuffer `std140` layout.
 ///
-/// Layout (96 bytes):
-/// - `position: Vec3` (12 bytes) + `t: u32` (4 bytes) = 16 bytes
-/// - `color: Vec3` (12 bytes) + `radius: f32` (4 bytes) = 16 bytes
-/// - `light_space: Mat4` (64 bytes)
+/// std140 aligns `float3` members to 16 bytes, so `_pad: float3` in the shader
+/// sits at offset 48 (not 36), pushing `lightSpace` to offset 64. Total = 128 bytes.
+///
+/// Layout (128 bytes):
+/// - offset  0: `position: Vec3` (12) + `t: u32` (4)          = 16 bytes
+/// - offset 16: `color: Vec3` (12)    + `radius: f32` (4)      = 16 bytes
+/// - offset 32: `penumbra_radius: f32` (4) + `_pad: [f32; 3]`  = 16 bytes (repr(C), ends at 48)
+/// - offset 48: `_pad2: [f32; 4]` (16)                         = 16 bytes (bridges to offset 64)
+/// - offset 64: `light_space: Mat4` (64)                        = 64 bytes
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub(crate) struct GpuLight {
@@ -72,6 +77,9 @@ pub(crate) struct GpuLight {
     t: u32,
     color: glm::Vec3,
     radius: f32,
+    penumbra_radius: f32,
+    _pad: [f32; 3],
+    _pad2: [f32; 4],
     light_space: glm::Mat4,
 }
 
@@ -87,6 +95,9 @@ impl GpuLight {
             t,
             color: light.color,
             radius: light.radius,
+            penumbra_radius: light.penumbra_radius,
+            _pad: [0.0; 3],
+            _pad2: [0.0; 4],
             light_space: light.light_proj,
         }
     }

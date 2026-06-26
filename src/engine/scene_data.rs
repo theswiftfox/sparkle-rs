@@ -14,6 +14,7 @@ pub struct LightData {
     pub light_type: LightTypeData,
     pub color: [f32; 3],
     pub radius: f32,
+    pub penumbra_radius: f32,
 }
 
 /// Serializable light type enum.
@@ -59,6 +60,7 @@ impl From<&Light> for LightData {
             },
             color: [light.color.x, light.color.y, light.color.z],
             radius: light.radius,
+            penumbra_radius: light.penumbra_radius,
         }
     }
 }
@@ -78,6 +80,7 @@ impl LightData {
             },
             color: glm::vec3(self.color[0], self.color[1], self.color[2]),
             radius: self.radius,
+            penumbra_radius: self.penumbra_radius,
             light_proj: glm::identity(),
         }
     }
